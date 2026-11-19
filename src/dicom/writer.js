@@ -27,12 +27,13 @@ function concatUint8Arrays(arrays) {
   return out;
 }
 
-function makeUint16Pair(g, e, le) {
-  const buf = new Uint8Array(4);
-  const v = new DataView(buf.buffer);
-  v.setUint16(0, g, le);
-  v.setUint16(2, e, le);
-  return buf;
+function safeBigInt(str, unsigned = false) {
+  try {
+    const val = BigInt((str || '0').trim());
+    return unsigned && val < 0n ? 0n : val;
+  } catch {
+    return 0n;
+  }
 }
 
 function makeItemHeader(g, e, length, le) {
@@ -88,10 +89,10 @@ function encodeBinaryNumeric(value, vr, littleEndian) {
         view.setFloat64(off, Number(str) || 0, littleEndian);
         break;
       case 'SV':
-        view.setBigInt64(off, BigInt(str || '0'), littleEndian);
+        view.setBigInt64(off, safeBigInt(str, false), littleEndian);
         break;
       case 'UV':
-        view.setBigUint64(off, BigInt(str || '0'), littleEndian);
+        view.setBigUint64(off, safeBigInt(str, true), littleEndian);
         break;
       case 'AT': {
         const parsed = parseTagString(str);

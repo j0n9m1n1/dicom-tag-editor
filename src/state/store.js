@@ -87,6 +87,7 @@ export class AppStore {
     this.searchQuery = '';
     this.filterMode = 'all'; // 'all' | 'modified' | 'invalid' | 'sequence' | 'private' | 'meta'
     this.showPixelPanel = true;
+    this._userPrefPixelOpen = true;
     this.showFileList = false;
     this.mobileTab = 'tree'; // 'files' | 'tree' | 'inspector' | 'pixel'
     this.theme = localStorage.getItem('dcm_editor_theme') || 'dark';
@@ -136,6 +137,12 @@ export class AppStore {
 
   togglePixelPanel() {
     this.showPixelPanel = !this.showPixelPanel;
+    const hasPixel = Boolean(
+      this.doc?.datasetNodes?.some((n) => n.tag === '7FE00010' && n.status !== 'deleted')
+    );
+    if (hasPixel) {
+      this._userPrefPixelOpen = this.showPixelPanel;
+    }
     this.emit('layout');
   }
 
@@ -173,6 +180,14 @@ export class AppStore {
     this.expandedIds = entry ? entry.expandedIds : new Set(['__meta__', '__main__']);
     this.undoStack = entry ? entry.undoStack : [];
     this.redoStack = entry ? entry.redoStack : [];
+
+    // Auto-collapse Pixel Preview when opening non-image DICOMs (e.g. SR, RT Plan)
+    if (this.doc) {
+      const hasPixel = Boolean(
+        this.doc.datasetNodes?.some((n) => n.tag === '7FE00010' && n.status !== 'deleted')
+      );
+      this.showPixelPanel = hasPixel ? this._userPrefPixelOpen : false;
+    }
   }
 
   /**
@@ -766,6 +781,27 @@ export class AppStore {
     });
   }
 
+  removeSequenceItem(itemId) {
+    const info = this.findNodeInfo(itemId);
+    if (!info || !info.isSeqItem) return;
+    const { parentSeq, item, itemIndex } = info;
+
+    this._executeCommand({
+      label: `Remove Item #${itemIndex} from ${parentSeq.formattedTag}`,
+      affectsPixel: false,
+      redo: () => {
+        const idx = parentSeq.items.indexOf(item);
+        if (idx >= 0) parentSeq.items.splice(idx, 1);
+        if (this.selectedId === item.id) this.selectedId = parentSeq.id;
+      },
+      undo: () => {
+        parentSeq.items.splice(itemIndex, 0, item);
+        this.expandedIds.add(parentSeq.id);
+        this.selectedId = item.id;
+      },
+    });
+  }
+
   ensureUtf8Charset() {
     if (!this.doc) return;
     const clearNonAsciiRaw = (nodes) => {
@@ -1179,6 +1215,10 @@ export class AppStore {
         if (n.status === 'deleted') {
           list.splice(i, 1);
           continue;
+        }
+        // Clear stale original rawBytes on modified/added non-binary tags so subsequent saves encode the new value
+        if (n.status !== 'unchanged' && !n.isBinary && !n.isSequence) {
+          n.rawBytes = null;
         }
         n.originalValue = n.value;
         n.status = 'unchanged';

@@ -230,6 +230,9 @@ export class InspectorPanel {
           <button class="btn btn-primary btn-sm" data-action="add-tag-in-item">
             ${icons.plus(14)} ${escapeHtml(t('inspAddTagInItem'))}
           </button>
+          <button class="btn btn-danger-ghost btn-sm" data-action="delete-seq-item">
+            ${icons.trash(14)} ${escapeHtml(t('inspDeleteSeqItem'))}
+          </button>
         </div>
       </div>
     `;
@@ -324,7 +327,7 @@ export class InspectorPanel {
               ${this._showRawHex ? icons.chevronDown(14) : icons.chevronRight(14)}
               <span class="insp-section-title">${escapeHtml(t('inspRawHexTitle'))}</span>
             </span>
-            <span class="insp-acc-meta mono">${node.rawBytes ? `${node.rawBytes.length} B` : `${new TextEncoder().encode(node.value || '').length} B`}</span>
+            <span class="insp-acc-meta mono">${node.status === 'unchanged' && node.rawBytes ? `${node.rawBytes.length} B` : `${new TextEncoder().encode(node.value || '').length} B`}</span>
           </button>
           ${this._showRawHex ? `<div class="insp-acc-body">${this._renderRawHexBody(node)}</div>` : ''}
         </div>
@@ -361,15 +364,8 @@ export class InspectorPanel {
   }
 
   _renderRawHexBody(node) {
-    if (node.rawBytes && node.rawBytes.length > 0) {
-      const note =
-        node.status !== 'unchanged'
-          ? `<p class="muted small" style="margin:6px 0 0">${escapeHtml(t('inspRawHexNewNote'))}</p>`
-          : '';
-      return `
-        <pre class="hex-dump">${escapeHtml(buildHexDump(node.rawBytes, 256))}</pre>
-        ${note}
-      `;
+    if (node.status === 'unchanged' && node.rawBytes && node.rawBytes.length > 0) {
+      return `<pre class="hex-dump">${escapeHtml(buildHexDump(node.rawBytes, 256))}</pre>`;
     }
     const encoded = new TextEncoder().encode(node.value || '');
     return `
@@ -691,6 +687,11 @@ export class InspectorPanel {
       case 'add-tag-in-item':
         if (info.isSeqItem && this.callbacks.onOpenAddTagForItem) {
           this.callbacks.onOpenAddTagForItem(info.item, info.parentSeq, info.section);
+        }
+        break;
+      case 'delete-seq-item':
+        if (info.isSeqItem) {
+          this.store.removeSequenceItem(info.item.id);
         }
         break;
       case 'revert-node':

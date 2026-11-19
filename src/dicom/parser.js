@@ -478,7 +478,6 @@ export function formatByteSize(bytes) {
  * @param {string} fileName
  */
 export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
-  resetNodeIdCounter();
   const bytes = new Uint8Array(arrayBuffer);
   if (bytes.length < 16) {
     throw new Error('파일이 너무 작아 유효한 DICOM 파일이 아닙니다.');

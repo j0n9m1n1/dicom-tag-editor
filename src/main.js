@@ -31,7 +31,6 @@ const btnRedo = document.getElementById('btn-redo');
 const btnAddTag = document.getElementById('btn-add-tag');
 const btnAnonymize = document.getElementById('btn-anonymize');
 const btnDiff = document.getElementById('btn-diff');
-const btnCompare = document.getElementById('btn-compare');
 const btnRaw = document.getElementById('btn-raw');
 const btnSaveDirect = document.getElementById('btn-save-direct');
 const btnSaveAs = document.getElementById('btn-save-as');
@@ -98,8 +97,6 @@ function applyLanguage() {
   btnAnonymize.title = t('btnAnonymizeTitle');
   btnDiff.innerHTML = `${icons.diff(15)}<span>${t('btnDiff')}</span>`;
   btnDiff.title = t('btnDiffTitle');
-  btnCompare.innerHTML = `${icons.layers(15)}<span>${t('btnCompare')}</span>`;
-  btnCompare.title = t('btnCompareTitle');
   btnRaw.innerHTML = `${icons.code(15)}<span>${t('btnRaw')}</span>`;
   btnRaw.title = t('btnRawTitle');
   btnSaveDirect.innerHTML = `${icons.save(15)}<span>${t('btnSaveDirect')}</span>`;
@@ -199,8 +196,6 @@ function updateToolbarAndHeader() {
   btnAddTag.disabled = !hasDoc;
   btnAnonymize.disabled = !hasDoc;
   btnDiff.disabled = !hasDoc;
-  btnCompare.classList.toggle('hidden', fileCount < 2);
-  btnCompare.disabled = fileCount < 2;
   btnRaw.disabled = !hasDoc;
   btnSaveAs.disabled = !hasDoc;
 
@@ -666,7 +661,6 @@ btnRedo.addEventListener('click', () => store.redo());
 btnAddTag.addEventListener('click', () => modals.openAddTag(null));
 btnAnonymize.addEventListener('click', () => modals.openAnonymize());
 btnDiff.addEventListener('click', () => modals.openDiff());
-btnCompare.addEventListener('click', () => modals.openCompare());
 btnRaw.addEventListener('click', () => modals.openRawView());
 btnSaveDirect.addEventListener('click', saveDocumentDirect);
 btnSaveAs.addEventListener('click', saveDocumentAs);

@@ -11,8 +11,6 @@ const MESSAGES = {
     brandSub: '100% Local · 서버 전송 없음',
     btnOpen: '열기',
     btnOpenTitle: '로컬 DICOM 파일 열기 (Ctrl+O)',
-    btnSample: '샘플',
-    btnSampleTitle: '테스트용 샘플 DICOM 생성 및 열기',
     btnUndoTitle: '실행 취소 (Ctrl+Z)',
     btnRedoTitle: '다시 실행 (Ctrl+Y)',
     btnAddTag: '태그 추가',
@@ -29,10 +27,6 @@ const MESSAGES = {
     btnSaveDirectTitle: '열려있는 원본 파일에 덮어쓰기 (Ctrl+S)',
     btnSaveAs: '저장',
     btnSaveAsTitle: '수정된 DICOM 파일 저장 (Ctrl+S)',
-    btnPixel: 'Pixel',
-    btnPixelTitle: 'Pixel 프리뷰 패널 표시/숨기기',
-    btnThemeTitle: '다크/라이트 테마 전환',
-    btnLangTitle: '언어 전환 (한국어 / English)',
     changeMod: '수정 {n}',
     changeAdd: '추가 {n}',
     changeDel: '삭제 {n}',
@@ -86,6 +80,7 @@ const MESSAGES = {
     inspSeqItemTitle: '{keyword} 항목',
     inspSeqItemDesc: '상위 시퀀스 <code>{tag}</code>에 속한 데이터셋 항목입니다. 현재 하위 태그 <strong>{count}개</strong>를 포함하고 있습니다.',
     inspAddTagInItem: '이 Item 안에 태그 추가',
+    inspDeleteSeqItem: '이 Item 삭제',
     stUnchanged: '원본',
     stModified: '수정됨',
     stAdded: '추가됨',
@@ -130,13 +125,11 @@ const MESSAGES = {
     inspRevertOrig: '원본 복원',
     inspRestoreDel: '삭제 취소',
     inspDeleteTag: '태그 삭제',
-    inspCannotDeleteTs: 'TransferSyntaxUID는 삭제할 수 없습니다.',
 
     // Pixel Panel
     pixelTitle: 'Pixel Preview',
     pixelEmptyNoDoc: 'DICOM 파일을 열면 영상 프리뷰가 표시됩니다.',
     pixelEmptyNoTag: '이 파일에는 PixelData (7FE0,0010)가 없습니다.',
-    pixelCanvasHint: '드래그하여 Window Center/Width 조절',
     pixelInvert: '반전',
     pixelAutoWl: 'Auto W/L',
     pixelTagWl: '태그 W/L',
@@ -239,8 +232,6 @@ const MESSAGES = {
 
     // Raw View & Hex Toggle
     inspRawHexTitle: 'Raw Bytes (Hex)',
-    inspRawHexShow: 'Hex 보기',
-    inspRawHexHide: 'Hex 숨기기',
     inspRawHexNewNote: '새로 추가되거나 수정된 태그입니다. 저장 시 현재 값이 VR 규칙에 맞게 인코딩됩니다.',
     modalRawTitle: 'Raw DICOM 뷰 (dcmdump / JSON)',
     modalRawSubtitle: '현재 편집 상태를 텍스트 또는 JSON으로 확인·복사·내보내기할 수 있습니다.',
@@ -275,7 +266,6 @@ const MESSAGES = {
     toastFileAlreadyOpen: '이미 열려 있는 "{name}" 파일로 이동했습니다.',
     toastBatchDone: '{files}개 파일에 일괄 작업이 적용되었습니다.',
     toastZipDone: '{count}개 파일을 "{name}"으로 저장했습니다.',
-    toastZipProgress: 'ZIP 파일 생성 중 ({cur}/{total})...',
     toastNoDcmInDrop: '드롭된 항목에서 읽을 수 있는 파일을 찾지 못했습니다.',
 
     // Mobile Tabs
@@ -363,8 +353,6 @@ const MESSAGES = {
     brandSub: '100% Local · Zero Upload',
     btnOpen: 'Open',
     btnOpenTitle: 'Open local DICOM file (Ctrl+O)',
-    btnSample: 'Sample',
-    btnSampleTitle: 'Generate and open sample CT DICOM',
     btnUndoTitle: 'Undo (Ctrl+Z)',
     btnRedoTitle: 'Redo (Ctrl+Y)',
     btnAddTag: 'Add Tag',
@@ -381,10 +369,6 @@ const MESSAGES = {
     btnSaveDirectTitle: 'Save directly to opened file (Ctrl+S)',
     btnSaveAs: 'Save',
     btnSaveAsTitle: 'Save edited DICOM file (Ctrl+S)',
-    btnPixel: 'Pixel',
-    btnPixelTitle: 'Show/hide Pixel Preview panel',
-    btnThemeTitle: 'Toggle dark / light theme',
-    btnLangTitle: 'Switch language (한국어 / English)',
     changeMod: 'Mod {n}',
     changeAdd: 'Add {n}',
     changeDel: 'Del {n}',
@@ -438,6 +422,7 @@ const MESSAGES = {
     inspSeqItemTitle: '{keyword} Item',
     inspSeqItemDesc: 'Dataset item inside parent sequence <code>{tag}</code>. Currently contains <strong>{count}</strong> child tag(s).',
     inspAddTagInItem: 'Add Tag inside this Item',
+    inspDeleteSeqItem: 'Delete this Item',
     stUnchanged: 'Original',
     stModified: 'Modified',
     stAdded: 'Added',
@@ -482,13 +467,11 @@ const MESSAGES = {
     inspRevertOrig: 'Revert to Original',
     inspRestoreDel: 'Restore Tag',
     inspDeleteTag: 'Delete Tag',
-    inspCannotDeleteTs: 'TransferSyntaxUID cannot be deleted.',
 
     // Pixel Panel
     pixelTitle: 'Pixel Preview',
     pixelEmptyNoDoc: 'Open a DICOM file to preview pixel data.',
     pixelEmptyNoTag: 'No PixelData (7FE0,0010) in this file.',
-    pixelCanvasHint: 'Drag to adjust Window Center / Width',
     pixelInvert: 'Invert',
     pixelAutoWl: 'Auto W/L',
     pixelTagWl: 'Tag W/L',
@@ -591,8 +574,6 @@ const MESSAGES = {
 
     // Raw View & Hex Toggle
     inspRawHexTitle: 'Raw Bytes (Hex)',
-    inspRawHexShow: 'Show Hex',
-    inspRawHexHide: 'Hide Hex',
     inspRawHexNewNote: 'This tag is newly added or edited. It will be encoded per VR rules when saved.',
     modalRawTitle: 'Raw DICOM View (dcmdump / JSON)',
     modalRawSubtitle: 'Inspect, copy, or export the current dataset as dcmdump text or structured JSON.',
@@ -627,7 +608,6 @@ const MESSAGES = {
     toastFileAlreadyOpen: '"{name}" is already open — switched to existing file.',
     toastBatchDone: 'Batch operation applied to {files} file(s).',
     toastZipDone: 'Saved {count} file(s) into "{name}".',
-    toastZipProgress: 'Building ZIP archive ({cur}/{total})...',
     toastNoDcmInDrop: 'No readable files found in the dropped selection.',
 
     // Mobile Tabs
