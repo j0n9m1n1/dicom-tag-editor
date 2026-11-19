@@ -264,9 +264,9 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     const undefinedLength = length === 0xffffffff;
     const hex = tagHex(group, element);
 
-    // Heuristic for Implicit VR unknown SQ (when length === 0xFFFFFFFF and next tag is FFFE,E000)
+    // Heuristic for Implicit VR or UN-encoded Private SQ (when length === 0xFFFFFFFF and next tag is FFFE,E000)
     if (
-      !explicit &&
+      (!explicit || vr === 'UN') &&
       undefinedLength &&
       vr !== 'SQ' &&
       hex !== '7FE00010' &&
@@ -314,7 +314,8 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
           });
           sqPos = itemUndef ? itemResult.nextOffset : itemLimit;
         } else {
-          // Unexpected bytes inside SQ; stop cleanly
+          // Unexpected tag inside SQ without delimiter; rewind 8 bytes so outer loop can read it
+          sqPos -= 8;
           break;
         }
       }

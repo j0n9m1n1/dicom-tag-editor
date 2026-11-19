@@ -191,8 +191,8 @@ function serializeNode(node, explicit, littleEndian, charset) {
     }
   }
 
-  // 2) Encapsulated PixelData (undefined length) — preserve raw bytes verbatim
-  if (node.encapsulated && node.rawBytes) {
+  // 2) Encapsulated PixelData or undefined-length raw binary — preserve verbatim with 0xFFFFFFFF header
+  if ((node.encapsulated || node.undefinedLength) && node.rawBytes instanceof Uint8Array) {
     const hdr = buildElementHeader(node.group, node.element, node.vr, 0xffffffff, explicit, littleEndian);
     return concatUint8Arrays([hdr, node.rawBytes]);
   }

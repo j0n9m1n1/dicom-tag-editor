@@ -121,7 +121,7 @@ export class TreeView {
   _matchesQuery(node, q, qHex) {
     if (!q) return true;
     return (
-      node.tag.toLowerCase().includes(qHex || q) ||
+      (qHex !== '' && node.tag.toLowerCase().includes(qHex)) ||
       node.formattedTag.toLowerCase().includes(q) ||
       (node.keyword && node.keyword.toLowerCase().includes(q)) ||
       (node.name && node.name.toLowerCase().includes(q)) ||
@@ -182,7 +182,8 @@ export class TreeView {
     if (!doc) return [];
 
     const q = this.store.searchQuery.trim().toLowerCase();
-    const qHex = q.replace(/[^0-9a-f]/g, '');
+    const isTagLike = /^[0-9a-f(),\s]+$/.test(q);
+    const qHex = isTagLike ? q.replace(/[^0-9a-f]/g, '') : '';
     const mode = this.store.filterMode;
     const rows = [];
 

@@ -665,6 +665,7 @@ export class AppStore {
     const info = this.findNodeInfo(nodeId);
     if (!info || info.isSeqItem) return;
     const node = info.node;
+    if (node.tag === '00020010') return; // TransferSyntaxUID cannot be deleted
 
     if (node.status === 'added') {
       this.revertNode(nodeId);
@@ -762,6 +763,8 @@ export class AppStore {
     if (!info || info.isSeqItem || !info.node.isSequence) return;
     const seqNode = info.node;
     const newItem = { id: genNodeId(), undefinedLength: false, children: [] };
+    const prevStatus = seqNode.status;
+    const nextStatus = prevStatus === 'added' ? 'added' : 'modified';
 
     this._executeCommand({
       label: `Add Item to ${seqNode.formattedTag}`,
@@ -769,6 +772,7 @@ export class AppStore {
       redo: () => {
         if (!seqNode.items) seqNode.items = [];
         seqNode.items.push(newItem);
+        seqNode.status = nextStatus;
         this.expandedIds.add(seqNode.id);
         this.expandedIds.add(newItem.id);
         this.selectedId = newItem.id;
@@ -776,6 +780,7 @@ export class AppStore {
       undo: () => {
         const idx = seqNode.items.indexOf(newItem);
         if (idx >= 0) seqNode.items.splice(idx, 1);
+        seqNode.status = prevStatus;
         if (this.selectedId === newItem.id) this.selectedId = seqNode.id;
       },
     });
@@ -785,6 +790,8 @@ export class AppStore {
     const info = this.findNodeInfo(itemId);
     if (!info || !info.isSeqItem) return;
     const { parentSeq, item, itemIndex } = info;
+    const prevStatus = parentSeq.status;
+    const nextStatus = prevStatus === 'added' ? 'added' : 'modified';
 
     this._executeCommand({
       label: `Remove Item #${itemIndex} from ${parentSeq.formattedTag}`,
@@ -792,10 +799,12 @@ export class AppStore {
       redo: () => {
         const idx = parentSeq.items.indexOf(item);
         if (idx >= 0) parentSeq.items.splice(idx, 1);
+        parentSeq.status = nextStatus;
         if (this.selectedId === item.id) this.selectedId = parentSeq.id;
       },
       undo: () => {
         parentSeq.items.splice(itemIndex, 0, item);
+        parentSeq.status = prevStatus;
         this.expandedIds.add(parentSeq.id);
         this.selectedId = item.id;
       },

@@ -704,12 +704,13 @@ export function lookupTag(group, element, privateCreators) {
  */
 export function searchDictionary(query, limit = 25) {
   const q = (query || '').trim().toLowerCase();
-  const qHex = q.replace(/[^0-9a-f]/g, '');
+  const isTagLike = /^[0-9a-f(),\s]+$/.test(q);
+  const qHex = isTagLike ? q.replace(/[^0-9a-f]/g, '') : '';
   const results = [];
   for (const entry of DICOM_DICTIONARY.values()) {
     if (
       !q ||
-      entry.tag.toLowerCase().includes(qHex || q) ||
+      (qHex !== '' && entry.tag.toLowerCase().includes(qHex)) ||
       entry.formattedTag.toLowerCase().includes(q) ||
       entry.keyword.toLowerCase().includes(q) ||
       entry.name.toLowerCase().includes(q)
