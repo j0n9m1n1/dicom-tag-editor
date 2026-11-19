@@ -1,16 +1,30 @@
 /**
  * Right-side Tag Inspector Panel.
- * Shows DICOM VR standards (type, max length, padding, VM, format hint),
- * live validation, multi-value editor, date/time helpers, UTF-8 charset guard,
- * hex dump preview for binary tags, and revert/delete actions.
+ * Features:
+ *  1. Top-first Value Editor with header-level quick actions (Copy Tag, Copy Value, Revert, Delete)
+ *  2. Clickable Breadcrumb navigation for nested Sequences & Items
+ *  3. Automatic human-readable name resolution for known Transfer Syntax & SOP Class UIDs
+ *  4. One-click Quick Preset chips for common CS tags (Modality, PatientSex, Photometric, Position, Charset)
+ *  5. Structured Person Name (PN) component editor (Family^Given^Middle^Prefix^Suffix & = Ideographic group)
+ *  6. Multi-value list editor, DA/TM/UI helpers, UTF-8 charset guard, VR Standard Spec card, and Raw Hex dump
  */
 
 import { getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
+import { lookupUidName } from '../dicom/dictionary.js';
 import { hasNonAscii, isUtf8Charset } from '../dicom/charset.js';
 import { computeVm, formatByteSize } from '../dicom/parser.js';
 import { generateDicomUid } from '../dicom/uid.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLocalizedVrText } from '../i18n.js';
+
+const TAG_QUICK_PRESETS = {
+  '00100040': ['M', 'F', 'O'],
+  '00080060': ['CT', 'MR', 'US', 'DX', 'CR', 'PT', 'NM', 'XA', 'MG', 'SR', 'OT'],
+  '00280004': ['MONOCHROME2', 'MONOCHROME1', 'RGB', 'YBR_FULL_422'],
+  '00185100': ['HFS', 'HFP', 'FFS', 'FFP', 'HFDR', 'HFDL'],
+  '00080005': ['ISO_IR 192', 'ISO_IR 100', 'ISO 2022 IR 149'],
+  '00120062': ['YES', 'NO'],
+};
 
 function buildHexDump(bytes, maxBytes = 256) {
   if (!bytes || bytes.length === 0) return '(0 bytes)';
@@ -56,11 +70,45 @@ function getNowDicomTime() {
   return `${hh}${mm}${ss}`;
 }
 
+/**
+ * Parse a DICOM PN string (first value if multi-valued) into Alphabetic and Ideographic 5-component arrays.
+ */
+function parsePnComponents(val) {
+  const firstVal = String(val || '').split('\\')[0];
+  const groups = firstVal.split('=');
+  const parseGroup = (g) => {
+    const parts = (g || '').split('^');
+    return [parts[0] || '', parts[1] || '', parts[2] || '', parts[3] || '', parts[4] || ''];
+  };
+  return {
+    alpha: parseGroup(groups[0]),
+    ideo: parseGroup(groups[1]),
+    phonetic: groups[2] || '',
+  };
+}
+
+function composePnComponents(alpha, ideo, phonetic = '') {
+  const trimComponents = (arr) => {
+    const copy = arr.slice();
+    while (copy.length > 0 && copy[copy.length - 1] === '') copy.pop();
+    return copy.join('^');
+  };
+  const g1 = trimComponents(alpha);
+  const g2 = trimComponents(ideo);
+  const g3 = (phonetic || '').trim();
+  if (g3) return `${g1}=${g2}=${g3}`;
+  if (g2) return `${g1}=${g2}`;
+  return g1;
+}
+
 export class InspectorPanel {
   /**
    * @param {HTMLElement} container
    * @param {import('../state/store.js').AppStore} store
-   * @param {{ onOpenAddTagForItem: (item, seqNode, section) => void }} callbacks
+   * @param {{
+   *   onOpenAddTagForItem?: (item: any, seqNode: any, section: string) => void,
+   *   onToast?: (msg: string, type?: string) => void,
+   * }} callbacks
    */
   constructor(container, store, callbacks) {
     this.container = container;
@@ -68,11 +116,40 @@ export class InspectorPanel {
     this.callbacks = callbacks || {};
     this._renderedNodeId = null;
     this._multiValueMode = false;
+    this._pnStructuredMode = false;
     this._showRawHex = false;
 
     this.container.addEventListener('click', (e) => this._onClick(e));
     this.container.addEventListener('input', (e) => this._onInput(e));
     this.container.addEventListener('change', (e) => this._onChange(e));
+  }
+
+  async _copyText(str) {
+    try {
+      await navigator.clipboard.writeText(str);
+      this.callbacks.onToast?.(t('toastCopied'), 'ok');
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = str;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      this.callbacks.onToast?.(t('toastCopied'), 'ok');
+    }
+  }
+
+  _renderBreadcrumbs(info) {
+    const crumbs = info.breadcrumbs || (info.path || []).map((label) => ({ id: null, label }));
+    return crumbs
+      .map((c, idx) => {
+        const isLast = idx === crumbs.length - 1;
+        if (c.id && !isLast) {
+          return `<button type="button" class="crumb-link" data-jump-crumb="${c.id}">${escapeHtml(c.label)}</button>`;
+        }
+        return `<span class="crumb-item ${isLast ? 'crumb-current' : ''}">${escapeHtml(c.label)}</span>`;
+      })
+      .join('<span class="crumb-sep">›</span>');
   }
 
   render(reason = 'state') {
@@ -97,7 +174,6 @@ export class InspectorPanel {
       return;
     }
 
-    // Sequence Item selected
     if (info.isSeqItem) {
       this._renderedNodeId = info.item.id;
       this._renderSeqItem(info);
@@ -113,7 +189,9 @@ export class InspectorPanel {
       this._renderedNodeId === node.id &&
       activeEl &&
       this.container.contains(activeEl) &&
-      (activeEl.matches('[data-inspector-input]') || activeEl.matches('[data-mv-input]'));
+      (activeEl.matches('[data-inspector-input]') ||
+        activeEl.matches('[data-mv-input]') ||
+        activeEl.matches('[data-pn-input]'));
 
     if (isTypingInside) {
       this._updateLiveMetrics(node);
@@ -123,9 +201,11 @@ export class InspectorPanel {
     if (this._renderedNodeId !== node.id) {
       this._renderedNodeId = node.id;
       const spec = getVrSpec(node.vr);
-      // Auto-enable multi-value editor only if value actually contains backslash & VR supports it
       this._multiValueMode = Boolean(
         spec.allowMultiValue && !node.isBinary && !node.isSequence && (node.value || '').includes('\\')
+      );
+      this._pnStructuredMode = Boolean(
+        node.vr === 'PN' && ((node.value || '').includes('^') || (node.value || '').includes('='))
       );
     }
 
@@ -133,11 +213,11 @@ export class InspectorPanel {
   }
 
   _renderSeqItem(info) {
-    const { item, parentSeq, itemIndex, path } = info;
+    const { item, parentSeq, itemIndex } = info;
     const childCount = (item.children || []).filter((c) => c.status !== 'deleted').length;
     this.container.innerHTML = `
       <div class="insp-section">
-        <div class="insp-breadcrumb">${escapeHtml(path.join(' › '))}</div>
+        <div class="insp-breadcrumb">${this._renderBreadcrumbs(info)}</div>
         <div class="insp-header">
           <span class="item-badge">Item #${itemIndex}</span>
           <span class="insp-title">${escapeHtml(t('inspSeqItemTitle', { keyword: parentSeq.keyword }))}</span>
@@ -155,7 +235,7 @@ export class InspectorPanel {
   }
 
   _renderNode(info) {
-    const { node, path } = info;
+    const { node } = info;
     const spec = getVrSpec(node.vr);
     const vrText = getLocalizedVrText(spec);
     const isDeleted = node.status === 'deleted';
@@ -186,19 +266,56 @@ export class InspectorPanel {
           ? t('inspPadSpace')
           : t('inspPadNone');
 
+    const canRevert = node.status === 'modified' || node.status === 'added';
+    const canDelete = node.tag !== '00020010';
+
     this.container.innerHTML = `
+      <!-- 1. Compact Header with Breadcrumbs, Copy & Revert/Delete Actions -->
       <div class="insp-section insp-top">
-        <div class="insp-breadcrumb" title="${escapeHtml(path.join(' › '))}">${escapeHtml(path.join(' › '))}</div>
-        <div class="insp-header">
-          <code class="insp-tag-code">${node.formattedTag}</code>
-          ${statusBadgeMap[node.status] || ''}
-          ${node.isPrivate ? '<span class="mini-badge badge-private">Private</span>' : ''}
-          ${node.isMeta ? '<span class="mini-badge badge-meta">Meta 0002</span>' : ''}
+        <div class="insp-breadcrumb">${this._renderBreadcrumbs(info)}</div>
+        <div class="insp-header-row">
+          <div class="insp-header">
+            <code class="insp-tag-code">${node.formattedTag}</code>
+            <button class="btn-icon insp-copy-btn" data-action="copy-tag" title="${escapeHtml(t('inspCopyTagTitle'))}">${icons.copy(13)}</button>
+            ${!node.isBinary && !node.isSequence ? `<button class="btn-icon insp-copy-btn" data-action="copy-val" title="${escapeHtml(t('inspCopyValTitle'))}">${icons.code(13)}</button>` : ''}
+            ${statusBadgeMap[node.status] || ''}
+            ${node.isPrivate ? '<span class="mini-badge badge-private">Private</span>' : ''}
+            ${node.isMeta ? '<span class="mini-badge badge-meta">Meta 0002</span>' : ''}
+          </div>
+          <div class="insp-top-actions">
+            ${canRevert ? `
+              <button class="btn btn-xs" data-action="revert-node" title="${escapeHtml(node.status === 'added' ? t('inspCancelAdd') : t('inspRevertOrig'))}">
+                ${icons.rotateCcw(12)} ${escapeHtml(node.status === 'added' ? t('inspCancelAdd') : t('inspRevertOrig'))}
+              </button>
+            ` : ''}
+            ${canDelete ? `
+              <button class="btn btn-xs ${isDeleted ? 'btn-primary' : 'btn-danger-ghost'}" data-action="toggle-delete">
+                ${isDeleted ? `${icons.rotateCcw(12)} ${escapeHtml(t('inspRestoreDel'))}` : `${icons.trash(12)} ${escapeHtml(t('inspDeleteTag'))}`}
+              </button>
+            ` : ''}
+          </div>
         </div>
         <div class="insp-title">${escapeHtml(node.name)}</div>
         <div class="insp-keyword">${t('inspKeywordLine', { keyword: escapeHtml(node.keyword), vm: escapeHtml(node.vmSpec || '1') })}</div>
       </div>
 
+      <!-- 2. Value Editor (Top Priority) -->
+      <div class="insp-section">
+        <div class="insp-section-header">
+          <div class="insp-section-title">${escapeHtml(t('inspEditTitle'))}</div>
+          ${this._renderEditorModeToggle(node, spec)}
+        </div>
+        ${this._renderValueEditor(node, spec, isDeleted)}
+        <div id="insp-live-metrics">${this._renderLiveMetricsHtml(node, spec, needsUtf8Warn)}</div>
+        ${node.status === 'modified' && !node.isBinary && !node.isSequence ? `
+          <div class="insp-orig-inline">
+            <span class="muted">${escapeHtml(t('inspOrigCompareTitle'))}:</span>
+            <code>${escapeHtml(node.originalValue || '(empty)')}</code>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- 3. Slim VR Standard Spec Card -->
       <div class="insp-section">
         <div class="insp-section-title">${escapeHtml(t('inspVrSpecTitle'))}</div>
         <div class="vr-spec-card">
@@ -217,22 +334,7 @@ export class InspectorPanel {
         </div>
       </div>
 
-      <div class="insp-section">
-        <div class="insp-section-header">
-          <div class="insp-section-title">${escapeHtml(t('inspEditTitle'))}</div>
-          ${this._renderEditorModeToggle(node, spec)}
-        </div>
-        ${this._renderValueEditor(node, spec, isDeleted)}
-        <div id="insp-live-metrics">${this._renderLiveMetricsHtml(node, spec, needsUtf8Warn)}</div>
-      </div>
-
-      ${node.status === 'modified' && !node.isBinary && !node.isSequence ? `
-        <div class="insp-section insp-diff-box">
-          <div class="insp-section-title">${escapeHtml(t('inspOrigCompareTitle'))}</div>
-          <div class="diff-orig"><code>${escapeHtml(node.originalValue || '(empty)')}</code></div>
-        </div>
-      ` : ''}
-
+      <!-- 4. Raw Bytes (Hex) Toggle -->
       ${!node.isBinary && !node.isSequence ? `
         <div class="insp-section">
           <div class="insp-section-header">
@@ -244,19 +346,6 @@ export class InspectorPanel {
           ${this._showRawHex ? this._renderRawHexBody(node) : ''}
         </div>
       ` : ''}
-
-      <div class="insp-section insp-footer-actions">
-        ${node.status === 'modified' || node.status === 'added' ? `
-          <button class="btn btn-sm" data-action="revert-node">
-            ${icons.rotateCcw(14)} ${escapeHtml(node.status === 'added' ? t('inspCancelAdd') : t('inspRevertOrig'))}
-          </button>
-        ` : ''}
-        ${node.tag !== '00020010' ? `
-          <button class="btn btn-sm ${isDeleted ? 'btn-primary' : 'btn-danger-ghost'}" data-action="toggle-delete">
-            ${isDeleted ? `${icons.rotateCcw(14)} ${escapeHtml(t('inspRestoreDel'))}` : `${icons.trash(14)} ${escapeHtml(t('inspDeleteTag'))}`}
-          </button>
-        ` : `<span class="muted small">${escapeHtml(t('inspCannotDeleteTs'))}</span>`}
-      </div>
     `;
   }
 
@@ -279,11 +368,64 @@ export class InspectorPanel {
   }
 
   _renderEditorModeToggle(node, spec) {
-    if (node.isBinary || node.isSequence || !spec.allowMultiValue) return '';
+    if (node.isBinary || node.isSequence) return '';
+    if (node.vr === 'PN') {
+      return `
+        <button class="btn-link small" data-action="toggle-pn-mode">
+          ${escapeHtml(this._pnStructuredMode ? t('inspPnRawToggle') : t('inspPnToggle'))}
+        </button>
+      `;
+    }
+    if (!spec.allowMultiValue) return '';
     return `
       <button class="btn-link small" data-action="toggle-mv-mode">
         ${escapeHtml(this._multiValueMode ? t('inspSwitchRaw') : t('inspSwitchMv'))}
       </button>
+    `;
+  }
+
+  _renderQuickPresets(node, isDeleted) {
+    if (isDeleted) return '';
+    const presets = TAG_QUICK_PRESETS[node.tag];
+    if (!presets) return '';
+    const cur = (node.value || '').trim();
+    const chips = presets
+      .map(
+        (val) => `
+        <button type="button" class="preset-chip ${cur === val ? 'active' : ''}" data-preset-val="${escapeHtml(val)}">${escapeHtml(val)}</button>
+      `
+      )
+      .join('');
+    return `
+      <div class="insp-presets-row">
+        <span class="preset-lbl">${escapeHtml(t('inspQuickPresetLabel'))}</span>
+        <div class="preset-chips">${chips}</div>
+      </div>
+    `;
+  }
+
+  _renderPnStructuredEditor(node, isDeleted) {
+    const parsed = parsePnComponents(node.value);
+    const dis = isDeleted ? 'disabled' : '';
+    return `
+      <div class="pn-struct-box">
+        <input class="input insp-input" type="text" data-inspector-input="true" value="${escapeHtml(node.value)}" placeholder="${escapeHtml(t('inspPlaceholderEmpty'))}" ${dis} style="margin-bottom:8px" />
+        <div class="pn-group-label">${escapeHtml(t('inspPnAlphaGroup'))}</div>
+        <div class="pn-grid-2">
+          <input class="input input-sm" data-pn-input="a0" value="${escapeHtml(parsed.alpha[0])}" placeholder="${escapeHtml(t('inspPnFamily'))}" ${dis} />
+          <input class="input input-sm" data-pn-input="a1" value="${escapeHtml(parsed.alpha[1])}" placeholder="${escapeHtml(t('inspPnGiven'))}" ${dis} />
+        </div>
+        <div class="pn-grid-3" style="margin-top:5px">
+          <input class="input input-sm" data-pn-input="a2" value="${escapeHtml(parsed.alpha[2])}" placeholder="${escapeHtml(t('inspPnMiddle'))}" ${dis} />
+          <input class="input input-sm" data-pn-input="a3" value="${escapeHtml(parsed.alpha[3])}" placeholder="${escapeHtml(t('inspPnPrefix'))}" ${dis} />
+          <input class="input input-sm" data-pn-input="a4" value="${escapeHtml(parsed.alpha[4])}" placeholder="${escapeHtml(t('inspPnSuffix'))}" ${dis} />
+        </div>
+        <div class="pn-group-label" style="margin-top:8px">${escapeHtml(t('inspPnIdeoGroup'))}</div>
+        <div class="pn-grid-2">
+          <input class="input input-sm" data-pn-input="i0" value="${escapeHtml(parsed.ideo[0])}" placeholder="${escapeHtml(t('inspPnFamily'))}" ${dis} />
+          <input class="input input-sm" data-pn-input="i1" value="${escapeHtml(parsed.ideo[1])}" placeholder="${escapeHtml(t('inspPnGiven'))}" ${dis} />
+        </div>
+      </div>
     `;
   }
 
@@ -314,6 +456,11 @@ export class InspectorPanel {
       `;
     }
 
+    // Structured PN mode
+    if (node.vr === 'PN' && this._pnStructuredMode) {
+      return this._renderPnStructuredEditor(node, isDeleted);
+    }
+
     // Multi-value list mode
     if (this._multiValueMode && spec.allowMultiValue) {
       const parts = (node.value || '').split('\\');
@@ -339,11 +486,11 @@ export class InspectorPanel {
     // Long text area
     if (node.vr === 'LT' || node.vr === 'ST' || node.vr === 'UT') {
       return `
-        <textarea class="input insp-textarea" rows="5" data-inspector-input="true" ${isDeleted ? 'disabled' : ''}>${escapeHtml(node.value)}</textarea>
+        <textarea class="input insp-textarea" rows="4" data-inspector-input="true" ${isDeleted ? 'disabled' : ''}>${escapeHtml(node.value)}</textarea>
       `;
     }
 
-    // Quick helpers for DA / TM
+    // Quick helpers for DA / TM / UI
     let helperHtml = '';
     if (node.vr === 'DA' && !isDeleted) {
       const isoVal = /^\d{8}$/.test(node.value || '')
@@ -371,6 +518,7 @@ export class InspectorPanel {
 
     return `
       <input class="input insp-input" type="text" data-inspector-input="true" value="${escapeHtml(node.value)}" placeholder="${escapeHtml(t('inspPlaceholderEmpty'))}" ${isDeleted ? 'disabled' : ''} />
+      ${this._renderQuickPresets(node, isDeleted)}
       ${helperHtml}
     `;
   }
@@ -386,6 +534,12 @@ export class InspectorPanel {
     const limitInfo = spec.maxLength
       ? `${spec.lengthUnit === 'chars' ? charLen : byteLen} / ${spec.maxLength} ${spec.lengthUnit}`
       : `${byteLen} bytes`;
+
+    // Resolve human-readable name for known UIDs
+    const uidName = node.vr === 'UI' ? lookupUidName(val) : null;
+    const uidNameHtml = uidName
+      ? `<div class="uid-resolved-banner">↳ <span>${escapeHtml(t('inspKnownUidLabel'))}</span> <strong>${escapeHtml(uidName)}</strong></div>`
+      : '';
 
     let statusBox;
     if (v.severity === 'error') {
@@ -424,6 +578,7 @@ export class InspectorPanel {
       : '';
 
     return `
+      ${uidNameHtml}
       <div class="insp-metrics-bar">
         <span>${escapeHtml(t('inspMetricLen'))} <strong>${escapeHtml(limitInfo)}</strong></span>
         <span>${escapeHtml(t('inspMetricBytes'))} <strong>${byteLen} B</strong>${(byteLen & 1) === 1 ? escapeHtml(t('inspMetricPadNote')) : ''}</span>
@@ -449,6 +604,33 @@ export class InspectorPanel {
 
     if (e.target.matches('[data-inspector-input]')) {
       this.store.updateNodeValue(info.node.id, e.target.value);
+      if (info.node.vr === 'PN' && this._pnStructuredMode) {
+        const parsed = parsePnComponents(e.target.value);
+        ['0', '1', '2', '3', '4'].forEach((idx) => {
+          const aEl = this.container.querySelector(`[data-pn-input="a${idx}"]`);
+          if (aEl) aEl.value = parsed.alpha[Number(idx)];
+        });
+        ['0', '1'].forEach((idx) => {
+          const iEl = this.container.querySelector(`[data-pn-input="i${idx}"]`);
+          if (iEl) iEl.value = parsed.ideo[Number(idx)];
+        });
+      }
+      return;
+    }
+
+    if (e.target.matches('[data-pn-input]')) {
+      const alpha = ['0', '1', '2', '3', '4'].map(
+        (idx) => this.container.querySelector(`[data-pn-input="a${idx}"]`)?.value || ''
+      );
+      const ideo = [
+        this.container.querySelector('[data-pn-input="i0"]')?.value || '',
+        this.container.querySelector('[data-pn-input="i1"]')?.value || '',
+        '', '', '',
+      ];
+      const composed = composePnComponents(alpha, ideo);
+      const rawInp = this.container.querySelector('[data-inspector-input]');
+      if (rawInp) rawInp.value = composed;
+      this.store.updateNodeValue(info.node.id, composed);
       return;
     }
 
@@ -461,7 +643,7 @@ export class InspectorPanel {
 
   _onChange(e) {
     if (e.target.matches('[data-action="pick-date"]')) {
-      const iso = e.target.value; // YYYY-MM-DD
+      const iso = e.target.value;
       if (iso) {
         const dcmDate = iso.replace(/-/g, '');
         this.store.updateNodeValue(this.store.selectedId, dcmDate);
@@ -470,6 +652,18 @@ export class InspectorPanel {
   }
 
   _onClick(e) {
+    const crumbBtn = e.target.closest('[data-jump-crumb]');
+    if (crumbBtn) {
+      this.store.selectNode(crumbBtn.dataset.jumpCrumb);
+      return;
+    }
+
+    const presetBtn = e.target.closest('[data-preset-val]');
+    if (presetBtn && this.store.selectedId) {
+      this.store.updateNodeValue(this.store.selectedId, presetBtn.dataset.presetVal);
+      return;
+    }
+
     const btn = e.target.closest('[data-action]');
     if (!btn) return;
     const action = btn.dataset.action;
@@ -477,6 +671,12 @@ export class InspectorPanel {
     if (!info) return;
 
     switch (action) {
+      case 'copy-tag':
+        if (!info.isSeqItem) this._copyText(info.node.formattedTag);
+        break;
+      case 'copy-val':
+        if (!info.isSeqItem) this._copyText(info.node.value || '');
+        break;
       case 'add-tag-in-item':
         if (info.isSeqItem && this.callbacks.onOpenAddTagForItem) {
           this.callbacks.onOpenAddTagForItem(info.item, info.parentSeq, info.section);
@@ -493,6 +693,10 @@ export class InspectorPanel {
         break;
       case 'toggle-mv-mode':
         this._multiValueMode = !this._multiValueMode;
+        this._renderNode(info);
+        break;
+      case 'toggle-pn-mode':
+        this._pnStructuredMode = !this._pnStructuredMode;
         this._renderNode(info);
         break;
       case 'toggle-raw-hex':

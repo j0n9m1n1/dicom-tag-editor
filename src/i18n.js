@@ -339,6 +339,21 @@ const MESSAGES = {
     brandHomeTitle: '첫 화면으로 돌아가기',
     confirmGoHomeDirty: '저장하지 않은 변경 사항이 {count}건 있습니다.\n첫 화면으로 돌아가면 열린 파일과 수정 내용이 모두 초기화됩니다. 계속하시겠습니까?',
     confirmGoHomeLoaded: '열려 있는 파일({files}개)을 닫고 첫 화면으로 돌아가시겠습니까?\n현재 작업 상태가 초기화됩니다.',
+
+    // Inspector Enhancements
+    inspCopyTagTitle: '태그 번호 복사',
+    inspCopyValTitle: '현재 값 복사',
+    inspPnToggle: '이름 구조 편집 (성/이름/다국어)',
+    inspPnRawToggle: '원문(^/=) 직접 편집',
+    inspPnAlphaGroup: '영문 / 알파벳 그룹 (Group 1)',
+    inspPnIdeoGroup: '한글 / 표의문자 그룹 (Group 2, = 구분)',
+    inspPnFamily: '성 (Family)',
+    inspPnGiven: '이름 (Given)',
+    inspPnMiddle: '중간이름 (Middle)',
+    inspPnPrefix: '호칭 (Prefix)',
+    inspPnSuffix: '접미/학위 (Suffix)',
+    inspQuickPresetLabel: '빠른 선택:',
+    inspKnownUidLabel: '표준 UID 명칭:',
   },
 
   en: {
@@ -674,6 +689,21 @@ const MESSAGES = {
     brandHomeTitle: 'Return to welcome screen',
     confirmGoHomeDirty: 'You have {count} unsaved change(s).\nReturning to the home screen will discard all loaded files and edits. Continue?',
     confirmGoHomeLoaded: 'Close {files} open file(s) and return to the home screen?\nYour current workspace will be reset.',
+
+    // Inspector Enhancements
+    inspCopyTagTitle: 'Copy Tag (GGGG,EEEE)',
+    inspCopyValTitle: 'Copy Current Value',
+    inspPnToggle: 'Structured Name Editor',
+    inspPnRawToggle: 'Raw (^/=) Input',
+    inspPnAlphaGroup: 'Alphabetic Group (Group 1)',
+    inspPnIdeoGroup: 'Ideographic / Korean Group (Group 2, =)',
+    inspPnFamily: 'Family Name',
+    inspPnGiven: 'Given Name',
+    inspPnMiddle: 'Middle',
+    inspPnPrefix: 'Prefix',
+    inspPnSuffix: 'Suffix',
+    inspQuickPresetLabel: 'Presets:',
+    inspKnownUidLabel: 'Standard UID:',
   },
 };
 

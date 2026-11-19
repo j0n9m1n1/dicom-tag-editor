@@ -433,19 +433,29 @@ export class AppStore {
 
   /**
    * Find a node by ID across Meta and Main Dataset (recursively in SQ items).
+   * Returns node info along with clickable breadcrumb objects.
    */
   findNodeInfo(targetId) {
     if (!this.doc || !targetId) return null;
 
-    const searchList = (list, path, section) => {
+    const searchList = (list, path, crumbs, section) => {
       for (let i = 0; i < list.length; i++) {
         const node = list[i];
         if (node.id === targetId) {
-          return { node, parentList: list, index: i, path: [...path, node.formattedTag], section };
+          return {
+            node,
+            parentList: list,
+            index: i,
+            path: [...path, node.formattedTag],
+            breadcrumbs: [...crumbs, { id: node.id, label: node.formattedTag }],
+            section,
+          };
         }
         if (node.isSequence && node.items) {
           for (let j = 0; j < node.items.length; j++) {
             const item = node.items[j];
+            const seqCrumb = { id: node.id, label: `${node.formattedTag} ${node.keyword}` };
+            const itemCrumb = { id: item.id, label: `Item #${j}` };
             if (item.id === targetId) {
               return {
                 isSeqItem: true,
@@ -453,12 +463,14 @@ export class AppStore {
                 parentSeq: node,
                 itemIndex: j,
                 path: [...path, node.formattedTag, `Item #${j}`],
+                breadcrumbs: [...crumbs, seqCrumb, itemCrumb],
                 section,
               };
             }
             const found = searchList(
               item.children || [],
               [...path, `${node.formattedTag} ${node.keyword}`, `Item #${j}`],
+              [...crumbs, seqCrumb, itemCrumb],
               section
             );
             if (found) return found;
@@ -469,8 +481,8 @@ export class AppStore {
     };
 
     return (
-      searchList(this.doc.metaNodes, ['File Meta (0002)'], 'meta') ||
-      searchList(this.doc.datasetNodes, ['Main Dataset'], 'main')
+      searchList(this.doc.metaNodes, ['File Meta (0002)'], [{ id: null, label: 'File Meta (0002)' }], 'meta') ||
+      searchList(this.doc.datasetNodes, ['Main Dataset'], [{ id: null, label: 'Main Dataset' }], 'main')
     );
   }
 

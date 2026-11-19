@@ -77,6 +77,63 @@ export function getTransferSyntaxInfo(uid) {
   };
 }
 
+export const KNOWN_SOP_UIDS = {
+  '1.2.840.10008.1.1': 'Verification SOP Class',
+  '1.2.840.10008.5.1.4.1.1.1': 'Computed Radiography (CR) Image Storage',
+  '1.2.840.10008.5.1.4.1.1.1.1': 'Digital X-Ray (DX) Image Storage - For Presentation',
+  '1.2.840.10008.5.1.4.1.1.1.1.1': 'Digital X-Ray (DX) Image Storage - For Processing',
+  '1.2.840.10008.5.1.4.1.1.1.2': 'Digital Mammography (MG) X-Ray Image Storage - For Presentation',
+  '1.2.840.10008.5.1.4.1.1.1.2.1': 'Digital Mammography (MG) X-Ray Image Storage - For Processing',
+  '1.2.840.10008.5.1.4.1.1.2': 'CT Image Storage',
+  '1.2.840.10008.5.1.4.1.1.2.1': 'Enhanced CT Image Storage',
+  '1.2.840.10008.5.1.4.1.1.2.2': 'Legacy Converted Enhanced CT Image Storage',
+  '1.2.840.10008.5.1.4.1.1.3.1': 'Ultrasound Multi-frame Image Storage',
+  '1.2.840.10008.5.1.4.1.1.4': 'MR Image Storage',
+  '1.2.840.10008.5.1.4.1.1.4.1': 'Enhanced MR Image Storage',
+  '1.2.840.10008.5.1.4.1.1.4.2': 'MR Spectroscopy Storage',
+  '1.2.840.10008.5.1.4.1.1.4.3': 'Enhanced MR Color Image Storage',
+  '1.2.840.10008.5.1.4.1.1.6.1': 'Ultrasound (US) Image Storage',
+  '1.2.840.10008.5.1.4.1.1.6.2': 'Enhanced US Volume Storage',
+  '1.2.840.10008.5.1.4.1.1.7': 'Secondary Capture (SC) Image Storage',
+  '1.2.840.10008.5.1.4.1.1.7.1': 'Multi-frame Single Bit Secondary Capture Image Storage',
+  '1.2.840.10008.5.1.4.1.1.7.2': 'Multi-frame Grayscale Byte Secondary Capture Image Storage',
+  '1.2.840.10008.5.1.4.1.1.7.3': 'Multi-frame Grayscale Word Secondary Capture Image Storage',
+  '1.2.840.10008.5.1.4.1.1.7.4': 'Multi-frame True Color Secondary Capture Image Storage',
+  '1.2.840.10008.5.1.4.1.1.11.1': 'Grayscale Softcopy Presentation State Storage',
+  '1.2.840.10008.5.1.4.1.1.12.1': 'X-Ray Angiographic (XA) Image Storage',
+  '1.2.840.10008.5.1.4.1.1.12.2': 'X-Ray Radiofluoroscopic (RF) Image Storage',
+  '1.2.840.10008.5.1.4.1.1.13.1.3': 'Breast Tomosynthesis Image Storage',
+  '1.2.840.10008.5.1.4.1.1.20': 'Nuclear Medicine (NM) Image Storage',
+  '1.2.840.10008.5.1.4.1.1.66': 'Raw Data Storage',
+  '1.2.840.10008.5.1.4.1.1.66.4': 'Segmentation (SEG) Storage',
+  '1.2.840.10008.5.1.4.1.1.67': 'Real World Value Mapping Storage',
+  '1.2.840.10008.5.1.4.1.1.88.11': 'Basic Text SR Storage',
+  '1.2.840.10008.5.1.4.1.1.88.22': 'Enhanced SR Storage',
+  '1.2.840.10008.5.1.4.1.1.88.33': 'Comprehensive SR Storage',
+  '1.2.840.10008.5.1.4.1.1.88.34': 'Comprehensive 3D SR Storage',
+  '1.2.840.10008.5.1.4.1.1.88.67': 'X-Ray Radiation Dose SR Storage',
+  '1.2.840.10008.5.1.4.1.1.104.1': 'Encapsulated PDF Storage',
+  '1.2.840.10008.5.1.4.1.1.128': 'Positron Emission Tomography (PET) Image Storage',
+  '1.2.840.10008.5.1.4.1.1.130': 'Enhanced PET Image Storage',
+  '1.2.840.10008.5.1.4.1.1.481.1': 'RT Image Storage',
+  '1.2.840.10008.5.1.4.1.1.481.2': 'RT Dose Storage',
+  '1.2.840.10008.5.1.4.1.1.481.3': 'RT Structure Set Storage',
+  '1.2.840.10008.5.1.4.1.1.481.5': 'RT Plan Storage',
+};
+
+/**
+ * Resolve human-readable name for a well-known DICOM Transfer Syntax or SOP Class UID.
+ * @param {string} uid
+ * @returns {string|null}
+ */
+export function lookupUidName(uid) {
+  const clean = (uid || '').replace(/\0+$/, '').trim();
+  if (!clean) return null;
+  if (TRANSFER_SYNTAXES[clean]) return TRANSFER_SYNTAXES[clean].name;
+  if (KNOWN_SOP_UIDS[clean]) return KNOWN_SOP_UIDS[clean];
+  return null;
+}
+
 /**
  * Compact format: [keyword, vr, vm, displayName]
  * If displayName is omitted, it is derived from keyword.

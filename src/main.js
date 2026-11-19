@@ -164,6 +164,7 @@ const inspector = new InspectorPanel(inspectorContainer, store, {
   onOpenAddTagForItem: (item, parentSeq, section) => {
     modals.openAddTag({ item, parentSeq, section });
   },
+  onToast: showToast,
 });
 
 const pixelPanel = new PixelPanel(pixelContainer, store);
