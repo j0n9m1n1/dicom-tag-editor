@@ -188,16 +188,16 @@ export class TreeView {
 
       if (row.kind === 'item') {
         const selected = this.store.selectedId === row.id ? 'selected' : '';
-        const indent = row.depth * 18;
+        const indent = Math.max(0, row.depth - 1) * 16 + 4;
         htmlParts.push(`
           <div class="tree-row tree-item-row ${selected}" data-row-id="${row.id}" data-kind="item" tabindex="0">
-            <div class="col-tag" style="padding-left:${indent}px">
+            <div class="col-tree" style="padding-left:${indent}px">
               <button class="tree-chevron" data-toggle="${row.id}" tabindex="-1">
                 ${row.isExpanded ? icons.chevronDown(14) : icons.chevronRight(14)}
               </button>
               <span class="item-badge">Item #${row.itemIndex}</span>
+              <span class="tag-name muted">${escapeHtml(t('seqItemDesc', { n: row.childCount }))}</span>
             </div>
-            <div class="col-name muted">${escapeHtml(t('seqItemDesc', { n: row.childCount }))}</div>
             <div class="col-vr"></div>
             <div class="col-vm"></div>
             <div class="col-len"></div>
@@ -217,7 +217,7 @@ export class TreeView {
       const privateCls = n.isPrivate ? 'is-private' : '';
       const seqCls = n.isSequence ? 'is-sequence' : '';
       const metaCls = n.isMeta ? 'is-meta' : '';
-      const indent = row.depth * 18;
+      const indent = Math.max(0, row.depth - 1) * 16 + 4;
 
       const vm = computeVm(n);
       const byteLen = n.isSequence
@@ -246,11 +246,9 @@ export class TreeView {
       htmlParts.push(`
         <div class="tree-row ${selected} ${statusCls} ${invalidCls} ${privateCls} ${seqCls} ${metaCls}"
              data-row-id="${n.id}" data-kind="tag" tabindex="0">
-          <div class="col-tag" style="padding-left:${indent}px">
+          <div class="col-tree" style="padding-left:${indent}px" title="${n.formattedTag} ${escapeHtml(n.name)} (${escapeHtml(n.keyword)})">
             ${chevronHtml}
             <span class="tag-code">${n.formattedTag}</span>
-          </div>
-          <div class="col-name" title="${escapeHtml(n.name)} (${escapeHtml(n.keyword)})">
             <span class="tag-name">${escapeHtml(n.keyword !== 'UnknownTag' ? n.keyword : n.name)}</span>
             ${n.isPrivate ? '<span class="mini-badge badge-private">PRIV</span>' : ''}
             ${invalid ? `<span class="mini-badge badge-err" title="${escapeHtml(n.validation.messages.join(' / '))}">${icons.alertCircle(12)}</span>` : ''}
