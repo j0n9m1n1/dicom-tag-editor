@@ -13,13 +13,17 @@ export class TreeView {
   /**
    * @param {HTMLElement} container
    * @param {import('../state/store.js').AppStore} store
-   * @param {{ onToast?: (msg: string, type?: string) => void }} [callbacks]
+   * @param {{
+   *   onToast?: (msg: string, type?: string) => void,
+   *   onOpenAddTagForItem?: (item: any, parentSeq: any, section: string) => void,
+   * }} [callbacks]
    */
   constructor(container, store, callbacks = {}) {
     this.container = container;
     this.store = store;
     this.callbacks = callbacks;
     this.visibleRows = [];
+    this.filterExpansion = new Map();
     this.inlineEditId = null;
     this._ctxMenu = null;
 
@@ -57,33 +61,20 @@ export class TreeView {
   }
 
   _onContextMenu(e) {
-    const rowEl = e.target.closest('.tree-row[data-kind="tag"]');
+    const rowEl = e.target.closest('.tree-row[data-kind="tag"], .tree-row[data-kind="item"]');
     if (!rowEl) return;
+    const id = rowEl.dataset.rowId;
+    const info = this.store.findNodeInfo(id);
+    if (!info) return;
     e.preventDefault();
     this._closeContextMenu();
-
-    const id = rowEl.dataset.rowId;
-    this.store.selectNode(id);
-    const info = this.store.findNodeInfo(id);
-    if (!info || info.isSeqItem) return;
-    const node = info.node;
+    this._selectRow(id);
 
     const menu = document.createElement('div');
     menu.className = 'ctx-menu';
-    const canEdit = canEditNodeValue(node);
-    const isDeleted = node.status === 'deleted';
-    const canDelete = !getReadOnlyTagMessage(node.tag);
-    const canRevert = canDelete && (node.status === 'modified' || node.status === 'added');
-
-    menu.innerHTML = `
-      <button class="ctx-item" data-ctx="copy-tag">${icons.copy(13)} ${escapeHtml(t('ctxCopyTag'))} <span class="muted mono">${node.formattedTag}</span></button>
-      ${!node.isSequence && !node.isBinary ? `<button class="ctx-item" data-ctx="copy-val">${icons.copy(13)} ${escapeHtml(t('ctxCopyValue'))}</button>` : ''}
-      <button class="ctx-item" data-ctx="copy-line">${icons.code(13)} ${escapeHtml(t('ctxCopyLine'))}</button>
-      <div class="ctx-sep"></div>
-      ${canEdit ? `<button class="ctx-item" data-ctx="edit">${escapeHtml(t('ctxEditInline'))}</button>` : ''}
-      ${canRevert ? `<button class="ctx-item" data-ctx="revert">${icons.rotateCcw(13)} ${escapeHtml(t('ctxRevert'))}</button>` : ''}
-      ${canDelete ? `<button class="ctx-item ${isDeleted ? '' : 'ctx-danger'}" data-ctx="delete">${isDeleted ? icons.rotateCcw(13) : icons.trash(13)} ${escapeHtml(isDeleted ? t('ctxRestore') : t('ctxDelete'))}</button>` : ''}
-    `;
+    menu.innerHTML = info.isSeqItem
+      ? this._itemContextMenu(info, this.visibleRows.find((row) => row.id === id))
+      : this._tagContextMenu(info.node);
 
     document.body.appendChild(menu);
     const rect = menu.getBoundingClientRect();
@@ -95,28 +86,75 @@ export class TreeView {
     menu.addEventListener('click', (ev) => {
       ev.stopPropagation();
       const btn = ev.target.closest('[data-ctx]');
-      if (!btn) return;
-      const act = btn.dataset.ctx;
+      if (!btn || btn.disabled) return;
       this._closeContextMenu();
-
-      if (act === 'copy-tag') {
-        this._copyText(node.formattedTag);
-      } else if (act === 'copy-val') {
-        this._copyText(node.value || '');
-      } else if (act === 'copy-line') {
-        const vm = computeVm(node);
-        const val = node.isBinary || node.isSequence ? node.value || `(${node.vr})` : `[${node.value || ''}]`;
-        this._copyText(`${node.formattedTag.toLowerCase()} ${node.vr} ${val} # ${vm} ${node.keyword}`);
-      } else if (act === 'edit') {
-        this.startInlineEdit(node.id);
-      } else if (act === 'revert') {
-        this.store.revertNode(node.id);
-      } else if (act === 'delete') {
-        this.store.toggleDeleteNode(node.id);
+      const current = this.store.findNodeInfo(id);
+      if (!current) return;
+      if (current.isSeqItem) {
+        this._runItemContextAction(current, btn.dataset.ctx);
+      } else {
+        this._runTagContextAction(current.node, btn.dataset.ctx);
       }
     });
 
     this._ctxMenu = menu;
+  }
+
+  _itemContextMenu(info, row) {
+    const disabled = info.parentSeq.status === 'deleted' ? 'disabled' : '';
+    return `
+      ${row?.hasChildren ? `<button class="ctx-item" data-ctx="toggle-item">${row.isExpanded ? icons.chevronDown(13) : icons.chevronRight(13)} ${escapeHtml(t(row.isExpanded ? 'treeCollapseBranch' : 'treeExpandBranch'))}</button>` : ''}
+      <button class="ctx-item" data-ctx="add-tag-in-item" ${disabled}>${icons.plus(13)} ${escapeHtml(t('inspAddTagInItem'))}</button>
+      <button class="ctx-item ctx-danger" data-ctx="delete-item" ${disabled}>${icons.trash(13)} ${escapeHtml(t('inspDeleteSeqItem'))}</button>
+    `;
+  }
+
+  _runItemContextAction(info, action) {
+    if (action === 'toggle-item') {
+      this._toggleRow(this.visibleRows.find((row) => row.id === info.item.id));
+      return;
+    }
+    if (info.parentSeq.status === 'deleted') return;
+    if (action === 'add-tag-in-item') {
+      this.callbacks.onOpenAddTagForItem?.(info.item, info.parentSeq, info.section);
+    } else if (action === 'delete-item') {
+      this.store.removeSequenceItem(info.item.id);
+    }
+  }
+
+  _tagContextMenu(node) {
+    const canEdit = canEditNodeValue(node);
+    const isDeleted = node.status === 'deleted';
+    const canDelete = !getReadOnlyTagMessage(node.tag);
+    const canRevert = canDelete && (node.status === 'modified' || node.status === 'added');
+
+    return `
+      <button class="ctx-item" data-ctx="copy-tag">${icons.copy(13)} ${escapeHtml(t('ctxCopyTag'))} <span class="muted mono">${node.formattedTag}</span></button>
+      ${!node.isSequence && !node.isBinary ? `<button class="ctx-item" data-ctx="copy-val">${icons.copy(13)} ${escapeHtml(t('ctxCopyValue'))}</button>` : ''}
+      <button class="ctx-item" data-ctx="copy-line">${icons.code(13)} ${escapeHtml(t('ctxCopyLine'))}</button>
+      <div class="ctx-sep"></div>
+      ${canEdit ? `<button class="ctx-item" data-ctx="edit">${escapeHtml(t('ctxEditInline'))}</button>` : ''}
+      ${canRevert ? `<button class="ctx-item" data-ctx="revert">${icons.rotateCcw(13)} ${escapeHtml(t('ctxRevert'))}</button>` : ''}
+      ${canDelete ? `<button class="ctx-item ${isDeleted ? '' : 'ctx-danger'}" data-ctx="delete">${isDeleted ? icons.rotateCcw(13) : icons.trash(13)} ${escapeHtml(isDeleted ? t('ctxRestore') : t('ctxDelete'))}</button>` : ''}
+    `;
+  }
+
+  _runTagContextAction(node, action) {
+    if (action === 'copy-tag') {
+      this._copyText(node.formattedTag);
+    } else if (action === 'copy-val') {
+      this._copyText(node.value || '');
+    } else if (action === 'copy-line') {
+      const vm = computeVm(node);
+      const val = node.isBinary || node.isSequence ? node.value || `(${node.vr})` : `[${node.value || ''}]`;
+      this._copyText(`${node.formattedTag.toLowerCase()} ${node.vr} ${val} # ${vm} ${node.keyword}`);
+    } else if (action === 'edit') {
+      this.startInlineEdit(node.id);
+    } else if (action === 'revert') {
+      this.store.revertNode(node.id);
+    } else if (action === 'delete') {
+      this.store.toggleDeleteNode(node.id);
+    }
   }
 
   _matchesQuery(node, q, qHex) {
@@ -186,15 +224,21 @@ export class TreeView {
     const isTagLike = /^[0-9a-f(),\s]+$/.test(q);
     const qHex = isTagLike ? q.replace(/[^0-9a-f]/g, '') : '';
     const mode = this.store.filterMode;
+    const filtering = Boolean(q || mode !== 'all');
     const rows = [];
+    const expanded = (id, hasChildren, autoExpand) => hasChildren && (
+      (filtering ? this.filterExpansion.get(id) : undefined) ?? (autoExpand || this.store.expandedIds.has(id))
+    );
 
-    const pushNodes = (entries, depth) => {
+    const pushNodes = (entries, depth, parentId) => {
       for (const { node, filteredItems, forceExpand } of entries) {
-        const isExpanded = forceExpand || this.store.expandedIds.has(node.id);
-        rows.push({ kind: 'tag', id: node.id, node, depth, isExpanded });
-        if (node.isSequence && isExpanded && filteredItems) {
+        const hasChildren = Boolean(filteredItems?.length);
+        const isExpanded = expanded(node.id, hasChildren, forceExpand);
+        rows.push({ kind: 'tag', id: node.id, node, depth, parentId, hasChildren, isExpanded });
+        if (isExpanded) {
           for (const { item, index, children } of filteredItems) {
-            const itemExpanded = forceExpand || this.store.expandedIds.has(item.id);
+            const itemHasChildren = children.length > 0;
+            const itemExpanded = expanded(item.id, itemHasChildren, forceExpand);
             rows.push({
               kind: 'item',
               id: item.id,
@@ -203,10 +247,12 @@ export class TreeView {
               itemIndex: index,
               childCount: (item.children || []).length,
               depth: depth + 1,
+              parentId: node.id,
+              hasChildren: itemHasChildren,
               isExpanded: itemExpanded,
             });
             if (itemExpanded) {
-              pushNodes(children, depth + 2);
+              pushNodes(children, depth + 2, item.id);
             }
           }
         }
@@ -217,38 +263,40 @@ export class TreeView {
     const mainEntries = this._filterTree(doc.datasetNodes, q, qHex, mode);
 
     if (doc.hasPart10Header && (metaEntries.length > 0 || (!q && (mode === 'all' || mode === 'meta')))) {
-      const metaExp = Boolean(q || mode !== 'all') || this.store.expandedIds.has('__meta__');
-      rows.push({
-        kind: 'section',
-        id: '__meta__',
-        label: t('sectionMeta'),
-        count: metaEntries.length,
-        isExpanded: metaExp,
-        sectionType: 'meta',
-      });
-      if (metaExp) pushNodes(metaEntries, 1);
+      pushSection('meta', t('sectionMeta'), metaEntries);
     }
 
     if (mainEntries.length > 0 || (!q && mode !== 'meta')) {
-      const mainExp = Boolean(q || mode !== 'all') || this.store.expandedIds.has('__main__');
-      rows.push({
-        kind: 'section',
-        id: '__main__',
-        label: t('sectionMain'),
-        count: mainEntries.length,
-        isExpanded: mainExp,
-        sectionType: 'main',
-      });
-      if (mainExp) pushNodes(mainEntries, 1);
+      pushSection('main', t('sectionMain'), mainEntries);
     }
 
     return rows;
+
+    function pushSection(sectionType, label, entries) {
+      const id = `__${sectionType}__`;
+      const hasChildren = entries.length > 0;
+      const isExpanded = expanded(id, hasChildren, filtering);
+      rows.push({
+        kind: 'section', id, label, count: entries.length, depth: 0, hasChildren, isExpanded, sectionType,
+      });
+      if (isExpanded) pushNodes(entries, 1, id);
+    }
   }
 
-  render() {
+  render(reason) {
+    if (reason === 'selection') {
+      this._syncSelection();
+      return;
+    }
+    if (reason === 'document' || reason === 'filter' || reason === 'tree') {
+      this.filterExpansion.clear();
+    }
+    this._closeContextMenu();
+    this.container.setAttribute('aria-label', t('treeLabel'));
     if (!this.store.doc) {
       this.visibleRows = [];
       this.container.innerHTML = '';
+      this.container.removeAttribute('aria-activedescendant');
       return;
     }
 
@@ -256,6 +304,7 @@ export class TreeView {
     this.visibleRows = this._buildVisibleRows();
 
     if (this.visibleRows.length === 0) {
+      this.container.removeAttribute('aria-activedescendant');
       this.container.innerHTML = `
         <div class="tree-empty">
           <p>${escapeHtml(t('treeEmptyMsg'))}</p>
@@ -267,13 +316,15 @@ export class TreeView {
 
     const htmlParts = [];
     for (const row of this.visibleRows) {
+      const attrs = `id="tree-row-${row.id}" data-row-id="${row.id}" data-kind="${row.kind}" role="treeitem" aria-level="${row.depth + 1}" aria-selected="false"${row.hasChildren ? ` aria-expanded="${row.isExpanded}"` : ''}`;
+      const chevron = row.hasChildren
+        ? `<button type="button" class="tree-chevron" data-toggle="${row.id}" tabindex="-1" aria-label="${escapeHtml(t(row.isExpanded ? 'treeCollapseBranch' : 'treeExpandBranch'))}">${row.isExpanded ? icons.chevronDown(14) : icons.chevronRight(14)}</button>`
+        : '<span class="tree-chevron-spacer"></span>';
       if (row.kind === 'section') {
         htmlParts.push(`
-          <div class="tree-row tree-section-row section-${row.sectionType}" data-row-id="${row.id}" data-kind="section">
+          <div class="tree-row tree-section-row section-${row.sectionType}" ${attrs}>
             <div class="col-tag-group">
-              <button class="tree-chevron" data-toggle="${row.id}" tabindex="-1">
-                ${row.isExpanded ? icons.chevronDown(14) : icons.chevronRight(14)}
-              </button>
+              ${chevron}
               <span class="section-label">${escapeHtml(row.label)}</span>
               <span class="section-count">${row.count}</span>
             </div>
@@ -283,14 +334,11 @@ export class TreeView {
       }
 
       if (row.kind === 'item') {
-        const selected = this.store.selectedId === row.id ? 'selected' : '';
         const indent = Math.max(0, row.depth - 1) * 16 + 4;
         htmlParts.push(`
-          <div class="tree-row tree-item-row ${selected}" data-row-id="${row.id}" data-kind="item" tabindex="0">
+          <div class="tree-row tree-item-row" ${attrs}>
             <div class="col-tag" style="padding-left:${indent}px">
-              <button class="tree-chevron" data-toggle="${row.id}" tabindex="-1">
-                ${row.isExpanded ? icons.chevronDown(14) : icons.chevronRight(14)}
-              </button>
+              ${chevron}
               <span class="item-badge">Item #${row.itemIndex}</span>
             </div>
             <div class="col-name muted"><span class="tag-name">${escapeHtml(t('seqItemDesc', { n: row.childCount }))}</span></div>
@@ -306,7 +354,6 @@ export class TreeView {
       // Standard / Private / SQ tag row
       const n = row.node;
       const spec = getVrSpec(n.vr);
-      const selected = this.store.selectedId === n.id ? 'selected' : '';
       const invalid = n.status !== 'deleted' && n.validation && !n.validation.valid;
       const statusCls = `status-${n.status}`;
       const invalidCls = invalid ? 'has-error' : '';
@@ -335,15 +382,10 @@ export class TreeView {
         valueHtml = `<span class="val-text" title="${escapeHtml(n.value)}">${escapeHtml(n.value)}</span>`;
       }
 
-      const chevronHtml = n.isSequence
-        ? `<button class="tree-chevron" data-toggle="${n.id}" tabindex="-1">${row.isExpanded ? icons.chevronDown(14) : icons.chevronRight(14)}</button>`
-        : `<span class="tree-chevron-spacer"></span>`;
-
       htmlParts.push(`
-        <div class="tree-row ${selected} ${statusCls} ${invalidCls} ${privateCls} ${seqCls} ${metaCls}"
-             data-row-id="${n.id}" data-kind="tag" tabindex="0">
+        <div class="tree-row ${statusCls} ${invalidCls} ${privateCls} ${seqCls} ${metaCls}" ${attrs}>
           <div class="col-tag" style="padding-left:${indent}px" title="${n.formattedTag}">
-            ${chevronHtml}
+            ${chevron}
             <span class="tag-code">${n.formattedTag}</span>
           </div>
           <div class="col-name" title="${escapeHtml(n.name)} (${escapeHtml(n.keyword)})">
@@ -358,7 +400,6 @@ export class TreeView {
           <div class="col-len">${byteLen}</div>
           <div class="col-val">
             ${valueHtml}
-            ${selected ? `<button class="btn btn-xs btn-primary mob-edit-pill" data-mob-inspect="${n.id}">${escapeHtml(t('mobEditTagBtn'))}</button>` : ''}
           </div>
         </div>
       `);
@@ -366,6 +407,7 @@ export class TreeView {
 
     this.container.innerHTML = htmlParts.join('');
     this.container.scrollTop = prevScroll;
+    this._syncSelection();
 
     if (this.inlineEditId) {
       const inp = this.container.querySelector(`input[data-inline-id="${this.inlineEditId}"]`);
@@ -378,15 +420,45 @@ export class TreeView {
             e.preventDefault();
             e.stopPropagation();
             this._commitInlineEdit(inp);
+            this.container.focus({ preventScroll: true });
           } else if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();
             this.inlineEditId = null;
             this.render();
+            this.container.focus({ preventScroll: true });
           }
         });
       }
     }
+  }
+
+  _getRowElement(id) {
+    return this.container.querySelector(`.tree-row[data-row-id="${id}"]`);
+  }
+
+  _syncSelection() {
+    if (this.visibleRows.length === 0) return;
+    const previous = this.container.querySelector('.tree-row.selected');
+    const selected = this._getRowElement(this.store.selectedId);
+    if (previous !== selected) {
+      previous?.classList.remove('selected');
+      previous?.setAttribute('aria-selected', 'false');
+      previous?.querySelector('[data-mob-inspect]')?.remove();
+      if (selected) {
+        selected.classList.add('selected');
+        selected.setAttribute('aria-selected', 'true');
+        if (selected.dataset.kind === 'tag') {
+          selected.querySelector('.col-val').insertAdjacentHTML('beforeend',
+            `<button class="btn btn-xs btn-primary mob-edit-pill" data-mob-inspect="${selected.dataset.rowId}">${escapeHtml(t('mobEditTagBtn'))}</button>`);
+        }
+      }
+    }
+
+    const active = selected || this._getRowElement(this.visibleRows[0].id);
+    this.container.querySelector('.tree-row.is-active')?.classList.remove('is-active');
+    active.classList.add('is-active');
+    this.container.setAttribute('aria-activedescendant', active.id);
   }
 
   _commitInlineEdit(inputEl) {
@@ -408,6 +480,21 @@ export class TreeView {
     this.render();
   }
 
+  _selectRow(id) {
+    this.store.selectNode(id);
+    this.container.focus({ preventScroll: true });
+  }
+
+  _toggleRow(row) {
+    if (!row?.hasChildren) return;
+    if (this.store.searchQuery.trim() || this.store.filterMode !== 'all') {
+      this.filterExpansion.set(row.id, !row.isExpanded);
+      this.render();
+    } else {
+      this.store.toggleExpand(row.id);
+    }
+  }
+
   _onClick(e) {
     const mobBtn = e.target.closest('[data-mob-inspect]');
     if (mobBtn) {
@@ -424,100 +511,91 @@ export class TreeView {
       return;
     }
 
-    const toggleBtn = e.target.closest('[data-toggle]');
-    if (toggleBtn) {
-      e.stopPropagation();
-      this.store.toggleExpand(toggleBtn.dataset.toggle);
-      return;
-    }
-
     if (e.target.closest('.inline-edit-input')) return;
 
     const rowEl = e.target.closest('.tree-row');
     if (!rowEl) return;
     const id = rowEl.dataset.rowId;
-    const kind = rowEl.dataset.kind;
-
-    if (kind === 'section') {
-      this.store.toggleExpand(id);
-      return;
+    this._selectRow(id);
+    if (rowEl.dataset.kind === 'section' || e.target.closest('[data-toggle]')) {
+      this._toggleRow(this.visibleRows.find((row) => row.id === id));
     }
-
-    this.store.selectNode(id);
   }
 
   _onDblClick(e) {
-    if (e.target.closest('.inline-edit-input')) return;
+    if (e.target.closest('button, .inline-edit-input')) return;
     const rowEl = e.target.closest('.tree-row');
     if (!rowEl) return;
-    const id = rowEl.dataset.rowId;
-    const kind = rowEl.dataset.kind;
-
-    if (kind === 'item') {
-      this.store.toggleExpand(id);
-      return;
-    }
-    if (kind === 'tag') {
-      const info = this.store.findNodeInfo(id);
-      if (info && !info.isSeqItem && info.node.isSequence) {
-        this.store.toggleExpand(id);
-      } else {
-        this.startInlineEdit(id);
-      }
+    const row = this.visibleRows.find((item) => item.id === rowEl.dataset.rowId);
+    if (row?.kind === 'item' || row?.node?.isSequence) {
+      this._toggleRow(row);
+    } else if (row?.kind === 'tag') {
+      this.startInlineEdit(row.id);
     }
   }
 
   _onKeyDown(e) {
-    if (e.target.closest('.inline-edit-input')) return;
-    const selectable = this.visibleRows.filter((r) => r.kind === 'tag' || r.kind === 'item');
-    if (selectable.length === 0) return;
+    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey ||
+        e.target.closest('button, input, textarea, select, [contenteditable]')) return;
+    if (this.visibleRows.length === 0) return;
 
-    const idx = selectable.findIndex((r) => r.id === this.store.selectedId);
+    const selectedIndex = this.visibleRows.findIndex((row) => row.id === this.store.selectedId);
+    const index = Math.max(0, selectedIndex);
+    const current = this.visibleRows[index];
+    let targetId;
 
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      const next = selectable[Math.min(selectable.length - 1, idx + 1)];
-      if (next) {
-        this.store.selectNode(next.id);
-        this.scrollToNode(next.id);
+    switch (e.key) {
+      case 'ArrowDown':
+      case 'ArrowUp': {
+        const step = selectedIndex < 0 ? 0 : e.key === 'ArrowDown' ? 1 : -1;
+        const nextIndex = Math.max(0, Math.min(this.visibleRows.length - 1, index + step));
+        targetId = this.visibleRows[nextIndex].id;
+        break;
       }
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      const prev = selectable[Math.max(0, idx - 1)];
-      if (prev) {
-        this.store.selectNode(prev.id);
-        this.scrollToNode(prev.id);
+      case 'ArrowRight': {
+        if (current.hasChildren && !current.isExpanded) {
+          e.preventDefault();
+          this.store.selectNode(current.id);
+          this._toggleRow(current);
+          return;
+        }
+        const next = this.visibleRows[index + 1];
+        if (next?.parentId === current.id) targetId = next.id;
+        break;
       }
-    } else if (e.key === 'ArrowRight') {
-      const cur = selectable[idx];
-      if (cur && (cur.kind === 'item' || cur.node?.isSequence) && !cur.isExpanded) {
+      case 'ArrowLeft':
+        if (current.isExpanded) {
+          e.preventDefault();
+          this.store.selectNode(current.id);
+          this._toggleRow(current);
+          return;
+        }
+        targetId = current.parentId;
+        break;
+      case 'F2':
+        if (selectedIndex < 0 || current.kind !== 'tag' || !canEditNodeValue(current.node)) return;
         e.preventDefault();
-        this.store.toggleExpand(cur.id);
-      }
-    } else if (e.key === 'ArrowLeft') {
-      const cur = selectable[idx];
-      if (cur && (cur.kind === 'item' || cur.node?.isSequence) && cur.isExpanded) {
+        this.startInlineEdit(current.id);
+        return;
+      case 'Delete':
+        if (selectedIndex < 0 || current.kind !== 'tag') return;
         e.preventDefault();
-        this.store.toggleExpand(cur.id);
-      }
-    } else if (e.key === 'F2') {
-      if (this.store.selectedId) {
-        e.preventDefault();
-        this.startInlineEdit(this.store.selectedId);
-      }
-    } else if (e.key === 'Delete') {
-      const cur = selectable[idx];
-      if (cur && cur.kind === 'tag') {
-        e.preventDefault();
-        this.store.toggleDeleteNode(cur.id);
-      }
+        this.store.toggleDeleteNode(current.id);
+        return;
+      default:
+        return;
+    }
+
+    e.preventDefault();
+    if (targetId) {
+      this.store.selectNode(targetId);
+      this.scrollToNode(targetId);
     }
   }
 
   scrollToNode(id) {
     requestAnimationFrame(() => {
-      const el = this.container.querySelector(`.tree-row[data-row-id="${id}"]`);
-      if (el) el.scrollIntoView({ block: 'nearest' });
+      this._getRowElement(id)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     });
   }
 }

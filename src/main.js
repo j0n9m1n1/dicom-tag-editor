@@ -130,8 +130,13 @@ function applyLanguage() {
 }
 
 // Instantiate UI controllers
+function openAddTagForItem(item, parentSeq, section) {
+  modals.openAddTag({ item, parentSeq, section });
+}
+
 const treeView = new TreeView(treeBody, store, {
   onToast: showToast,
+  onOpenAddTagForItem: openAddTagForItem,
 });
 
 const modals = new ModalManager(modalRoot, store, {
@@ -157,9 +162,7 @@ const fileListPanel = new FileListPanel(fileListPane, store, {
 });
 
 const inspector = new InspectorPanel(inspectorContainer, store, {
-  onOpenAddTagForItem: (item, parentSeq, section) => {
-    modals.openAddTag({ item, parentSeq, section });
-  },
+  onOpenAddTagForItem: openAddTagForItem,
   onToast: showToast,
 });
 
@@ -288,12 +291,17 @@ store.subscribe((reason) => {
     applyTheme();
     return;
   }
+  if (reason === 'selection') {
+    treeView.render(reason);
+    inspector.render(reason);
+    return;
+  }
   if (reason === 'lang') {
     applyLanguage();
   }
   updateToolbarAndHeader();
   fileListPanel.render();
-  treeView.render();
+  treeView.render(reason);
   inspector.render(reason);
   pixelPanel.sync(reason === 'document' || reason === 'layout' || reason === 'lang');
 });

@@ -740,6 +740,15 @@ code {
   border-left-color: var(--accent);
 }
 
+.tree-body:focus-visible[aria-activedescendant] {
+  outline: none;
+}
+
+.tree-body:focus-visible .tree-row.is-active {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 /* Status color coding */
 .tree-row.status-modified {
   background: var(--st-mod-bg);
@@ -2202,15 +2211,20 @@ kbd {
   cursor: pointer;
 }
 
-.ctx-item:hover {
+.ctx-item:hover:not(:disabled) {
   background: var(--bg-hover);
 }
 
 .ctx-item.ctx-danger {
   color: var(--st-del-color);
 }
-.ctx-item.ctx-danger:hover {
+.ctx-item.ctx-danger:hover:not(:disabled) {
   background: var(--st-del-bg);
+}
+
+.ctx-item:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .ctx-sep {
