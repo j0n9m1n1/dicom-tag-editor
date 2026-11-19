@@ -9,6 +9,7 @@ import { getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
 import { hasNonAscii, isUtf8Charset } from '../dicom/charset.js';
 import { computeVm, formatByteSize } from '../dicom/parser.js';
 import { icons, escapeHtml } from './icons.js';
+import { t, getLocalizedVrText } from '../i18n.js';
 
 function buildHexDump(bytes, maxBytes = 256) {
   if (!bytes || bytes.length === 0) return '(0 bytes)';
@@ -77,7 +78,7 @@ export class InspectorPanel {
       this._renderedNodeId = null;
       this.container.innerHTML = `
         <div class="inspector-empty">
-          <p>DICOM 파일을 열면 선택한 태그의<br/>VR 표준 스펙과 편집기가 표시됩니다.</p>
+          <p>${t('inspEmptyNoDoc')}</p>
         </div>
       `;
       return;
@@ -88,7 +89,7 @@ export class InspectorPanel {
       this._renderedNodeId = null;
       this.container.innerHTML = `
         <div class="inspector-empty">
-          <p>왼쪽 트리에서 태그를 선택하세요.</p>
+          <p>${escapeHtml(t('inspEmptySelect'))}</p>
         </div>
       `;
       return;
@@ -137,15 +138,14 @@ export class InspectorPanel {
         <div class="insp-breadcrumb">${escapeHtml(path.join(' › '))}</div>
         <div class="insp-header">
           <span class="item-badge">Item #${itemIndex}</span>
-          <span class="insp-title">${escapeHtml(parentSeq.keyword)} 항목</span>
+          <span class="insp-title">${escapeHtml(t('inspSeqItemTitle', { keyword: parentSeq.keyword }))}</span>
         </div>
         <p class="insp-desc">
-          상위 시퀀스 <code>${parentSeq.formattedTag}</code>에 속한 데이터셋 항목입니다.
-          현재 하위 태그 <strong>${childCount}개</strong>를 포함하고 있습니다.
+          ${t('inspSeqItemDesc', { tag: escapeHtml(parentSeq.formattedTag), count: childCount })}
         </p>
         <div class="insp-actions">
           <button class="btn btn-primary btn-sm" data-action="add-tag-in-item">
-            ${icons.plus(14)} 이 Item 안에 태그 추가
+            ${icons.plus(14)} ${escapeHtml(t('inspAddTagInItem'))}
           </button>
         </div>
       </div>
@@ -155,6 +155,7 @@ export class InspectorPanel {
   _renderNode(info) {
     const { node, path } = info;
     const spec = getVrSpec(node.vr);
+    const vrText = getLocalizedVrText(spec);
     const isDeleted = node.status === 'deleted';
     const charset = this.store.getSpecificCharacterSet();
     const needsUtf8Warn =
@@ -164,24 +165,24 @@ export class InspectorPanel {
       !isUtf8Charset(charset);
 
     const statusBadgeMap = {
-      unchanged: '<span class="status-pill st-unchanged">원본</span>',
-      modified: '<span class="status-pill st-modified">수정됨</span>',
-      added: '<span class="status-pill st-added">추가됨</span>',
-      deleted: '<span class="status-pill st-deleted">삭제 예정</span>',
+      unchanged: `<span class="status-pill st-unchanged">${escapeHtml(t('stUnchanged'))}</span>`,
+      modified: `<span class="status-pill st-modified">${escapeHtml(t('stModified'))}</span>`,
+      added: `<span class="status-pill st-added">${escapeHtml(t('stAdded'))}</span>`,
+      deleted: `<span class="status-pill st-deleted">${escapeHtml(t('stDeleted'))}</span>`,
     };
 
     const maxLenText = spec.fixedLength
-      ? `${spec.fixedLength} bytes (고정)`
+      ? t('inspLenFixed', { n: spec.fixedLength })
       : spec.maxLength
-        ? `최대 ${spec.maxLength} ${spec.lengthUnit}`
-        : '제한 없음';
+        ? t('inspLenMax', { n: spec.maxLength, unit: spec.lengthUnit })
+        : t('inspLenUnlimited');
 
     const padText =
       spec.padding === 'null'
-        ? '0x00 (NULL)'
+        ? t('inspPadNull')
         : spec.padding === 'space'
-          ? '0x20 (Space)'
-          : '없음 (짝수 고정)';
+          ? t('inspPadSpace')
+          : t('inspPadNone');
 
     this.container.innerHTML = `
       <div class="insp-section insp-top">
@@ -193,30 +194,30 @@ export class InspectorPanel {
           ${node.isMeta ? '<span class="mini-badge badge-meta">Meta 0002</span>' : ''}
         </div>
         <div class="insp-title">${escapeHtml(node.name)}</div>
-        <div class="insp-keyword">Keyword: <code>${escapeHtml(node.keyword)}</code> · 표준 VM: <code>${escapeHtml(node.vmSpec || '1')}</code></div>
+        <div class="insp-keyword">${t('inspKeywordLine', { keyword: escapeHtml(node.keyword), vm: escapeHtml(node.vmSpec || '1') })}</div>
       </div>
 
       <div class="insp-section">
-        <div class="insp-section-title">VR 표준 스펙</div>
+        <div class="insp-section-title">${escapeHtml(t('inspVrSpecTitle'))}</div>
         <div class="vr-spec-card">
           <div class="vr-spec-head">
             <span class="vr-pill vr-cat-${spec.category}">${escapeHtml(node.vr)}</span>
             <strong>${escapeHtml(spec.name)}</strong>
           </div>
           <div class="vr-spec-grid">
-            <div><span class="lbl">분류</span><span>${escapeHtml(spec.category)}</span></div>
-            <div><span class="lbl">표준 길이</span><span>${escapeHtml(maxLenText)}</span></div>
-            <div><span class="lbl">다중값(VM)</span><span>${spec.allowMultiValue ? '허용 (\\ 구분)' : '단일값 고정'}</span></div>
-            <div><span class="lbl">짝수 패딩</span><span>${escapeHtml(padText)}</span></div>
+            <div><span class="lbl">${escapeHtml(t('inspSpecCategory'))}</span><span>${escapeHtml(spec.category)}</span></div>
+            <div><span class="lbl">${escapeHtml(t('inspSpecLength'))}</span><span>${escapeHtml(maxLenText)}</span></div>
+            <div><span class="lbl">${escapeHtml(t('inspSpecVm'))}</span><span>${escapeHtml(spec.allowMultiValue ? t('inspVmAllowed') : t('inspVmSingle'))}</span></div>
+            <div><span class="lbl">${escapeHtml(t('inspSpecPadding'))}</span><span>${escapeHtml(padText)}</span></div>
           </div>
-          <div class="vr-spec-hint"><strong>형식:</strong> ${escapeHtml(spec.formatHint)}</div>
-          <div class="vr-spec-desc">${escapeHtml(spec.description)}</div>
+          <div class="vr-spec-hint"><strong>${escapeHtml(t('inspFormatLabel'))}</strong> ${escapeHtml(vrText.formatHint)}</div>
+          <div class="vr-spec-desc">${escapeHtml(vrText.description)}</div>
         </div>
       </div>
 
       <div class="insp-section">
         <div class="insp-section-header">
-          <div class="insp-section-title">값 편집</div>
+          <div class="insp-section-title">${escapeHtml(t('inspEditTitle'))}</div>
           ${this._renderEditorModeToggle(node, spec)}
         </div>
         ${this._renderValueEditor(node, spec, isDeleted)}
@@ -225,7 +226,7 @@ export class InspectorPanel {
 
       ${node.status === 'modified' && !node.isBinary && !node.isSequence ? `
         <div class="insp-section insp-diff-box">
-          <div class="insp-section-title">원본 값 비교</div>
+          <div class="insp-section-title">${escapeHtml(t('inspOrigCompareTitle'))}</div>
           <div class="diff-orig"><code>${escapeHtml(node.originalValue || '(empty)')}</code></div>
         </div>
       ` : ''}
@@ -233,14 +234,14 @@ export class InspectorPanel {
       <div class="insp-section insp-footer-actions">
         ${node.status === 'modified' || node.status === 'added' ? `
           <button class="btn btn-sm" data-action="revert-node">
-            ${icons.rotateCcw(14)} ${node.status === 'added' ? '추가 취소' : '원본 복원'}
+            ${icons.rotateCcw(14)} ${escapeHtml(node.status === 'added' ? t('inspCancelAdd') : t('inspRevertOrig'))}
           </button>
         ` : ''}
         ${node.tag !== '00020010' ? `
           <button class="btn btn-sm ${isDeleted ? 'btn-primary' : 'btn-danger-ghost'}" data-action="toggle-delete">
-            ${isDeleted ? `${icons.rotateCcw(14)} 삭제 취소` : `${icons.trash(14)} 태그 삭제`}
+            ${isDeleted ? `${icons.rotateCcw(14)} ${escapeHtml(t('inspRestoreDel'))}` : `${icons.trash(14)} ${escapeHtml(t('inspDeleteTag'))}`}
           </button>
-        ` : `<span class="muted small">TransferSyntaxUID는 삭제할 수 없습니다.</span>`}
+        ` : `<span class="muted small">${escapeHtml(t('inspCannotDeleteTs'))}</span>`}
       </div>
     `;
   }
@@ -249,7 +250,7 @@ export class InspectorPanel {
     if (node.isBinary || node.isSequence || !spec.allowMultiValue) return '';
     return `
       <button class="btn-link small" data-action="toggle-mv-mode">
-        ${this._multiValueMode ? '원문(\\) 편집으로 전환' : '다중값 리스트 편집'}
+        ${escapeHtml(this._multiValueMode ? t('inspSwitchRaw') : t('inspSwitchMv'))}
       </button>
     `;
   }
@@ -259,9 +260,9 @@ export class InspectorPanel {
       const count = (node.items || []).length;
       return `
         <div class="seq-editor-box">
-          <p class="muted small">하위 Item <strong>${count}개</strong>가 포함되어 있습니다. 트리에서 펼쳐 개별 태그를 수정하세요.</p>
+          <p class="muted small">${t('inspSeqBoxDesc', { count })}</p>
           <button class="btn btn-sm btn-primary" data-action="add-seq-item" ${isDeleted ? 'disabled' : ''}>
-            ${icons.plus(14)} 새 Sequence Item 추가
+            ${icons.plus(14)} ${escapeHtml(t('inspAddSeqItem'))}
           </button>
         </div>
       `;
@@ -272,10 +273,10 @@ export class InspectorPanel {
       return `
         <div class="binary-editor-box">
           <div class="binary-meta">
-            <span>크기: <strong>${formatByteSize(node.rawLength)}</strong></span>
-            <span>${node.encapsulated ? `압축 프래그먼트 ${(node.fragments || []).length}개` : 'Raw Binary'}</span>
+            <span>${escapeHtml(t('inspBinarySize'))} <strong>${formatByteSize(node.rawLength)}</strong></span>
+            <span>${node.encapsulated ? escapeHtml(t('inspBinaryEncap', { n: (node.fragments || []).length })) : 'Raw Binary'}</span>
           </div>
-          <p class="muted small">바이너리 무결성 보호를 위해 읽기 전용 Hex 프리뷰로 표시됩니다. 저장 시 원본 바이트가 그대로 보존됩니다.</p>
+          <p class="muted small">${escapeHtml(t('inspBinaryNote'))}</p>
           <pre class="hex-dump">${escapeHtml(dump)}</pre>
         </div>
       `;
@@ -290,7 +291,7 @@ export class InspectorPanel {
           <div class="mv-row">
             <span class="mv-idx">#${i + 1}</span>
             <input class="input mv-input" data-mv-input="${i}" value="${escapeHtml(p)}" ${isDeleted ? 'disabled' : ''} />
-            <button class="btn-icon" data-action="mv-remove" data-mv-idx="${i}" title="항목 제거" ${isDeleted || parts.length <= 1 ? 'disabled' : ''}>${icons.x(14)}</button>
+            <button class="btn-icon" data-action="mv-remove" data-mv-idx="${i}" title="${escapeHtml(t('inspMvRemoveTitle'))}" ${isDeleted || parts.length <= 1 ? 'disabled' : ''}>${icons.x(14)}</button>
           </div>
         `
         )
@@ -298,7 +299,7 @@ export class InspectorPanel {
       return `
         <div class="mv-editor">
           ${rows}
-          <button class="btn btn-sm" data-action="mv-add" ${isDeleted ? 'disabled' : ''}>${icons.plus(14)} 값 항목 추가</button>
+          <button class="btn btn-sm" data-action="mv-add" ${isDeleted ? 'disabled' : ''}>${icons.plus(14)} ${escapeHtml(t('inspMvAdd'))}</button>
         </div>
       `;
     }
@@ -318,20 +319,20 @@ export class InspectorPanel {
         : '';
       helperHtml = `
         <div class="quick-helpers">
-          <input type="date" class="input input-sm" data-action="pick-date" value="${isoVal}" title="달력에서 날짜 선택" />
-          <button class="btn btn-sm" data-action="fill-today">오늘 (${getTodayDicomDate()})</button>
+          <input type="date" class="input input-sm" data-action="pick-date" value="${isoVal}" title="${escapeHtml(t('inspPickDateTitle'))}" />
+          <button class="btn btn-sm" data-action="fill-today">${escapeHtml(t('inspFillToday', { date: getTodayDicomDate() }))}</button>
         </div>
       `;
     } else if (node.vr === 'TM' && !isDeleted) {
       helperHtml = `
         <div class="quick-helpers">
-          <button class="btn btn-sm" data-action="fill-now">현재 시각 (${getNowDicomTime()})</button>
+          <button class="btn btn-sm" data-action="fill-now">${escapeHtml(t('inspFillNow', { time: getNowDicomTime() }))}</button>
         </div>
       `;
     }
 
     return `
-      <input class="input insp-input" type="text" data-inspector-input="true" value="${escapeHtml(node.value)}" placeholder="(비어 있음)" ${isDeleted ? 'disabled' : ''} />
+      <input class="input insp-input" type="text" data-inspector-input="true" value="${escapeHtml(node.value)}" placeholder="${escapeHtml(t('inspPlaceholderEmpty'))}" ${isDeleted ? 'disabled' : ''} />
       ${helperHtml}
     `;
   }
@@ -367,7 +368,7 @@ export class InspectorPanel {
       statusBox = `
         <div class="val-feedback val-ok">
           ${icons.checkCircle(14)}
-          <span>VR 표준 규칙 통과 (${escapeHtml(node.vr)})</span>
+          <span>${escapeHtml(t('inspVrValidOk', { vr: node.vr }))}</span>
         </div>
       `;
     }
@@ -377,8 +378,8 @@ export class InspectorPanel {
         <div class="val-feedback val-warn charset-warn">
           ${icons.alertCircle(14)}
           <div>
-            <div>비-ASCII 문자(한글 등)가 포함되어 있으나 <code>SpecificCharacterSet</code>이 UTF-8(<code>ISO_IR 192</code>)이 아닙니다.</div>
-            <button class="btn btn-sm btn-primary" data-action="set-utf8" style="margin-top:6px">ISO_IR 192 (UTF-8) 자동 설정</button>
+            <div>${t('inspCharsetWarn')}</div>
+            <button class="btn btn-sm btn-primary" data-action="set-utf8" style="margin-top:6px">${escapeHtml(t('inspSetUtf8Btn'))}</button>
           </div>
         </div>
       `
@@ -386,8 +387,8 @@ export class InspectorPanel {
 
     return `
       <div class="insp-metrics-bar">
-        <span>길이: <strong>${escapeHtml(limitInfo)}</strong></span>
-        <span>바이트: <strong>${byteLen} B</strong>${(byteLen & 1) === 1 ? ' (저장 시 +1B 패딩)' : ''}</span>
+        <span>${escapeHtml(t('inspMetricLen'))} <strong>${escapeHtml(limitInfo)}</strong></span>
+        <span>${escapeHtml(t('inspMetricBytes'))} <strong>${byteLen} B</strong>${(byteLen & 1) === 1 ? escapeHtml(t('inspMetricPadNote')) : ''}</span>
         <span>VM: <strong>${vm}</strong></span>
       </div>
       ${statusBox}

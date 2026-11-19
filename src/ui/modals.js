@@ -9,6 +9,7 @@ import { ALL_VR_CODES, getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
 import { parseTagString, searchDictionary, lookupTag } from '../dicom/dictionary.js';
 import { ANONYMIZE_PRESET_TAGS } from '../state/store.js';
 import { icons, escapeHtml } from './icons.js';
+import { t, getLocalizedVrText } from '../i18n.js';
 
 export class ModalManager {
   /**
@@ -45,8 +46,8 @@ export class ModalManager {
   openAddTag(target = null) {
     if (!this.store.doc) return;
     const targetLabel = target
-      ? `${target.parentSeq.formattedTag} › Item 안에 추가`
-      : 'Main Dataset (0002 그룹 입력 시 File Meta에 추가)';
+      ? t('modalAddTargetItem', { tag: target.parentSeq.formattedTag })
+      : t('modalAddTargetMain');
 
     const vrOptions = ALL_VR_CODES.map((c) => {
       const s = getVrSpec(c);
@@ -57,25 +58,25 @@ export class ModalManager {
       <div class="modal-card modal-md" role="dialog" aria-modal="true">
         <div class="modal-header">
           <div>
-            <h3>새 DICOM 태그 추가</h3>
+            <h3>${escapeHtml(t('modalAddTitle'))}</h3>
             <div class="muted small">${escapeHtml(targetLabel)}</div>
           </div>
           <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label>표준 태그 빠른 검색</label>
-            <input type="text" class="input" id="add-dict-search" placeholder="예: PatientComments, 0010,0020, WindowCenter..." autocomplete="off" />
+            <label>${escapeHtml(t('modalAddSearchLabel'))}</label>
+            <input type="text" class="input" id="add-dict-search" placeholder="${escapeHtml(t('modalAddSearchPh'))}" autocomplete="off" />
             <div class="dict-suggestions" id="add-dict-list"></div>
           </div>
 
           <div class="form-row-2">
             <div class="form-group">
-              <label>Tag (GGGG,EEEE) *</label>
+              <label>${escapeHtml(t('modalAddTagLabel'))}</label>
               <input type="text" class="input mono" id="add-tag-input" placeholder="(0010,4000)" />
             </div>
             <div class="form-group">
-              <label>VR (Value Representation) *</label>
+              <label>${escapeHtml(t('modalAddVrLabel'))}</label>
               <select class="input" id="add-vr-select">${vrOptions}</select>
             </div>
           </div>
@@ -83,14 +84,14 @@ export class ModalManager {
           <div class="vr-mini-hint" id="add-vr-hint"></div>
 
           <div class="form-group">
-            <label>초기 값 (Value)</label>
-            <input type="text" class="input" id="add-val-input" placeholder="값 입력 (SQ / 바이너리는 비워두세요)" />
+            <label>${escapeHtml(t('modalAddValLabel'))}</label>
+            <input type="text" class="input" id="add-val-input" placeholder="${escapeHtml(t('modalAddValPh'))}" />
             <div id="add-val-feedback" class="small" style="margin-top:6px"></div>
           </div>
         </div>
         <div class="modal-footer">
-          <button class="btn" data-modal-close>취소</button>
-          <button class="btn btn-primary" id="btn-confirm-add">${icons.plus(15)} 태그 추가</button>
+          <button class="btn" data-modal-close>${escapeHtml(t('modalCancel'))}</button>
+          <button class="btn btn-primary" id="btn-confirm-add">${icons.plus(15)} ${escapeHtml(t('modalConfirmAdd'))}</button>
         </div>
       </div>
     `;
@@ -110,7 +111,8 @@ export class ModalManager {
 
     const updateVrHint = () => {
       const spec = getVrSpec(vrSel.value);
-      vrHint.innerHTML = `<strong>${spec.code} (${escapeHtml(spec.name)}):</strong> ${escapeHtml(spec.formatHint)}`;
+      const vrText = getLocalizedVrText(spec);
+      vrHint.innerHTML = `<strong>${spec.code} (${escapeHtml(spec.name)}):</strong> ${escapeHtml(vrText.formatHint)}`;
       valInp.disabled = spec.category === 'sequence' || spec.category === 'binary';
       const v = validateVrValue(vrSel.value, valInp.value);
       if (!v.valid) {
@@ -123,7 +125,7 @@ export class ModalManager {
     const renderSuggestions = (q) => {
       const hits = searchDictionary(q, 8);
       if (hits.length === 0) {
-        listEl.innerHTML = '<div class="dict-empty">일치하는 표준 태그 없음 — 아래에 직접 (GGGG,EEEE) 입력 가능</div>';
+        listEl.innerHTML = `<div class="dict-empty">${escapeHtml(t('modalAddNoDict'))}</div>`;
         return;
       }
       listEl.innerHTML = hits
@@ -169,7 +171,7 @@ export class ModalManager {
     confirmBtn.addEventListener('click', () => {
       const parsed = parseTagString(tagInp.value);
       if (!parsed) {
-        feedbackEl.innerHTML = '<span class="text-danger">유효한 8자리 16진수 태그를 입력하세요 (예: (0010,4000)).</span>';
+        feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(t('modalAddInvalidTag'))}</span>`;
         tagInp.focus();
         return;
       }
@@ -183,9 +185,9 @@ export class ModalManager {
       });
       this.close();
       if (res?.duplicate) {
-        this.callbacks.onToast?.(`이미 존재하는 태그 ${parsed.formatted}로 이동했습니다.`, 'warn');
+        this.callbacks.onToast?.(t('toastDupTag', { tag: parsed.formatted }), 'warn');
       } else {
-        this.callbacks.onToast?.(`태그 ${parsed.formatted} (${vrSel.value}) 추가됨`, 'ok');
+        this.callbacks.onToast?.(t('toastAddedTag', { tag: parsed.formatted, vr: vrSel.value }), 'ok');
       }
     });
 
@@ -201,16 +203,16 @@ export class ModalManager {
 
     const rowsHtml =
       stats.diffs.length === 0
-        ? '<div class="modal-empty">아직 변경된 태그가 없습니다.</div>'
+        ? `<div class="modal-empty">${escapeHtml(t('modalDiffEmpty'))}</div>`
         : `
         <table class="diff-table">
           <thead>
             <tr>
-              <th>상태</th>
-              <th>태그 경로</th>
-              <th>이름 / VR</th>
-              <th>원본 값</th>
-              <th>현재 값</th>
+              <th>${escapeHtml(t('modalDiffColStatus'))}</th>
+              <th>${escapeHtml(t('modalDiffColPath'))}</th>
+              <th>${escapeHtml(t('modalDiffColName'))}</th>
+              <th>${escapeHtml(t('modalDiffColOld'))}</th>
+              <th>${escapeHtml(t('modalDiffColNew'))}</th>
               <th></th>
             </tr>
           </thead>
@@ -219,18 +221,18 @@ export class ModalManager {
               .map(({ node, path }) => {
                 const badge =
                   node.status === 'modified'
-                    ? '<span class="status-pill st-modified">수정</span>'
+                    ? `<span class="status-pill st-modified">${escapeHtml(t('modalDiffStMod'))}</span>`
                     : node.status === 'added'
-                      ? '<span class="status-pill st-added">추가</span>'
-                      : '<span class="status-pill st-deleted">삭제</span>';
+                      ? `<span class="status-pill st-added">${escapeHtml(t('modalDiffStAdd'))}</span>`
+                      : `<span class="status-pill st-deleted">${escapeHtml(t('modalDiffStDel'))}</span>`;
                 return `
                 <tr>
                   <td>${badge}</td>
                   <td><button class="btn-link mono" data-jump="${node.id}">${escapeHtml(path)}</button></td>
                   <td>${escapeHtml(node.keyword)} <span class="muted">(${node.vr})</span></td>
                   <td class="mono diff-cell-old">${escapeHtml(node.status === 'added' ? '—' : node.originalValue || '(empty)')}</td>
-                  <td class="mono diff-cell-new">${escapeHtml(node.status === 'deleted' ? '(삭제 예정)' : node.value || '(empty)')}</td>
-                  <td><button class="btn btn-xs" data-diff-revert="${node.id}" title="되돌리기">${icons.rotateCcw(13)}</button></td>
+                  <td class="mono diff-cell-new">${escapeHtml(node.status === 'deleted' ? t('modalDiffWillDelete') : node.value || '(empty)')}</td>
+                  <td><button class="btn btn-xs" data-diff-revert="${node.id}" title="${escapeHtml(t('modalDiffRevertTitle'))}">${icons.rotateCcw(13)}</button></td>
                 </tr>
               `;
               })
@@ -239,12 +241,16 @@ export class ModalManager {
         </table>
       `;
 
+    const summaryLine =
+      `${escapeHtml(t('changeMod', { n: stats.modified }))} · ${escapeHtml(t('changeAdd', { n: stats.added }))} · ${escapeHtml(t('changeDel', { n: stats.deleted }))}` +
+      (stats.invalid > 0 ? ` · <span class="text-danger">${escapeHtml(t('filterInvalid'))} ${stats.invalid}</span>` : '');
+
     this.root.innerHTML = `
       <div class="modal-card modal-lg" role="dialog" aria-modal="true">
         <div class="modal-header">
           <div>
-            <h3>변경 내역 (Diff Summary)</h3>
-            <div class="muted small">수정 ${stats.modified} · 추가 ${stats.added} · 삭제 ${stats.deleted}${stats.invalid > 0 ? ` · <span class="text-danger">VR 오류 ${stats.invalid}</span>` : ''}</div>
+            <h3>${escapeHtml(t('modalDiffTitle'))}</h3>
+            <div class="muted small">${summaryLine}</div>
           </div>
           <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
         </div>
@@ -252,8 +258,8 @@ export class ModalManager {
           ${rowsHtml}
         </div>
         <div class="modal-footer">
-          <button class="btn" data-modal-close>닫기</button>
-          ${stats.diffs.length > 0 ? `<button class="btn btn-primary" id="btn-diff-save">${icons.download(15)} 수정본 저장 (.dcm)</button>` : ''}
+          <button class="btn" data-modal-close>${escapeHtml(t('modalClose'))}</button>
+          ${stats.diffs.length > 0 ? `<button class="btn btn-primary" id="btn-diff-save">${icons.download(15)} ${escapeHtml(t('modalDiffSaveBtn'))}</button>` : ''}
         </div>
       </div>
     `;
@@ -305,8 +311,8 @@ export class ModalManager {
           <td><input type="checkbox" data-anon-check="${p.tag}" ${exists ? 'checked' : ''} /></td>
           <td class="mono">${formatted}</td>
           <td>${escapeHtml(p.label)}</td>
-          <td class="mono small">${exists ? escapeHtml(curVal || '(empty)') : '<span class="muted">없음</span>'}</td>
-          <td><input type="text" class="input input-sm" data-anon-val="${p.tag}" value="${escapeHtml(p.replacement)}" placeholder="(비우기)" /></td>
+          <td class="mono small">${exists ? escapeHtml(curVal || '(empty)') : `<span class="muted">${escapeHtml(t('modalAnonMissing'))}</span>`}</td>
+          <td><input type="text" class="input input-sm" data-anon-val="${p.tag}" value="${escapeHtml(p.replacement)}" placeholder="${escapeHtml(t('modalAnonClearPh'))}" /></td>
         </tr>
       `;
     }).join('');
@@ -315,8 +321,8 @@ export class ModalManager {
       <div class="modal-card modal-lg" role="dialog" aria-modal="true">
         <div class="modal-header">
           <div>
-            <h3>익명화 (Anonymize) 프리셋</h3>
-            <div class="muted small">선택한 환자/기관 식별 태그를 일괄 치환합니다. (Ctrl+Z로 전체 되돌리기 가능)</div>
+            <h3>${escapeHtml(t('modalAnonTitle'))}</h3>
+            <div class="muted small">${escapeHtml(t('modalAnonSubtitle'))}</div>
           </div>
           <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
         </div>
@@ -327,20 +333,20 @@ export class ModalManager {
                 <th style="width:32px"></th>
                 <th>Tag</th>
                 <th>Keyword</th>
-                <th>현재 값</th>
-                <th>치환 값</th>
+                <th>${escapeHtml(t('modalAnonColCur'))}</th>
+                <th>${escapeHtml(t('modalAnonColRep'))}</th>
               </tr>
             </thead>
             <tbody>${rowsHtml}</tbody>
           </table>
           <label class="checkbox-row" style="margin-top:12px">
             <input type="checkbox" id="anon-mark-deid" checked />
-            <span><code>(0012,0062) PatientIdentityRemoved = YES</code> 태그 자동 기록</span>
+            <span>${t('modalAnonMarkDeid')}</span>
           </label>
         </div>
         <div class="modal-footer">
-          <button class="btn" data-modal-close>취소</button>
-          <button class="btn btn-primary" id="btn-apply-anon">${icons.shield(15)} 익명화 적용</button>
+          <button class="btn" data-modal-close>${escapeHtml(t('modalCancel'))}</button>
+          <button class="btn btn-primary" id="btn-apply-anon">${icons.shield(15)} ${escapeHtml(t('modalAnonApplyBtn'))}</button>
         </div>
       </div>
     `;
@@ -360,7 +366,7 @@ export class ModalManager {
       const count = this.store.applyAnonymization(rules, markDeid);
       this.close();
       this.callbacks.onToast?.(
-        count > 0 ? `${count}개 태그가 익명화되었습니다. (Ctrl+Z로 복구 가능)` : '변경할 대상 태그가 없습니다.',
+        count > 0 ? t('toastAnonDone', { count }) : t('toastAnonNone'),
         count > 0 ? 'ok' : 'info'
       );
     });

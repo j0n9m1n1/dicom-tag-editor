@@ -13,6 +13,7 @@ import { InspectorPanel } from './ui/inspector.js';
 import { PixelPanel } from './ui/pixelPanel.js';
 import { ModalManager } from './ui/modals.js';
 import { icons } from './ui/icons.js';
+import { t, getLang } from './i18n.js';
 
 const store = new AppStore();
 
@@ -34,6 +35,7 @@ const btnDiff = document.getElementById('btn-diff');
 const btnSaveDirect = document.getElementById('btn-save-direct');
 const btnSaveAs = document.getElementById('btn-save-as');
 const btnTogglePixel = document.getElementById('btn-toggle-pixel');
+const btnLang = document.getElementById('btn-lang');
 const btnTheme = document.getElementById('btn-theme');
 
 const btnWelcomeOpen = document.getElementById('btn-welcome-open');
@@ -56,18 +58,55 @@ const modalRoot = document.getElementById('modal-root');
 const dragOverlay = document.getElementById('drag-overlay');
 const toastContainer = document.getElementById('toast-container');
 
-// Populate static icons
-btnOpen.innerHTML = `${icons.folderOpen(15)}<span>열기</span>`;
-btnSample.innerHTML = `${icons.sparkles(15)}<span>샘플</span>`;
-btnUndo.innerHTML = `${icons.undo(15)}`;
-btnRedo.innerHTML = `${icons.redo(15)}`;
-btnAddTag.innerHTML = `${icons.plus(15)}<span>태그 추가</span>`;
-btnAnonymize.innerHTML = `${icons.shield(15)}<span>익명화</span>`;
-btnDiff.innerHTML = `${icons.diff(15)}<span>Diff</span>`;
-btnSaveDirect.innerHTML = `${icons.save(15)}<span>덮어쓰기</span>`;
-btnSaveAs.innerHTML = `${icons.download(15)}<span>저장</span>`;
-btnTogglePixel.innerHTML = `${icons.image(15)}<span>Pixel</span>`;
+// Populate search icon once
 document.getElementById('search-icon-slot').innerHTML = icons.search(14);
+
+function applyLanguage() {
+  const lang = getLang();
+  document.documentElement.lang = lang;
+
+  // Update toolbar buttons & tooltips
+  btnOpen.innerHTML = `${icons.folderOpen(15)}<span>${t('btnOpen')}</span>`;
+  btnOpen.title = t('btnOpenTitle');
+  btnSample.innerHTML = `${icons.sparkles(15)}<span>${t('btnSample')}</span>`;
+  btnSample.title = t('btnSampleTitle');
+  btnUndo.innerHTML = `${icons.undo(15)}`;
+  btnUndo.title = t('btnUndoTitle');
+  btnRedo.innerHTML = `${icons.redo(15)}`;
+  btnRedo.title = t('btnRedoTitle');
+  btnAddTag.innerHTML = `${icons.plus(15)}<span>${t('btnAddTag')}</span>`;
+  btnAddTag.title = t('btnAddTagTitle');
+  btnAnonymize.innerHTML = `${icons.shield(15)}<span>${t('btnAnonymize')}</span>`;
+  btnAnonymize.title = t('btnAnonymizeTitle');
+  btnDiff.innerHTML = `${icons.diff(15)}<span>${t('btnDiff')}</span>`;
+  btnDiff.title = t('btnDiffTitle');
+  btnSaveDirect.innerHTML = `${icons.save(15)}<span>${t('btnSaveDirect')}</span>`;
+  btnSaveDirect.title = t('btnSaveDirectTitle');
+  btnSaveAs.innerHTML = `${icons.download(15)}<span>${t('btnSaveAs')}</span>`;
+  btnSaveAs.title = t('btnSaveAsTitle');
+  btnTogglePixel.innerHTML = `${icons.image(15)}<span>${t('btnPixel')}</span>`;
+  btnTogglePixel.title = t('btnPixelTitle');
+  btnTheme.title = t('btnThemeTitle');
+  btnLang.title = t('btnLangTitle');
+  btnLang.innerHTML =
+    lang === 'ko'
+      ? '<span class="lang-act">KO</span><span class="lang-dim">/EN</span>'
+      : '<span class="lang-dim">KO/</span><span class="lang-act">EN</span>';
+
+  // Update static data-i18n attributes across DOM
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    el.textContent = t(el.dataset.i18n);
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach((el) => {
+    el.innerHTML = t(el.dataset.i18nHtml);
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+    el.placeholder = t(el.dataset.i18nPlaceholder);
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach((el) => {
+    el.title = t(el.dataset.i18nTitle);
+  });
+}
 
 function showToast(message, type = 'info') {
   const el = document.createElement('div');
@@ -144,9 +183,9 @@ function updateToolbarAndHeader() {
 
   if (totalChanges > 0) {
     const parts = [];
-    if (stats.modified) parts.push(`수정 ${stats.modified}`);
-    if (stats.added) parts.push(`추가 ${stats.added}`);
-    if (stats.deleted) parts.push(`삭제 ${stats.deleted}`);
+    if (stats.modified) parts.push(t('changeMod', { n: stats.modified }));
+    if (stats.added) parts.push(t('changeAdd', { n: stats.added }));
+    if (stats.deleted) parts.push(t('changeDel', { n: stats.deleted }));
     changeSummary.textContent = parts.join(' · ');
     changeSummary.classList.remove('hidden');
   } else {
@@ -157,8 +196,8 @@ function updateToolbarAndHeader() {
   cntInvalid.textContent = String(stats.invalid);
 
   statusCounts.textContent =
-    `전체 ${stats.total}개 태그 · SQ ${stats.sequenceCount} · Private ${stats.privateCount}` +
-    (stats.invalid > 0 ? ` · VR 오류 ${stats.invalid}` : '');
+    t('statusCounts', { total: stats.total, sq: stats.sequenceCount, priv: stats.privateCount }) +
+    (stats.invalid > 0 ? t('statusInvalidSuffix', { invalid: stats.invalid }) : '');
 
   // Sync filter chips active state & search input
   filterChips.querySelectorAll('.chip').forEach((chip) => {
@@ -175,10 +214,13 @@ store.subscribe((reason) => {
     applyTheme();
     return;
   }
+  if (reason === 'lang') {
+    applyLanguage();
+  }
   updateToolbarAndHeader();
   treeView.render();
   inspector.render(reason);
-  pixelPanel.sync(reason === 'document' || reason === 'layout');
+  pixelPanel.sync(reason === 'document' || reason === 'layout' || reason === 'lang');
 });
 
 // ============================================================================
@@ -188,16 +230,16 @@ async function openArrayBuffer(arrayBuffer, fileName, fileHandle = null) {
   try {
     const doc = await parseDicomBuffer(arrayBuffer, fileName);
     store.loadDocument(doc, fileHandle);
-    showToast(`"${fileName}" 로드 완료 (${doc.datasetNodes.length + doc.metaNodes.length}개 최상위 태그)`, 'ok');
+    showToast(t('toastLoaded', { name: fileName, count: doc.datasetNodes.length + doc.metaNodes.length }), 'ok');
   } catch (err) {
     console.error(err);
-    showToast(`DICOM 파싱 오류: ${err.message}`, 'error');
+    showToast(t('toastParseErr', { msg: err.message }), 'error');
   }
 }
 
 async function openFileDialog() {
-  // Prefer File System Access API (Chrome/Edge) for direct overwrite support
-  if (typeof window.showOpenFilePicker === 'function') {
+  // Prefer File System Access API (Chrome/Edge, secure context only) for direct overwrite support
+  if (window.isSecureContext && typeof window.showOpenFilePicker === 'function') {
     try {
       const [handle] = await window.showOpenFilePicker({
         multiple: false,
@@ -235,16 +277,14 @@ async function loadSampleDicom() {
     await openArrayBuffer(buf, 'sample_brain_ct.dcm', null);
   } catch (err) {
     console.error(err);
-    showToast(`샘플 생성 오류: ${err.message}`, 'error');
+    showToast(t('toastSampleErr', { msg: err.message }), 'error');
   }
 }
 
 function confirmInvalidBeforeSave() {
   const stats = store.getStatsAndDiff();
   if (stats.invalid > 0) {
-    return window.confirm(
-      `VR 규칙 위반 오류가 ${stats.invalid}건 있습니다.\n그래도 DICOM 파일로 저장하시겠습니까?`
-    );
+    return window.confirm(t('confirmInvalidSave', { count: stats.invalid }));
   }
   return true;
 }
@@ -260,10 +300,10 @@ async function saveDocumentDirect() {
     await writable.write(bytes);
     await writable.close();
     store.markSaved();
-    showToast(`"${store.doc.fileName}" 원본 파일에 저장 완료 (${bytes.length.toLocaleString()} bytes)`, 'ok');
+    showToast(t('toastSavedDirect', { name: store.doc.fileName, bytes: bytes.length.toLocaleString() }), 'ok');
   } catch (err) {
     console.error(err);
-    showToast(`직접 저장 실패 — 다운로드로 전환합니다: ${err.message}`, 'warn');
+    showToast(t('toastDirectFail', { msg: err.message }), 'warn');
     await saveDocumentAs();
   }
 }
@@ -277,8 +317,8 @@ async function saveDocumentAs() {
       ? store.doc.fileName.replace(/\.dcm$/i, '_edited.dcm')
       : `${store.doc.fileName}_edited.dcm`;
 
-    // Try native Save As picker if available
-    if (typeof window.showSaveFilePicker === 'function') {
+    // Try native Save As picker if available in a secure context
+    if (window.isSecureContext && typeof window.showSaveFilePicker === 'function') {
       try {
         const handle = await window.showSaveFilePicker({
           suggestedName,
@@ -290,7 +330,7 @@ async function saveDocumentAs() {
         store.fileHandle = handle;
         store.doc.fileName = handle.name || suggestedName;
         store.markSaved();
-        showToast(`"${store.doc.fileName}" 저장 완료 (${bytes.length.toLocaleString()} bytes)`, 'ok');
+        showToast(t('toastSavedAs', { name: store.doc.fileName, bytes: bytes.length.toLocaleString() }), 'ok');
         return;
       } catch (err) {
         if (err.name === 'AbortError') return;
@@ -308,10 +348,10 @@ async function saveDocumentAs() {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     store.markSaved();
-    showToast(`"${suggestedName}" 다운로드 시작 (${bytes.length.toLocaleString()} bytes)`, 'ok');
+    showToast(t('toastDownloadStart', { name: suggestedName, bytes: bytes.length.toLocaleString() }), 'ok');
   } catch (err) {
     console.error(err);
-    showToast(`저장 중 오류 발생: ${err.message}`, 'error');
+    showToast(t('toastSaveErr', { msg: err.message }), 'error');
   }
 }
 
@@ -328,6 +368,7 @@ window.addEventListener('dragenter', (e) => {
 
 window.addEventListener('dragover', (e) => {
   e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
 });
 
 window.addEventListener('dragleave', (e) => {
@@ -336,26 +377,23 @@ window.addEventListener('dragleave', (e) => {
   if (dragDepth === 0) dragOverlay.classList.add('hidden');
 });
 
-window.addEventListener('drop', async (e) => {
+window.addEventListener('drop', (e) => {
   e.preventDefault();
   dragDepth = 0;
   dragOverlay.classList.add('hidden');
 
-  const item = e.dataTransfer?.items?.[0];
-  let handle = null;
-  if (item && typeof item.getAsFileSystemHandle === 'function') {
-    try {
-      const h = await item.getAsFileSystemHandle();
-      if (h && h.kind === 'file') handle = h;
-    } catch {
-      handle = null;
-    }
-  }
-
+  // Synchronously extract File before the drop event turn ends.
+  // Avoid getAsFileSystemHandle() which triggers Chromium RESULT_CODE_KILLED_BAD_MESSAGE
+  // on insecure contexts (http://) and certain Chrome builds.
   const file = e.dataTransfer?.files?.[0];
   if (!file) return;
-  const buf = await file.arrayBuffer();
-  await openArrayBuffer(buf, file.name, handle);
+
+  file.arrayBuffer()
+    .then((buf) => openArrayBuffer(buf, file.name, null))
+    .catch((err) => {
+      console.error(err);
+      showToast(t('toastParseErr', { msg: err.message }), 'error');
+    });
 });
 
 // ============================================================================
@@ -374,6 +412,9 @@ btnDiff.addEventListener('click', () => modals.openDiff());
 btnSaveDirect.addEventListener('click', saveDocumentDirect);
 btnSaveAs.addEventListener('click', saveDocumentAs);
 btnTogglePixel.addEventListener('click', () => store.togglePixelPanel());
+btnLang.addEventListener('click', () => {
+  store.setLang(getLang() === 'ko' ? 'en' : 'ko');
+});
 btnTheme.addEventListener('click', () => {
   store.setTheme(store.theme === 'dark' ? 'light' : 'dark');
 });
@@ -450,6 +491,7 @@ resizer.addEventListener('mousedown', (e) => {
 
 // Initial render
 applyTheme();
+applyLanguage();
 updateToolbarAndHeader();
 inspector.render();
 pixelPanel.sync(true);

@@ -11,6 +11,8 @@
  * can be plugged in later without touching the tag editor core.
  */
 
+import { t } from '../i18n.js';
+
 function findTagValue(nodes, tagHex) {
   const node = (nodes || []).find((n) => n.tag === tagHex && n.status !== 'deleted');
   return node ? node.value : null;
@@ -158,19 +160,17 @@ function decodeRleFrame(fragment, rows, cols, samplesPerPixel, bitsAllocated) {
  */
 export async function decodePixelFrame(meta, frameIndex = 0) {
   if (!meta) {
-    return { kind: 'unsupported', reason: 'PixelData(7FE0,0010) 태그가 없는 DICOM 파일입니다.', codec: 'none' };
+    return { kind: 'unsupported', reason: t('pixelErrNoTag'), codec: 'none' };
   }
   if (meta.rows <= 0 || meta.cols <= 0) {
-    return { kind: 'unsupported', reason: 'Rows(0028,0010) 또는 Columns(0028,0011) 값이 유효하지 않습니다.', codec: meta.codec };
+    return { kind: 'unsupported', reason: t('pixelErrDim'), codec: meta.codec };
   }
-
-  const pixelCount = meta.rows * meta.cols;
 
   // 1) Compressed formats
   if (meta.compressed) {
     const frags = meta.pixelNode.fragments || [];
     if (frags.length === 0) {
-      return { kind: 'unsupported', reason: '압축된 PixelData 프래그먼트를 찾을 수 없습니다.', codec: meta.codec };
+      return { kind: 'unsupported', reason: t('pixelErrNoFrag'), codec: meta.codec };
     }
 
     // JPEG Baseline / Extended via browser native decoder
@@ -183,7 +183,7 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
       } catch {
         return {
           kind: 'unsupported',
-          reason: `JPEG 스트림 디코딩에 실패했습니다 (${meta.transferSyntaxName}). 원본 바이트는 무손실 보존됩니다.`,
+          reason: t('pixelErrJpeg', { ts: meta.transferSyntaxName }),
           codec: meta.codec,
         };
       }
@@ -199,7 +199,7 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
     // Other codecs (JPEG2000, JPEG-LS, JPEG Lossless, HTJ2K)
     return {
       kind: 'unsupported',
-      reason: `${meta.transferSyntaxName} 압축 포맷은 별도 코덱(WASM)이 필요합니다. 태그 수정 및 저장 시 원본 PixelData 바이트는 100% 무손실 보존됩니다.`,
+      reason: t('pixelErrCodec', { ts: meta.transferSyntaxName }),
       codec: meta.codec,
     };
   }
@@ -207,7 +207,7 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
   // 2) Uncompressed
   const rawBytes = meta.pixelNode.rawBytes;
   if (!rawBytes || rawBytes.length === 0) {
-    return { kind: 'unsupported', reason: 'PixelData 바이트가 비어 있습니다.', codec: 'raw' };
+    return { kind: 'unsupported', reason: t('pixelErrEmpty'), codec: 'raw' };
   }
 
   return decodeUncompressedBytes(rawBytes, meta, frameIndex);
@@ -236,7 +236,7 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
   if (frameOffset + pixelCount * samplesPerPixel > rawBytes.length) {
     return {
       kind: 'unsupported',
-      reason: `PixelData 크기(${rawBytes.length} B)가 예상 해상도(${cols}x${rows})보다 작습니다.`,
+      reason: t('pixelErrSmall', { len: rawBytes.length, cols, rows }),
       codec: 'raw',
     };
   }
@@ -304,7 +304,7 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
   } else {
     return {
       kind: 'unsupported',
-      reason: `BitsAllocated=${bitsAllocated} 포맷은 현재 프리뷰를 지원하지 않습니다.`,
+      reason: t('pixelErrBits', { bits: bitsAllocated }),
       codec: 'raw',
     };
   }

@@ -6,6 +6,7 @@
 import { validateVrValue, BINARY_VRS } from '../dicom/vrSpec.js';
 import { formatTag, tagHex, lookupTag } from '../dicom/dictionary.js';
 import { genNodeId } from '../dicom/parser.js';
+import { getLang, setLang as setI18nLang } from '../i18n.js';
 
 export const ANONYMIZE_PRESET_TAGS = [
   { tag: '00100010', label: 'PatientName', replacement: 'ANONYMOUS' },
@@ -34,6 +35,7 @@ export class AppStore {
     this.filterMode = 'all'; // 'all' | 'modified' | 'invalid' | 'sequence' | 'private' | 'meta'
     this.showPixelPanel = true;
     this.theme = localStorage.getItem('dcm_editor_theme') || 'dark';
+    this.lang = getLang();
     this.undoStack = [];
     this.redoStack = [];
     this.listeners = new Set();
@@ -53,6 +55,26 @@ export class AppStore {
     this.theme = theme;
     localStorage.setItem('dcm_editor_theme', theme);
     this.emit('theme');
+  }
+
+  setLang(lang) {
+    setI18nLang(lang);
+    this.lang = getLang();
+    if (this.doc) {
+      const revalidate = (nodes) => {
+        for (const n of nodes || []) {
+          if (!n.isBinary && !n.isSequence) {
+            n.validation = validateVrValue(n.vr, n.value);
+          }
+          if (n.isSequence && n.items) {
+            for (const item of n.items) revalidate(item.children);
+          }
+        }
+      };
+      revalidate(this.doc.metaNodes);
+      revalidate(this.doc.datasetNodes);
+    }
+    this.emit('lang');
   }
 
   togglePixelPanel() {

@@ -6,6 +6,7 @@
 import { getVrSpec } from '../dicom/vrSpec.js';
 import { computeVm } from '../dicom/parser.js';
 import { icons, escapeHtml } from './icons.js';
+import { t } from '../i18n.js';
 
 export class TreeView {
   /**
@@ -124,7 +125,7 @@ export class TreeView {
       rows.push({
         kind: 'section',
         id: '__meta__',
-        label: 'File Meta Information (Group 0002)',
+        label: t('sectionMeta'),
         count: metaEntries.length,
         isExpanded: metaExp,
         sectionType: 'meta',
@@ -137,7 +138,7 @@ export class TreeView {
       rows.push({
         kind: 'section',
         id: '__main__',
-        label: 'Main Dataset',
+        label: t('sectionMain'),
         count: mainEntries.length,
         isExpanded: mainExp,
         sectionType: 'main',
@@ -161,8 +162,8 @@ export class TreeView {
     if (this.visibleRows.length === 0) {
       this.container.innerHTML = `
         <div class="tree-empty">
-          <p>조건에 일치하는 DICOM 태그가 없습니다.</p>
-          <button class="btn btn-sm" data-action="clear-filter">필터 초기화</button>
+          <p>${escapeHtml(t('treeEmptyMsg'))}</p>
+          <button class="btn btn-sm" data-action="clear-filter">${escapeHtml(t('treeClearFilter'))}</button>
         </div>
       `;
       return;
@@ -196,7 +197,7 @@ export class TreeView {
               </button>
               <span class="item-badge">Item #${row.itemIndex}</span>
             </div>
-            <div class="col-name muted">Sequence Item (${row.childCount} tags)</div>
+            <div class="col-name muted">${escapeHtml(t('seqItemDesc', { n: row.childCount }))}</div>
             <div class="col-vr"></div>
             <div class="col-vm"></div>
             <div class="col-len"></div>

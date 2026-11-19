@@ -10,6 +10,7 @@ import {
   renderFrameToCanvas,
 } from '../dicom/pixelRenderer.js';
 import { icons, escapeHtml } from './icons.js';
+import { t } from '../i18n.js';
 
 export class PixelPanel {
   /**
@@ -43,9 +44,9 @@ export class PixelPanel {
       this._decoded = null;
       this.container.innerHTML = `
         <div class="pixel-header">
-          <span class="pixel-title">${icons.image(15)} Pixel Preview</span>
+          <span class="pixel-title">${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
         </div>
-        <div class="pixel-empty">DICOM 파일을 열면 영상 프리뷰가 표시됩니다.</div>
+        <div class="pixel-empty">${escapeHtml(t('pixelEmptyNoDoc'))}</div>
       `;
       return;
     }
@@ -70,9 +71,9 @@ export class PixelPanel {
       this._decoded = null;
       this.container.innerHTML = `
         <div class="pixel-header">
-          <span class="pixel-title">${icons.image(15)} Pixel Preview</span>
+          <span class="pixel-title">${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
         </div>
-        <div class="pixel-empty">이 파일에는 PixelData (7FE0,0010)가 없습니다.</div>
+        <div class="pixel-empty">${escapeHtml(t('pixelEmptyNoTag'))}</div>
       `;
       return;
     }
@@ -84,7 +85,7 @@ export class PixelPanel {
     if (decoded.kind === 'unsupported') {
       this.container.innerHTML = `
         <div class="pixel-header">
-          <span class="pixel-title">${icons.image(15)} Pixel Preview</span>
+          <span class="pixel-title">${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
           <span class="pixel-meta-pill">${meta.cols}×${meta.rows} · ${meta.bitsAllocated}bit</span>
         </div>
         <div class="pixel-unsupported">
@@ -112,10 +113,10 @@ export class PixelPanel {
 
     this.container.innerHTML = `
       <div class="pixel-header">
-        <span class="pixel-title">${icons.image(15)} Pixel Preview</span>
+        <span class="pixel-title">${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
         <span class="pixel-meta-pill">${meta.cols}×${meta.rows} · ${meta.bitsStored}/${meta.bitsAllocated}b · ${escapeHtml(meta.photometric)}</span>
       </div>
-      <div class="pixel-canvas-wrap" title="드래그하여 Window Center/Width 조절">
+      <div class="pixel-canvas-wrap" title="${escapeHtml(t('pixelCanvasHint'))}">
         <canvas id="pixel-canvas"></canvas>
         ${isScalar ? `<div class="pixel-hud" id="pixel-hud">WC: ${Math.round(this._wc)} / WW: ${Math.round(this._ww)}</div>` : ''}
       </div>
@@ -140,9 +141,9 @@ export class PixelPanel {
           </label>
         ` : ''}
         <div class="pixel-btn-row">
-          <button class="btn btn-xs ${this._invert ? 'btn-primary' : ''}" id="btn-pixel-invert">${icons.contrast(13)} 반전</button>
-          ${isScalar ? `<button class="btn btn-xs" id="btn-pixel-auto">Auto W/L</button>` : ''}
-          ${isScalar && meta.windowCenter !== null ? `<button class="btn btn-xs" id="btn-pixel-tag-wl">태그 W/L</button>` : ''}
+          <button class="btn btn-xs ${this._invert ? 'btn-primary' : ''}" id="btn-pixel-invert">${icons.contrast(13)} ${escapeHtml(t('pixelInvert'))}</button>
+          ${isScalar ? `<button class="btn btn-xs" id="btn-pixel-auto">${escapeHtml(t('pixelAutoWl'))}</button>` : ''}
+          ${isScalar && meta.windowCenter !== null ? `<button class="btn btn-xs" id="btn-pixel-tag-wl">${escapeHtml(t('pixelTagWl'))}</button>` : ''}
         </div>
       </div>
     `;

@@ -2,6 +2,8 @@
  * DICOM PS3.5 Value Representation (VR) specifications & real-time validator.
  */
 
+import { t } from '../i18n.js';
+
 export const VR_32BIT_LENGTH = new Set([
   'OB', 'OD', 'OF', 'OL', 'OV', 'OW', 'SQ', 'SV', 'UC', 'UN', 'UR', 'UT', 'UV',
 ]);
@@ -283,7 +285,7 @@ export function validateVrValue(vr, value) {
 
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i];
-    const prefix = parts.length > 1 ? `[항목 #${i + 1}] ` : '';
+    const prefix = parts.length > 1 ? t('valItemPrefix', { n: i + 1 }) : '';
 
     // Empty item inside multi-value is allowed in DICOM (Type 2 / empty component), skip format checks if empty
     if (part === '') continue;
@@ -291,88 +293,88 @@ export function validateVrValue(vr, value) {
     switch (vr) {
       case 'AE': {
         const bytes = encoder.encode(part).length;
-        if (bytes > 16) pushError(`${prefix}최대 16바이트 초과 (현재 ${bytes}바이트)`);
-        if (/[^\x20-\x7E]/.test(part)) pushError(`${prefix}ASCII 인쇄 가능 문자만 허용됩니다.`);
+        if (bytes > 16) pushError(`${prefix}${t('valMaxBytes', { max: 16, cur: bytes })}`);
+        if (/[^\x20-\x7E]/.test(part)) pushError(`${prefix}${t('valAsciiOnly')}`);
         break;
       }
       case 'AS': {
         if (!/^\d{3}[DWMY]$/.test(part)) {
-          pushError(`${prefix}형식 오류: nnnD / nnnW / nnnM / nnnY (예: 042Y)`);
+          pushError(`${prefix}${t('valAsFormat')}`);
         }
         break;
       }
       case 'AT': {
         if (!/^\(?[0-9A-Fa-f]{4},?\s*[0-9A-Fa-f]{4}\)?$/.test(part.trim())) {
-          pushError(`${prefix}태그 형식 오류: (GGGG,EEEE) 형식이어야 합니다.`);
+          pushError(`${prefix}${t('valAtFormat')}`);
         }
         break;
       }
       case 'CS': {
         const bytes = encoder.encode(part).length;
-        if (bytes > 16) pushError(`${prefix}최대 16바이트 초과 (현재 ${bytes}바이트)`);
+        if (bytes > 16) pushError(`${prefix}${t('valMaxBytes', { max: 16, cur: bytes })}`);
         if (!/^[A-Z0-9 _]+$/.test(part)) {
-          pushError(`${prefix}영문 대문자(A-Z), 숫자(0-9), 공백, 언더바(_)만 허용됩니다.`);
+          pushError(`${prefix}${t('valCsChars')}`);
         }
         break;
       }
       case 'DA': {
         if (!/^\d{8}$/.test(part)) {
-          pushError(`${prefix}YYYYMMDD 8자리 숫자여야 합니다.`);
+          pushError(`${prefix}${t('valDaFormat')}`);
         } else {
           const y = Number(part.slice(0, 4));
           const m = Number(part.slice(4, 6));
           const d = Number(part.slice(6, 8));
           const dt = new Date(Date.UTC(y, m - 1, d));
           if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
-            pushError(`${prefix}존재하지 않는 달력 날짜입니다 (${y}-${m}-${d}).`);
+            pushError(`${prefix}${t('valDaCalendar', { y, m, d })}`);
           }
         }
         break;
       }
       case 'TM': {
         if (!/^\d{2}(\d{2}(\d{2}(\.\d{1,6})?)?)?$/.test(part.trim())) {
-          pushError(`${prefix}HHMMSS.FFFFFF 형식이어야 합니다.`);
+          pushError(`${prefix}${t('valTmFormat')}`);
         } else {
-          const t = part.trim();
-          const hh = Number(t.slice(0, 2));
-          const mm = t.length >= 4 ? Number(t.slice(2, 4)) : 0;
-          const ss = t.length >= 6 ? Number(t.slice(4, 6)) : 0;
+          const timeStr = part.trim();
+          const hh = Number(timeStr.slice(0, 2));
+          const mm = timeStr.length >= 4 ? Number(timeStr.slice(2, 4)) : 0;
+          const ss = timeStr.length >= 6 ? Number(timeStr.slice(4, 6)) : 0;
           if (hh > 23 || mm > 59 || ss > 60) {
-            pushError(`${prefix}시(00-23), 분(00-59), 초(00-60) 범위를 벗어났습니다.`);
+            pushError(`${prefix}${t('valTmRange')}`);
           }
         }
         break;
       }
       case 'DT': {
         if (encoder.encode(part).length > 26) {
-          pushError(`${prefix}최대 26바이트 초과`);
+          pushError(`${prefix}${t('valDtLen')}`);
         }
         if (!/^\d{4}(\d{2}(\d{2}(\d{2}(\d{2}(\d{2}(\.\d{1,6})?)?)?)?)?)?([+-]\d{4})?$/.test(part.trim())) {
-          pushError(`${prefix}YYYYMMDDHHMMSS.FFFFFF&ZZXX 형식이어야 합니다.`);
+          pushError(`${prefix}${t('valDtFormat')}`);
         }
         break;
       }
       case 'DS': {
         const trimmed = part.trim();
         if (encoder.encode(part).length > 16) {
-          pushError(`${prefix}항목당 최대 16바이트 초과`);
+          pushError(`${prefix}${t('valDsLen')}`);
         }
         if (!/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/.test(trimmed)) {
-          pushError(`${prefix}유효한 십진 실수 형식이 아닙니다.`);
+          pushError(`${prefix}${t('valDsFormat')}`);
         }
         break;
       }
       case 'IS': {
         const trimmed = part.trim();
         if (encoder.encode(part).length > 12) {
-          pushError(`${prefix}항목당 최대 12바이트 초과`);
+          pushError(`${prefix}${t('valIsLen')}`);
         }
         if (!/^[+-]?\d+$/.test(trimmed)) {
-          pushError(`${prefix}유효한 정수가 아닙니다.`);
+          pushError(`${prefix}${t('valIsFormat')}`);
         } else {
           const num = Number(trimmed);
           if (num < -2147483648 || num > 2147483647) {
-            pushError(`${prefix}32-bit 정수 범위를 벗어났습니다.`);
+            pushError(`${prefix}${t('valIsRange')}`);
           }
         }
         break;
@@ -380,27 +382,27 @@ export function validateVrValue(vr, value) {
       case 'UI': {
         const trimmed = part.replace(/\0+$/, '');
         const bytes = encoder.encode(trimmed).length;
-        if (bytes > 64) pushError(`${prefix}UID는 최대 64바이트입니다 (현재 ${bytes}바이트).`);
+        if (bytes > 64) pushError(`${prefix}${t('valUiLen', { cur: bytes })}`);
         if (!/^[0-9.]+$/.test(trimmed)) {
-          pushError(`${prefix}UID는 숫자(0-9)와 점(.)만 허용됩니다.`);
+          pushError(`${prefix}${t('valUiChars')}`);
         } else if (trimmed.startsWith('.') || trimmed.endsWith('.') || trimmed.includes('..')) {
-          pushError(`${prefix}UID의 시작/끝에 점(.)이 있거나 연속 점(..)이 있습니다.`);
+          pushError(`${prefix}${t('valUiDots')}`);
         } else if (trimmed.split('.').some((seg) => seg.length > 1 && seg.startsWith('0'))) {
-          pushWarn(`${prefix}표준 UID 세그먼트는 0으로 시작하지 않는 것이 권장됩니다.`);
+          pushWarn(`${prefix}${t('valUiZero')}`);
         }
         break;
       }
       case 'PN': {
         const groups = part.split('=');
         if (groups.length > 3) {
-          pushError(`${prefix}PN은 최대 3개 문자그룹(=)만 허용됩니다.`);
+          pushError(`${prefix}${t('valPnGroups')}`);
         }
         groups.forEach((g, gi) => {
           if (g.length > 64) {
-            pushError(`${prefix}문자그룹 #${gi + 1}이 64자를 초과했습니다 (${g.length}자).`);
+            pushError(`${prefix}${t('valPnGroupLen', { g: gi + 1, cur: g.length })}`);
           }
           if (g.split('^').length > 5) {
-            pushWarn(`${prefix}문자그룹 #${gi + 1}의 구성요소(^)가 표준 5개를 초과했습니다.`);
+            pushWarn(`${prefix}${t('valPnComponents', { g: gi + 1 })}`);
           }
         });
         break;
@@ -410,7 +412,7 @@ export function validateVrValue(vr, value) {
       case 'ST':
       case 'LT': {
         if (spec.maxLength && part.length > spec.maxLength) {
-          pushError(`${prefix}최대 ${spec.maxLength}자 초과 (현재 ${part.length}자)`);
+          pushError(`${prefix}${t('valMaxChars', { max: spec.maxLength, cur: part.length })}`);
         }
         break;
       }
@@ -420,7 +422,7 @@ export function validateVrValue(vr, value) {
       case 'SL': {
         const trimmed = part.trim();
         if (!/^[+-]?\d+$/.test(trimmed)) {
-          pushError(`${prefix}정수만 입력 가능합니다.`);
+          pushError(`${prefix}${t('valIntOnly')}`);
         } else {
           const n = Number(trimmed);
           const ranges = {
@@ -431,7 +433,7 @@ export function validateVrValue(vr, value) {
           };
           const [min, max] = ranges[vr];
           if (n < min || n > max) {
-            pushError(`${prefix}${vr} 범위 초과 (${min} ~ ${max})`);
+            pushError(`${prefix}${t('valIntRange', { vr, min, max })}`);
           }
         }
         break;
@@ -440,9 +442,9 @@ export function validateVrValue(vr, value) {
       case 'UV': {
         const trimmed = part.trim();
         if (!/^[+-]?\d+$/.test(trimmed)) {
-          pushError(`${prefix}64-bit 정수만 입력 가능합니다.`);
+          pushError(`${prefix}${t('valInt64Only')}`);
         } else if (vr === 'UV' && trimmed.startsWith('-')) {
-          pushError(`${prefix}UV는 음수를 허용하지 않습니다.`);
+          pushError(`${prefix}${t('valUvNeg')}`);
         }
         break;
       }
@@ -450,7 +452,7 @@ export function validateVrValue(vr, value) {
       case 'FD': {
         const trimmed = part.trim();
         if (trimmed === '' || Number.isNaN(Number(trimmed))) {
-          pushError(`${prefix}유효한 실수 값이 아닙니다.`);
+          pushError(`${prefix}${t('valFloatInvalid')}`);
         }
         break;
       }
