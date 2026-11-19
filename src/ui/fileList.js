@@ -70,7 +70,10 @@ export class FileListPanel {
     this.container.innerHTML = `
       <div class="filelist-header">
         <span class="filelist-title">${icons.files(14)} ${escapeHtml(t('fileListTitle', { n: files.length }))}</span>
-        <button class="btn btn-xs" data-fl-action="add" title="${escapeHtml(t('fileListAddTitle'))}">${icons.plus(12)} ${escapeHtml(t('fileListAdd'))}</button>
+        <div class="filelist-header-btns">
+          <button class="btn btn-xs" data-fl-action="add" title="${escapeHtml(t('fileListAddTitle'))}">${icons.plus(12)} ${escapeHtml(t('fileListAdd'))}</button>
+          <button class="btn-icon filelist-clear-btn" data-fl-action="clear-all" title="${escapeHtml(t('fileListClearAllTitle'))}">${icons.trash(13)}</button>
+        </div>
       </div>
       <div class="filelist-actions filelist-actions-3">
         <button class="btn btn-xs" data-fl-action="compare" title="${escapeHtml(t('btnCompareTitle'))}" ${files.length < 2 ? 'disabled' : ''}>${icons.diff(12)} ${escapeHtml(t('btnCompare'))}</button>
@@ -86,6 +89,7 @@ export class FileListPanel {
     if (actBtn) {
       const act = actBtn.dataset.flAction;
       if (act === 'add') this.callbacks.onAddFiles?.();
+      else if (act === 'clear-all') this.callbacks.onClearAll?.();
       else if (act === 'compare') this.callbacks.onCompare?.();
       else if (act === 'batch-edit') this.callbacks.onBatchEdit?.();
       else if (act === 'save-zip') this.callbacks.onSaveZip?.();

@@ -239,30 +239,56 @@ export class AppStore {
 
   /**
    * Register one or multiple files (File / ArrayBuffer / FileSystemFileHandle) with lazy parsing.
-   * Immediately parses and activates the first newly added file.
+   * Defaults to appending to existing open files, deduplicating exact (name + size) matches,
+   * and activating the first newly added file (or switching to the existing duplicate).
    * @param {Array<{ name: string, size?: number, sourceFile?: File, arrayBuffer?: ArrayBuffer, fileHandle?: any }>} items
    * @param {{ append?: boolean }} [opts]
    */
-  async loadFileItems(items, { append = false } = {}) {
-    if (!items || items.length === 0) return { loadedCount: 0 };
+  async loadFileItems(items, { append = true } = {}) {
+    if (!items || items.length === 0) return { loadedCount: 0, addedCount: 0, totalCount: this.files.length };
     this._saveActiveSnapshot();
 
-    const newEntries = items.map((it) => ({
-      id: nextFileId(),
-      name: it.name,
-      size: it.size ?? it.sourceFile?.size ?? it.arrayBuffer?.byteLength ?? 0,
-      sourceFile: it.sourceFile || null,
-      arrayBuffer: it.arrayBuffer || null,
-      fileHandle: it.fileHandle || null,
-      doc: null,
-      error: null,
-      undoStack: [],
-      redoStack: [],
-      selectedId: null,
-      expandedIds: new Set(['__meta__', '__main__']),
-    }));
+    const hadExisting = append && this.files.length > 0;
+    const newEntries = [];
+    let firstExistingMatch = null;
 
-    if (append && this.files.length > 0) {
+    for (const it of items) {
+      const size = it.size ?? it.sourceFile?.size ?? it.arrayBuffer?.byteLength ?? 0;
+      if (hadExisting) {
+        const dup = this.files.find((f) => f.name === it.name && f.size === size);
+        if (dup) {
+          if (!firstExistingMatch) firstExistingMatch = dup;
+          continue;
+        }
+      }
+      newEntries.push({
+        id: nextFileId(),
+        name: it.name,
+        size,
+        sourceFile: it.sourceFile || null,
+        arrayBuffer: it.arrayBuffer || null,
+        fileHandle: it.fileHandle || null,
+        doc: null,
+        error: null,
+        undoStack: [],
+        redoStack: [],
+        selectedId: null,
+        expandedIds: new Set(['__meta__', '__main__']),
+      });
+    }
+
+    // All dropped/selected files were already open -> switch to the existing entry
+    if (hadExisting && newEntries.length === 0 && firstExistingMatch) {
+      await this.switchToFile(firstExistingMatch.id);
+      return {
+        loadedCount: 0,
+        addedCount: 0,
+        totalCount: this.files.length,
+        alreadyOpenEntry: firstExistingMatch,
+      };
+    }
+
+    if (hadExisting) {
       this.files.push(...newEntries);
     } else {
       this.files = newEntries;
@@ -270,7 +296,7 @@ export class AppStore {
 
     if (this.files.length > 1) {
       this.showFileList = true;
-    } else if (!append) {
+    } else if (!hadExisting) {
       this.showFileList = false;
     }
 
@@ -288,7 +314,7 @@ export class AppStore {
     }
 
     if (!activated) {
-      if (!append) {
+      if (!hadExisting) {
         this.files = [];
         this._bindEntryToActive(null);
         this.emit('document');
@@ -304,7 +330,13 @@ export class AppStore {
     this.mobileTab = 'tree';
     this.pixelVersion++;
     this.emit('document');
-    return { loadedCount: newEntries.length, activeEntry: activated };
+    return {
+      loadedCount: newEntries.length,
+      addedCount: newEntries.length,
+      wasAppended: hadExisting,
+      totalCount: this.files.length,
+      activeEntry: activated,
+    };
   }
 
   /**

@@ -153,7 +153,8 @@ const modals = new ModalManager(modalRoot, store, {
 });
 
 const fileListPanel = new FileListPanel(fileListPane, store, {
-  onAddFiles: () => openFileDialog({ append: true }),
+  onAddFiles: () => openFileDialog(),
+  onClearAll: () => goHomeWithConfirm(),
   onCompare: () => modals.openCompare(),
   onBatchEdit: () => modals.openBatchEdit(),
   onSaveZip: () => saveAllAsZip(),
@@ -310,7 +311,7 @@ window.addEventListener('resize', () => {
 // ============================================================================
 // Multi-File & Folder Open / Sample / Save / ZIP Export
 // ============================================================================
-async function loadSelectedFileItems(items, { append = false } = {}) {
+async function loadSelectedFileItems(items, { append = true } = {}) {
   if (!items || items.length === 0) {
     showToast(t('toastNoDcmInDrop'), 'warn');
     return;
@@ -320,8 +321,10 @@ async function loadSelectedFileItems(items, { append = false } = {}) {
 
   try {
     const res = await store.loadFileItems(items, { append });
-    if (append) {
-      showToast(t('toastFilesAdded', { count: res.loadedCount }), 'ok');
+    if (res.alreadyOpenEntry) {
+      showToast(t('toastFileAlreadyOpen', { name: res.alreadyOpenEntry.name }), 'info');
+    } else if (res.wasAppended) {
+      showToast(t('toastFilesAdded', { count: res.addedCount, total: res.totalCount }), 'ok');
     } else if (res.loadedCount > 1) {
       showToast(t('toastFilesLoaded', { count: res.loadedCount }), 'ok');
     } else if (store.doc) {
@@ -339,7 +342,7 @@ async function loadSelectedFileItems(items, { append = false } = {}) {
   }
 }
 
-async function openFileDialog({ append = false } = {}) {
+async function openFileDialog({ append = true } = {}) {
   if (window.isSecureContext && typeof window.showOpenFilePicker === 'function') {
     try {
       const handles = await window.showOpenFilePicker({
@@ -384,14 +387,19 @@ async function loadSampleDicom() {
   try {
     const buf = await generateSampleDicomBuffer();
     const doc = await parseDicomBuffer(buf, 'sample_brain_ct.dcm');
-    store.loadDocument(doc, null, { append: false });
-    showToast(
-      t('toastLoaded', {
-        name: doc.fileName,
-        count: doc.datasetNodes.length + doc.metaNodes.length,
-      }),
-      'ok'
-    );
+    const hadExisting = store.files.length > 0;
+    store.loadDocument(doc, null, { append: true });
+    if (hadExisting) {
+      showToast(t('toastFilesAdded', { count: 1, total: store.files.length }), 'ok');
+    } else {
+      showToast(
+        t('toastLoaded', {
+          name: doc.fileName,
+          count: doc.datasetNodes.length + doc.metaNodes.length,
+        }),
+        'ok'
+      );
+    }
   } catch (err) {
     console.error(err);
     showToast(t('toastSampleErr', { msg: err.message }), 'error');
@@ -615,9 +623,8 @@ window.addEventListener('drop', (e) => {
       return;
     }
 
-    // If multiple files are already open, append when Shift is held or replace cleanly
-    const append = Boolean(e.shiftKey && store.files.length > 0);
-    await loadSelectedFileItems(items, { append });
+    // Always append dropped files to the current workspace so unsaved work is preserved
+    await loadSelectedFileItems(items, { append: true });
   })();
 });
 
@@ -652,8 +659,8 @@ window.addEventListener('beforeunload', (e) => {
   }
 });
 
-btnOpen.addEventListener('click', () => openFileDialog({ append: false }));
-btnWelcomeOpen.addEventListener('click', () => openFileDialog({ append: false }));
+btnOpen.addEventListener('click', () => openFileDialog());
+btnWelcomeOpen.addEventListener('click', () => openFileDialog());
 btnSample.addEventListener('click', loadSampleDicom);
 btnWelcomeSample.addEventListener('click', loadSampleDicom);
 btnFiles.addEventListener('click', () => store.toggleFileList());
@@ -698,7 +705,7 @@ window.addEventListener('keydown', (e) => {
 
   if (key === 'o') {
     e.preventDefault();
-    openFileDialog({ append: false });
+    openFileDialog();
   } else if (key === 's' && store.doc) {
     e.preventDefault();
     if (e.shiftKey || !store.fileHandle) saveDocumentAs();
