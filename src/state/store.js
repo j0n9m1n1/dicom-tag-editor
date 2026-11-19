@@ -358,6 +358,32 @@ export class AppStore {
     }
   }
 
+  /**
+   * Count total unsaved tag modifications across all open files.
+   */
+  getTotalUnsavedChanges() {
+    this._saveActiveSnapshot();
+    let total = 0;
+    for (const entry of this.files) {
+      if (entry.doc) total += countDocChanges(entry.doc);
+    }
+    return total;
+  }
+
+  /**
+   * Reset all loaded files and return to the initial welcome screen.
+   */
+  closeAll() {
+    this.files = [];
+    this._bindEntryToActive(null);
+    this.showFileList = false;
+    this.searchQuery = '';
+    this.filterMode = 'all';
+    this.mobileTab = 'tree';
+    this.pixelVersion++;
+    this.emit('document');
+  }
+
   selectNode(id) {
     if (this.selectedId === id) return;
     this.selectedId = id;

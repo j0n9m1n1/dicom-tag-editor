@@ -334,6 +334,9 @@ const MESSAGES = {
     shortcutInline: '선택 태그 인라인 편집',
     shortcutDelete: '선택 태그 삭제 토글',
     pixelToggleHint: '클릭하여 Pixel Preview 접기/펼치기',
+    brandHomeTitle: '첫 화면으로 돌아가기',
+    confirmGoHomeDirty: '저장하지 않은 변경 사항이 {count}건 있습니다.\n첫 화면으로 돌아가면 열린 파일과 수정 내용이 모두 초기화됩니다. 계속하시겠습니까?',
+    confirmGoHomeLoaded: '열려 있는 파일({files}개)을 닫고 첫 화면으로 돌아가시겠습니까?\n현재 작업 상태가 초기화됩니다.',
   },
 
   en: {
@@ -664,6 +667,9 @@ const MESSAGES = {
     shortcutInline: 'Inline edit selected tag',
     shortcutDelete: 'Toggle delete selected tag',
     pixelToggleHint: 'Click to collapse or expand Pixel Preview',
+    brandHomeTitle: 'Return to welcome screen',
+    confirmGoHomeDirty: 'You have {count} unsaved change(s).\nReturning to the home screen will discard all loaded files and edits. Continue?',
+    confirmGoHomeLoaded: 'Close {files} open file(s) and return to the home screen?\nYour current workspace will be reset.',
   },
 };
 

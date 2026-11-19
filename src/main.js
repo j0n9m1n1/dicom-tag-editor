@@ -20,6 +20,7 @@ import { t, getLang } from './i18n.js';
 const store = new AppStore();
 
 // DOM references
+const brandHome = document.getElementById('brand-home');
 const welcomeView = document.getElementById('welcome-view');
 const editorView = document.getElementById('editor-view');
 const fileMetaBar = document.getElementById('file-meta-bar');
@@ -627,6 +628,34 @@ window.addEventListener('drop', (e) => {
 // ============================================================================
 // UI Event Bindings
 // ============================================================================
+function goHomeWithConfirm() {
+  if (store.files.length === 0 && !store.doc) return;
+  const dirty = store.getTotalUnsavedChanges();
+  const msg =
+    dirty > 0
+      ? t('confirmGoHomeDirty', { count: dirty })
+      : t('confirmGoHomeLoaded', { files: store.files.length || 1 });
+  if (!window.confirm(msg)) return;
+  modals.close();
+  store.closeAll();
+}
+
+brandHome.addEventListener('click', goHomeWithConfirm);
+brandHome.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    goHomeWithConfirm();
+  }
+});
+
+// Warn before browser refresh / tab close when file(s) are loaded
+window.addEventListener('beforeunload', (e) => {
+  if (store.files.length > 0 || store.doc) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
 btnOpen.addEventListener('click', () => openFileDialog({ append: false }));
 btnWelcomeOpen.addEventListener('click', () => openFileDialog({ append: false }));
 btnSample.addEventListener('click', loadSampleDicom);
