@@ -66,8 +66,10 @@ const modalRoot = document.getElementById('modal-root');
 const dragOverlay = document.getElementById('drag-overlay');
 const toastContainer = document.getElementById('toast-container');
 
-// Populate search icon once
+// Populate search icon and GitHub links once
 document.getElementById('search-icon-slot').innerHTML = icons.search(14);
+document.getElementById('welcome-gh-link').innerHTML = `${icons.github(14)}<span>GitHub</span>`;
+document.getElementById('status-gh-link').innerHTML = `${icons.github(13)}<span>GitHub</span>`;
 
 let _fileInputAppendMode = false;
 

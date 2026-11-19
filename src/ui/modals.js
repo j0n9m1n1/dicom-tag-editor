@@ -930,7 +930,11 @@ export class ModalManager {
             ${t('disclaimerFooter')}
           </div>
         </div>
-        <div class="modal-footer">
+        <div class="modal-footer modal-footer-between">
+          <a class="gh-link" href="https://github.com/j0n9m1n1/dicom-tag-editor" target="_blank" rel="noopener noreferrer">
+            ${icons.github(15)}
+            <span>j0n9m1n1/dicom-tag-editor</span>
+          </a>
           <button class="btn btn-primary" data-modal-close>${escapeHtml(t('modalClose'))}</button>
         </div>
       </div>
