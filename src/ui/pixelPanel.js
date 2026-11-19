@@ -41,30 +41,61 @@ export class PixelPanel {
     this._dragMode = null; // 'wl' | 'pan'
     this._dragStart = null;
     this._renderToken = 0;
+
+    this.container.addEventListener('click', (e) => {
+      if (e.target.closest('[data-pixel-toggle]')) {
+        if (window.innerWidth > 820) {
+          this.store.togglePixelPanel();
+        }
+      }
+    });
+  }
+
+  _headerHtml(meta, isCollapsed) {
+    const isMobile = window.innerWidth <= 820;
+    const chev = isMobile ? '' : (isCollapsed ? icons.chevronRight(14) : icons.chevronDown(14));
+    const metaPill = meta
+      ? `<span class="pixel-meta-pill">${meta.cols}×${meta.rows} · ${meta.bitsStored}/${meta.bitsAllocated}b${isCollapsed ? '' : ` · ${escapeHtml(meta.photometric)}`}</span>`
+      : '';
+    return `
+      <div class="pixel-header ${isMobile ? '' : 'pixel-header-toggle'}" ${isMobile ? '' : `data-pixel-toggle="true" role="button" tabindex="0" title="${escapeHtml(t('pixelToggleHint'))}"`}>
+        <span class="pixel-title">${chev}${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
+        ${metaPill}
+      </div>
+    `;
   }
 
   async sync(force = false) {
     const isMobile = window.innerWidth <= 820;
-    const shouldHide = isMobile
-      ? this.store.mobileTab !== 'pixel'
-      : !this.store.showPixelPanel;
+    if (isMobile) {
+      const shouldHide = this.store.mobileTab !== 'pixel';
+      this.container.classList.toggle('hidden', shouldHide);
+      this.container.classList.remove('collapsed');
+      if (shouldHide) return;
+    } else {
+      this.container.classList.remove('hidden');
+      const collapsed = !this.store.showPixelPanel;
+      this.container.classList.toggle('collapsed', collapsed);
 
-    this.container.classList.toggle('hidden', shouldHide);
-    if (shouldHide) return;
+      if (collapsed) {
+        const meta = this.store.doc ? extractPixelMeta(this.store.doc) : null;
+        this._meta = meta;
+        this.container.innerHTML = this._headerHtml(meta, true);
+        return;
+      }
+    }
 
     if (!this.store.doc) {
       this._lastPixelVersion = -1;
       this._decoded = null;
       this.container.innerHTML = `
-        <div class="pixel-header">
-          <span class="pixel-title">${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
-        </div>
+        ${this._headerHtml(null, false)}
         <div class="pixel-empty">${escapeHtml(t('pixelEmptyNoDoc'))}</div>
       `;
       return;
     }
 
-    if (!force && this._lastPixelVersion === this.store.pixelVersion && this._decoded) {
+    if (!force && this._lastPixelVersion === this.store.pixelVersion && this._decoded && this.container.querySelector('#pixel-canvas, .pixel-unsupported, .pixel-empty')) {
       return;
     }
     this._lastPixelVersion = this.store.pixelVersion;
@@ -86,9 +117,7 @@ export class PixelPanel {
     if (!meta) {
       this._decoded = null;
       this.container.innerHTML = `
-        <div class="pixel-header">
-          <span class="pixel-title">${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
-        </div>
+        ${this._headerHtml(null, false)}
         <div class="pixel-empty">${escapeHtml(t('pixelEmptyNoTag'))}</div>
       `;
       return;
@@ -100,10 +129,7 @@ export class PixelPanel {
 
     if (decoded.kind === 'unsupported') {
       this.container.innerHTML = `
-        <div class="pixel-header">
-          <span class="pixel-title">${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
-          <span class="pixel-meta-pill">${meta.cols}×${meta.rows} · ${meta.bitsAllocated}bit</span>
-        </div>
+        ${this._headerHtml(meta, false)}
         <div class="pixel-unsupported">
           <div class="pixel-ts-badge">${escapeHtml(meta.transferSyntaxName)}</div>
           <p>${escapeHtml(decoded.reason)}</p>
@@ -137,10 +163,7 @@ export class PixelPanel {
       : '';
 
     this.container.innerHTML = `
-      <div class="pixel-header">
-        <span class="pixel-title">${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
-        <span class="pixel-meta-pill">${meta.cols}×${meta.rows} · ${meta.bitsStored}/${meta.bitsAllocated}b · ${escapeHtml(meta.photometric)}</span>
-      </div>
+      ${this._headerHtml(meta, false)}
       <div class="pixel-canvas-wrap" id="pixel-canvas-wrap" title="${escapeHtml(t('pixelCanvasHintV3'))}">
         <canvas id="pixel-canvas"></canvas>
         ${isScalar ? `<div class="pixel-hud" id="pixel-hud">WC: ${Math.round(this._wc)} / WW: ${Math.round(this._ww)}</div>` : ''}

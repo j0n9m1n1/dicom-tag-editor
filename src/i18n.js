@@ -315,6 +315,25 @@ const MESSAGES = {
     // Legal Disclaimers
     disclaimerFooter: '<strong>비진단용 (Not for Clinical / Diagnostic Use):</strong> 본 도구는 개발·연구·메타데이터 점검 용도이며 의료기기가 아닙니다. 모든 처리는 브라우저 로컬에서만 수행되며(서버 전송 없음), "있는 그대로(AS IS)" 제공되므로 편집 전 원본 파일 백업을 권장합니다.',
     modalAnonDisclaimer: '주의: 태그 익명화는 영상 픽셀 자체에 새겨진 텍스트(Burned-in Annotation)나 비표준/중첩 태그 내 잔여 정보를 완전히 제거하지 못할 수 있습니다. 개인정보보호법·HIPAA·GDPR 준수 여부는 최종 저장 전 직접 확인하세요.',
+
+    // Settings Dialog & Pixel Accordion
+    btnSettingsTitle: '설정 (언어 · 테마 · 단축키)',
+    modalSettingsTitle: '설정 (Settings)',
+    modalSettingsSubtitle: '언어, 화면 테마 및 에디터 단축키를 관리합니다.',
+    settingsLangLabel: '언어 (Language)',
+    settingsLangKo: '한국어 (KO)',
+    settingsLangEn: 'English (EN)',
+    settingsThemeLabel: '화면 테마 (Theme)',
+    settingsThemeDark: '다크 (Dark)',
+    settingsThemeLight: '라이트 (Light)',
+    settingsShortcutsLabel: '키보드 단축키',
+    shortcutOpen: '파일 열기',
+    shortcutSave: '저장 / 다른 이름으로 저장',
+    shortcutSearch: '태그 검색 포커스',
+    shortcutUndoRedo: '실행 취소 / 다시 실행',
+    shortcutInline: '선택 태그 인라인 편집',
+    shortcutDelete: '선택 태그 삭제 토글',
+    pixelToggleHint: '클릭하여 Pixel Preview 접기/펼치기',
   },
 
   en: {
@@ -626,6 +645,25 @@ const MESSAGES = {
     // Legal Disclaimers
     disclaimerFooter: '<strong>Not for Clinical or Diagnostic Use:</strong> This tool is provided "AS IS" for development, research, and metadata inspection only and is not a certified medical device. All processing runs 100% locally in your browser with zero upload. Always keep a backup of original DICOM files.',
     modalAnonDisclaimer: 'Notice: Tag anonymization does not remove burned-in text within pixel data (Burned-in Annotation) and may not cover non-standard or nested private attributes. Users are solely responsible for verifying compliance with HIPAA, GDPR, or local privacy laws.',
+
+    // Settings Dialog & Pixel Accordion
+    btnSettingsTitle: 'Settings (Language · Theme · Shortcuts)',
+    modalSettingsTitle: 'Settings',
+    modalSettingsSubtitle: 'Configure language, appearance theme, and review shortcuts.',
+    settingsLangLabel: 'Language',
+    settingsLangKo: '한국어 (KO)',
+    settingsLangEn: 'English (EN)',
+    settingsThemeLabel: 'Appearance Theme',
+    settingsThemeDark: 'Dark',
+    settingsThemeLight: 'Light',
+    settingsShortcutsLabel: 'Keyboard Shortcuts',
+    shortcutOpen: 'Open DICOM file(s)',
+    shortcutSave: 'Save / Save As',
+    shortcutSearch: 'Focus tag search',
+    shortcutUndoRedo: 'Undo / Redo',
+    shortcutInline: 'Inline edit selected tag',
+    shortcutDelete: 'Toggle delete selected tag',
+    pixelToggleHint: 'Click to collapse or expand Pixel Preview',
   },
 };
 

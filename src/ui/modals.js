@@ -10,7 +10,7 @@ import { parseTagString, searchDictionary, lookupTag } from '../dicom/dictionary
 import { formatDcmDump, formatDicomJson } from '../dicom/dcmdump.js';
 import { ANONYMIZE_PRESET_TAGS } from '../state/store.js';
 import { icons, escapeHtml } from './icons.js';
-import { t, getLocalizedVrText } from '../i18n.js';
+import { t, getLang, getLocalizedVrText } from '../i18n.js';
 
 export class ModalManager {
   /**
@@ -879,5 +879,83 @@ export class ModalManager {
     });
 
     await runCompare();
+  }
+
+  /**
+   * Open Settings dialog (Language, Theme, Keyboard Shortcuts & Disclaimer).
+   */
+  openSettings() {
+    const lang = getLang();
+    const theme = this.store.theme;
+
+    this.root.innerHTML = `
+      <div class="modal-card modal-sm" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <div>
+            <h3>${escapeHtml(t('modalSettingsTitle'))}</h3>
+            <div class="muted small">${escapeHtml(t('modalSettingsSubtitle'))}</div>
+          </div>
+          <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
+        </div>
+        <div class="modal-body">
+          <div class="setting-row">
+            <label class="setting-label">${escapeHtml(t('settingsLangLabel'))}</label>
+            <div class="seg-group">
+              <button type="button" class="seg-btn ${lang === 'ko' ? 'active' : ''}" data-set-lang="ko">${escapeHtml(t('settingsLangKo'))}</button>
+              <button type="button" class="seg-btn ${lang === 'en' ? 'active' : ''}" data-set-lang="en">${escapeHtml(t('settingsLangEn'))}</button>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <label class="setting-label">${escapeHtml(t('settingsThemeLabel'))}</label>
+            <div class="seg-group">
+              <button type="button" class="seg-btn ${theme === 'dark' ? 'active' : ''}" data-set-theme="dark">${icons.moon(14)} ${escapeHtml(t('settingsThemeDark'))}</button>
+              <button type="button" class="seg-btn ${theme === 'light' ? 'active' : ''}" data-set-theme="light">${icons.sun(14)} ${escapeHtml(t('settingsThemeLight'))}</button>
+            </div>
+          </div>
+
+          <div class="setting-row setting-shortcuts">
+            <label class="setting-label">${escapeHtml(t('settingsShortcutsLabel'))}</label>
+            <div class="shortcut-list">
+              <div class="shortcut-item"><span>${escapeHtml(t('shortcutOpen'))}</span><kbd>Ctrl + O</kbd></div>
+              <div class="shortcut-item"><span>${escapeHtml(t('shortcutSave'))}</span><kbd>Ctrl + S</kbd></div>
+              <div class="shortcut-item"><span>${escapeHtml(t('shortcutSearch'))}</span><kbd>Ctrl + F</kbd></div>
+              <div class="shortcut-item"><span>${escapeHtml(t('shortcutUndoRedo'))}</span><kbd>Ctrl + Z / Y</kbd></div>
+              <div class="shortcut-item"><span>${escapeHtml(t('shortcutInline'))}</span><kbd>F2</kbd></div>
+              <div class="shortcut-item"><span>${escapeHtml(t('shortcutDelete'))}</span><kbd>Delete</kbd></div>
+            </div>
+          </div>
+
+          <div class="welcome-disclaimer" style="margin-top:14px;padding-top:12px">
+            ${t('disclaimerFooter')}
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary" data-modal-close>${escapeHtml(t('modalClose'))}</button>
+        </div>
+      </div>
+    `;
+
+    this.root.classList.remove('hidden');
+
+    this.root.querySelectorAll('[data-set-lang]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextLang = btn.dataset.setLang;
+        if (nextLang !== getLang()) {
+          this.store.setLang(nextLang);
+        }
+        this.openSettings();
+      });
+    });
+
+    this.root.querySelectorAll('[data-set-theme]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextTheme = btn.dataset.setTheme;
+        if (nextTheme !== this.store.theme) {
+          this.store.setTheme(nextTheme);
+        }
+        this.openSettings();
+      });
+    });
   }
 }

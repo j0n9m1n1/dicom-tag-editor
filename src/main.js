@@ -39,9 +39,7 @@ const btnCompare = document.getElementById('btn-compare');
 const btnRaw = document.getElementById('btn-raw');
 const btnSaveDirect = document.getElementById('btn-save-direct');
 const btnSaveAs = document.getElementById('btn-save-as');
-const btnTogglePixel = document.getElementById('btn-toggle-pixel');
-const btnLang = document.getElementById('btn-lang');
-const btnTheme = document.getElementById('btn-theme');
+const btnSettings = document.getElementById('btn-settings');
 
 const btnWelcomeOpen = document.getElementById('btn-welcome-open');
 const btnWelcomeSample = document.getElementById('btn-welcome-sample');
@@ -112,14 +110,8 @@ function applyLanguage() {
   btnSaveDirect.title = t('btnSaveDirectTitle');
   btnSaveAs.innerHTML = `${icons.download(15)}<span>${t('btnSaveAs')}</span>`;
   btnSaveAs.title = t('btnSaveAsTitle');
-  btnTogglePixel.innerHTML = `${icons.image(15)}<span>${t('btnPixel')}</span>`;
-  btnTogglePixel.title = t('btnPixelTitle');
-  btnTheme.title = t('btnThemeTitle');
-  btnLang.title = t('btnLangTitle');
-  btnLang.innerHTML =
-    lang === 'ko'
-      ? '<span class="lang-act">KO</span><span class="lang-dim">/EN</span>'
-      : '<span class="lang-dim">KO/</span><span class="lang-act">EN</span>';
+  btnSettings.innerHTML = icons.settings(17);
+  btnSettings.title = t('btnSettingsTitle');
 
   document.querySelectorAll('[data-i18n]').forEach((el) => {
     const key = el.dataset.i18n;
@@ -182,7 +174,6 @@ const pixelPanel = new PixelPanel(pixelContainer, store);
 // ============================================================================
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', store.theme);
-  btnTheme.innerHTML = store.theme === 'dark' ? icons.sun(16) : icons.moon(16);
 }
 
 function updateToolbarAndHeader() {
@@ -219,8 +210,6 @@ function updateToolbarAndHeader() {
   const canDirectSave = hasDoc && Boolean(store.fileHandle);
   btnSaveDirect.classList.toggle('hidden', !canDirectSave);
   btnSaveDirect.disabled = !canDirectSave;
-
-  btnTogglePixel.classList.toggle('btn-primary', store.showPixelPanel && hasDoc);
 
   if (!hasDoc) {
     summaryStrip.classList.add('hidden');
@@ -653,13 +642,7 @@ btnCompare.addEventListener('click', () => modals.openCompare());
 btnRaw.addEventListener('click', () => modals.openRawView());
 btnSaveDirect.addEventListener('click', saveDocumentDirect);
 btnSaveAs.addEventListener('click', saveDocumentAs);
-btnTogglePixel.addEventListener('click', () => store.togglePixelPanel());
-btnLang.addEventListener('click', () => {
-  store.setLang(getLang() === 'ko' ? 'en' : 'ko');
-});
-btnTheme.addEventListener('click', () => {
-  store.setTheme(store.theme === 'dark' ? 'light' : 'dark');
-});
+btnSettings.addEventListener('click', () => modals.openSettings());
 
 mobileNav.addEventListener('click', (e) => {
   const tab = e.target.closest('.mob-tab');
