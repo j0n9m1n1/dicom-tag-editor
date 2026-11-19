@@ -6,9 +6,9 @@
  */
 
 import { ALL_VR_CODES, getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
-import { parseTagString, searchDictionary, lookupTag } from '../dicom/dictionary.js';
+import { parseTagString, searchDictionary, lookupTag, tagHex } from '../dicom/dictionary.js';
 import { formatDcmDump, formatDicomJson } from '../dicom/dcmdump.js';
-import { ANONYMIZE_PRESET_TAGS } from '../state/store.js';
+import { ANONYMIZE_PRESET_TAGS, getReadOnlyTagMessage } from '../state/store.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLang, getLocalizedVrText } from '../i18n.js';
 
@@ -185,7 +185,7 @@ export class ModalManager {
         targetSection: target ? target.section : null,
       });
       if (res?.locked) {
-        feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(t('transferSyntaxReadOnly'))}</span>`;
+        feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(t(getReadOnlyTagMessage(tagHex(parsed.group, parsed.element))))}</span>`;
         return;
       }
       this.close();
@@ -237,7 +237,7 @@ export class ModalManager {
                   <td>${escapeHtml(node.keyword)} <span class="muted">(${node.vr})</span></td>
                   <td class="mono diff-cell-old">${escapeHtml(node.status === 'added' ? '—' : node.originalValue || '(empty)')}</td>
                   <td class="mono diff-cell-new">${escapeHtml(node.status === 'deleted' ? t('modalDiffWillDelete') : node.value || '(empty)')}</td>
-                  <td><button class="btn btn-xs" data-diff-revert="${node.id}" title="${escapeHtml(t('modalDiffRevertTitle'))}">${icons.rotateCcw(13)}</button></td>
+                  <td>${getReadOnlyTagMessage(node.tag) ? '' : `<button class="btn btn-xs" data-diff-revert="${node.id}" title="${escapeHtml(t('modalDiffRevertTitle'))}">${icons.rotateCcw(13)}</button>`}</td>
                 </tr>
               `;
               })
@@ -313,7 +313,7 @@ export class ModalManager {
       const formatted = `(${p.tag.slice(0, 4)},${p.tag.slice(4, 8)})`;
       return `
         <tr class="${exists ? '' : 'muted'}">
-          <td><input type="checkbox" data-anon-check="${p.tag}" ${exists ? 'checked' : ''} /></td>
+          <td><input type="checkbox" data-anon-check="${p.tag}" checked /></td>
           <td class="mono">${formatted}</td>
           <td>${escapeHtml(p.label)}</td>
           <td class="mono small">${exists ? escapeHtml(curVal || '(empty)') : `<span class="muted">${escapeHtml(t('modalAnonMissing'))}</span>`}</td>
@@ -345,7 +345,7 @@ export class ModalManager {
             <tbody>${rowsHtml}</tbody>
           </table>
           <label class="checkbox-row" style="margin-top:12px">
-            <input type="checkbox" id="anon-mark-deid" checked />
+            <input type="checkbox" id="anon-mark-deid" />
             <span>${t('modalAnonMarkDeid')}</span>
           </label>
           <label class="checkbox-row" style="margin-top:8px">
@@ -395,13 +395,16 @@ export class ModalManager {
       this.close();
 
       if (applyAll) {
-        const res = await this.store.applyAnonymizationAllFiles(rules, opts);
-        this.callbacks.onToast?.(
-          res.affectedFiles > 0
-            ? t('toastBatchDone', { files: res.affectedFiles })
-            : t('toastAnonNone'),
-          res.affectedFiles > 0 ? 'ok' : 'info'
-        );
+        try {
+          const res = await this.store.applyAnonymizationAllFiles(rules, opts);
+          this.callbacks.onToast?.(
+            res.affectedFiles > 0 ? t('toastBatchDone', { files: res.affectedFiles }) : t('toastAnonNone'),
+            res.affectedFiles > 0 ? 'ok' : 'info'
+          );
+          if (res.skippedFiles) this.callbacks.onToast?.(t('toastAnonSkipped', { count: res.skippedFiles }), 'warn');
+        } catch (err) {
+          this.callbacks.onToast?.(t('toastAnonErr', { msg: err.message }), 'error');
+        }
       } else {
         const count = this.store.applyAnonymization(rules, opts);
         this.callbacks.onToast?.(
@@ -663,7 +666,7 @@ export class ModalManager {
       });
       if (res.locked) {
         valGroup.classList.remove('hidden');
-        feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(t('transferSyntaxReadOnly'))}</span>`;
+        feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(t(getReadOnlyTagMessage(tagHex(parsed.group, parsed.element))))}</span>`;
         return;
       }
       this.close();

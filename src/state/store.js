@@ -9,7 +9,7 @@
 import { validateVrValue, BINARY_VRS } from '../dicom/vrSpec.js';
 import { formatTag, tagHex, lookupTag } from '../dicom/dictionary.js';
 import { genNodeId, parseDicomBuffer } from '../dicom/parser.js';
-import { generateDicomUid } from '../dicom/uid.js';
+import { generateDicomUid, getSopInstanceUid } from '../dicom/uid.js';
 import { getLang, setLang as setI18nLang } from '../i18n.js';
 
 export const ANONYMIZE_PRESET_TAGS = [
@@ -32,6 +32,34 @@ export const ANONYMIZE_PRESET_TAGS = [
 let _fileIdSeq = 1;
 function nextFileId() {
   return `file_${_fileIdSeq++}`;
+}
+
+async function isSameFile(entry, item) {
+  try {
+    if (entry.fileHandle && item.fileHandle) {
+      return await entry.fileHandle.isSameEntry(item.fileHandle);
+    }
+    if (!entry.sourceFile || !item.sourceFile) {
+      return Boolean(entry.arrayBuffer && entry.arrayBuffer === item.arrayBuffer);
+    }
+    if (entry.sourceFile === item.sourceFile) return true;
+    const size = item.sourceFile.size;
+    if (entry.sourceFile.size !== size) return false;
+    const chunkSize = 1024 * 1024;
+    for (let start = 0; start < size; start += chunkSize) {
+      const end = start + chunkSize;
+      const [a, b] = await Promise.all([
+        entry.sourceFile.slice(start, end).arrayBuffer(),
+        item.sourceFile.slice(start, end).arrayBuffer(),
+      ]);
+      const other = new Uint8Array(b);
+      if (!new Uint8Array(a).every((byte, index) => byte === other[index])) return false;
+    }
+    return true;
+  } catch {
+    // If we cannot compare the original files, keep both entries.
+    return false;
+  }
 }
 
 function buildDefaultExpandedIds(doc) {
@@ -61,8 +89,14 @@ export function countDocChanges(doc) {
   return count || Number(Boolean(doc.needsResave));
 }
 
+export function getReadOnlyTagMessage(tag) {
+  if (tag === '00020010') return 'transferSyntaxReadOnly';
+  if (tag === '00020003') return 'mediaStorageSopReadOnly';
+  return null;
+}
+
 export function canEditNodeValue(node) {
-  return !node.isSequence && !node.isBinary && node.status !== 'deleted' && node.tag !== '00020010';
+  return !node.isSequence && !node.isBinary && node.status !== 'deleted' && !getReadOnlyTagMessage(node.tag);
 }
 
 export class AppStore {
@@ -101,6 +135,9 @@ export class AppStore {
     this.listeners = new Set();
     this.pixelVersion = 0;
     this._revisions = new WeakMap();
+    this._sequenceBaselines = new WeakMap();
+    this._pendingParses = new WeakMap();
+    this.anonymizing = false;
   }
 
   subscribe(fn) {
@@ -201,6 +238,17 @@ export class AppStore {
   async ensureEntryParsed(entry) {
     if (!entry) return null;
     if (entry.doc) return entry.doc;
+    if (this._pendingParses.has(entry)) return this._pendingParses.get(entry);
+    const pending = this._parseEntry(entry);
+    this._pendingParses.set(entry, pending);
+    try {
+      return await pending;
+    } finally {
+      this._pendingParses.delete(entry);
+    }
+  }
+
+  async _parseEntry(entry) {
     try {
       const buf = entry.arrayBuffer || (entry.sourceFile ? await entry.sourceFile.arrayBuffer() : null);
       if (!buf) throw new Error('No file data available');
@@ -259,7 +307,7 @@ export class AppStore {
 
   /**
    * Register one or multiple files (File / ArrayBuffer / FileSystemFileHandle) with lazy parsing.
-   * Defaults to appending to existing open files, deduplicating exact (name + size) matches,
+   * Defaults to appending to existing open files, checking candidate duplicates by identity or contents,
    * and activating the first newly added file (or switching to the existing duplicate).
    * @param {Array<{ name: string, size?: number, sourceFile?: File, arrayBuffer?: ArrayBuffer, fileHandle?: any }>} items
    * @param {{ append?: boolean }} [opts]
@@ -274,12 +322,16 @@ export class AppStore {
 
     for (const it of items) {
       const size = it.size ?? it.sourceFile?.size ?? it.arrayBuffer?.byteLength ?? 0;
-      if (hadExisting) {
-        const dup = this.files.find((f) => f.name === it.name && f.size === size);
-        if (dup) {
-          if (!firstExistingMatch) firstExistingMatch = dup;
-          continue;
+      let duplicate = null;
+      for (const entry of hadExisting ? this.files : []) {
+        if (entry.name === it.name && entry.size === size && await isSameFile(entry, it)) {
+          duplicate = entry;
+          break;
         }
+      }
+      if (duplicate) {
+        firstExistingMatch ??= duplicate;
+        continue;
       }
       newEntries.push({
         id: nextFileId(),
@@ -396,13 +448,21 @@ export class AppStore {
     }
 
     if (wasActive) {
-      const next = this.files[Math.min(idx, this.files.length - 1)];
-      try {
-        await this.ensureEntryParsed(next);
-        this._bindEntryToActive(next);
-      } catch {
-        this._bindEntryToActive(null);
+      // Prefer a nearby file and continue past entries that cannot be parsed.
+      const next = this.files.slice(idx).concat(this.files.slice(0, idx).reverse());
+      let active = null;
+      for (const entry of next) {
+        try {
+          await this.ensureEntryParsed(entry);
+          if (this.files.includes(entry)) {
+            active = entry;
+            break;
+          }
+        } catch {
+          continue;
+        }
       }
+      this._bindEntryToActive(active);
       this.pixelVersion++;
       this.emit('document');
     } else {
@@ -555,7 +615,19 @@ export class AppStore {
   }
 
   _noteEdit(doc) {
+    const uid = getSopInstanceUid(doc);
+    if (doc.hasPart10Header && uid) {
+      this._syncMediaStorageSopInstanceUid(doc, uid);
+    }
     this._revisions.set(doc, this.getDocumentRevision(doc) + 1);
+  }
+
+  _syncMediaStorageSopInstanceUid(doc, uid) {
+    const node = doc.metaNodes.find((n) => n.tag === '00020003');
+    if (!node || node.value === uid) return;
+    node.value = uid;
+    node.status = uid === node.originalValue ? 'unchanged' : 'modified';
+    node.validation = validateVrValue('UI', uid);
   }
 
   _executeCommand(cmd) {
@@ -633,7 +705,7 @@ export class AppStore {
 
   revertNode(nodeId) {
     const info = this.findNodeInfo(nodeId);
-    if (!info || info.isSeqItem) return;
+    if (!info || info.isSeqItem || getReadOnlyTagMessage(info.node.tag)) return;
     const node = info.node;
 
     if (node.status === 'added') {
@@ -657,6 +729,8 @@ export class AppStore {
 
     const prevValue = node.value;
     const prevStatus = node.status;
+    const prevItems = node.items;
+    const originalItems = this._sequenceBaselines.get(node);
     if (prevValue === node.originalValue && prevStatus === 'unchanged') return;
 
     this._executeCommand({
@@ -664,6 +738,7 @@ export class AppStore {
       affectsPixel: this._isPixelDisplayTag(node.tag),
       redo: () => {
         node.value = node.originalValue;
+        if (originalItems) node.items = originalItems;
         node.status = 'unchanged';
         node.validation = node.isBinary || node.isSequence
           ? { valid: true, severity: 'ok', messages: [] }
@@ -671,6 +746,7 @@ export class AppStore {
       },
       undo: () => {
         node.value = prevValue;
+        if (originalItems) node.items = prevItems;
         node.status = prevStatus;
         node.validation = node.isBinary || node.isSequence
           ? { valid: true, severity: 'ok', messages: [] }
@@ -683,7 +759,7 @@ export class AppStore {
     const info = this.findNodeInfo(nodeId);
     if (!info || info.isSeqItem) return;
     const node = info.node;
-    if (node.tag === '00020010') return; // TransferSyntaxUID cannot be deleted
+    if (getReadOnlyTagMessage(node.tag)) return;
 
     if (node.status === 'added') {
       this.revertNode(nodeId);
@@ -693,7 +769,7 @@ export class AppStore {
     const prevStatus = node.status;
     const nextStatus =
       prevStatus === 'deleted'
-        ? node.value === node.originalValue
+        ? node.value === node.originalValue && this._sequenceStatus(node) === 'unchanged'
           ? 'unchanged'
           : 'modified'
         : 'deleted';
@@ -713,7 +789,7 @@ export class AppStore {
   addTag({ group, element, vr, value, targetList = null, targetSection = null }) {
     if (!this.doc) return null;
     const hex = tagHex(group, element);
-    if (hex === '00020010') return { locked: true };
+    if (getReadOnlyTagMessage(hex)) return { locked: true };
     const dict = lookupTag(group, element);
     const isMeta = targetList ? targetSection === 'meta' : group === 0x0002;
     const list = targetList || (isMeta ? this.doc.metaNodes : this.doc.datasetNodes);
@@ -777,28 +853,35 @@ export class AppStore {
     return { duplicate: false, node: newNode };
   }
 
+  _sequenceStatus(node) {
+    const baseline = this._sequenceBaselines.get(node);
+    if (!baseline) return 'unchanged';
+    return node.items.length === baseline.length && node.items.every((item, index) => item === baseline[index])
+      ? 'unchanged'
+      : 'modified';
+  }
+
   addSequenceItem(seqNodeId) {
     const info = this.findNodeInfo(seqNodeId);
-    if (!info || info.isSeqItem || !info.node.isSequence) return;
+    if (!info || info.isSeqItem || !info.node.isSequence || info.node.status === 'deleted') return;
     const seqNode = info.node;
     const newItem = { id: genNodeId(), undefinedLength: false, children: [] };
+    const prevItems = seqNode.items || [];
+    if (!this._sequenceBaselines.has(seqNode)) this._sequenceBaselines.set(seqNode, prevItems);
     const prevStatus = seqNode.status;
-    const nextStatus = prevStatus === 'added' ? 'added' : 'modified';
 
     this._executeCommand({
       label: `Add Item to ${seqNode.formattedTag}`,
       affectsPixel: false,
       redo: () => {
-        if (!seqNode.items) seqNode.items = [];
-        seqNode.items.push(newItem);
-        seqNode.status = nextStatus;
+        seqNode.items = [...prevItems, newItem];
+        seqNode.status = prevStatus === 'added' ? 'added' : this._sequenceStatus(seqNode);
         this.expandedIds.add(seqNode.id);
         this.expandedIds.add(newItem.id);
         this.selectedId = newItem.id;
       },
       undo: () => {
-        const idx = seqNode.items.indexOf(newItem);
-        if (idx >= 0) seqNode.items.splice(idx, 1);
+        seqNode.items = prevItems;
         seqNode.status = prevStatus;
         if (this.selectedId === newItem.id) this.selectedId = seqNode.id;
       },
@@ -809,20 +892,22 @@ export class AppStore {
     const info = this.findNodeInfo(itemId);
     if (!info || !info.isSeqItem) return;
     const { parentSeq, item, itemIndex } = info;
+    if (parentSeq.status === 'deleted') return;
+    const prevItems = parentSeq.items;
+    if (!this._sequenceBaselines.has(parentSeq)) this._sequenceBaselines.set(parentSeq, prevItems);
+    const nextItems = prevItems.filter((entry) => entry !== item);
     const prevStatus = parentSeq.status;
-    const nextStatus = prevStatus === 'added' ? 'added' : 'modified';
 
     this._executeCommand({
       label: `Remove Item #${itemIndex} from ${parentSeq.formattedTag}`,
       affectsPixel: false,
       redo: () => {
-        const idx = parentSeq.items.indexOf(item);
-        if (idx >= 0) parentSeq.items.splice(idx, 1);
-        parentSeq.status = nextStatus;
+        parentSeq.items = nextItems;
+        parentSeq.status = prevStatus === 'added' ? 'added' : this._sequenceStatus(parentSeq);
         if (this.selectedId === item.id) this.selectedId = parentSeq.id;
       },
       undo: () => {
-        parentSeq.items.splice(itemIndex, 0, item);
+        parentSeq.items = prevItems;
         parentSeq.status = prevStatus;
         this.expandedIds.add(parentSeq.id);
         this.selectedId = item.id;
@@ -850,30 +935,26 @@ export class AppStore {
    */
   _buildAnonymizeCommandForDoc(doc, rules, opts = {}) {
     const {
-      markDeidentified = true,
+      markDeidentified = false,
       stripPrivate = false,
       regenerateUids = false,
       sharedUidMap = new Map(),
+      sopUidMap = new Map(),
     } = opts;
 
     const ruleMap = new Map(rules.map((r) => [r.tag, r.replacement]));
     const snapshots = [];
     const privateDeletes = [];
 
-    const mapUid = (origUid, forceUnique = false) => {
-      if (!forceUnique && origUid && sharedUidMap.has(origUid)) {
-        return sharedUidMap.get(origUid);
-      }
+    const mapUid = (origUid) => {
+      if (origUid && sharedUidMap.has(origUid)) return sharedUidMap.get(origUid);
       const next = generateDicomUid();
-      if (!forceUnique && origUid) sharedUidMap.set(origUid, next);
+      if (origUid) sharedUidMap.set(origUid, next);
       return next;
     };
 
-    // Determine consistent new SOPInstanceUID for this file so (0008,0018) and (0002,0003) stay synced
-    let newSopUid = null;
-    if (regenerateUids) {
-      newSopUid = generateDicomUid();
-    }
+    const originalSopUid = getSopInstanceUid(doc);
+    const ownSopUid = sopUidMap.get(originalSopUid) || (regenerateUids && originalSopUid ? generateDicomUid() : null);
 
     const walk = (nodes) => {
       for (const n of nodes || []) {
@@ -884,44 +965,33 @@ export class AppStore {
           continue;
         }
 
-        if (regenerateUids && !n.isSequence && !n.isBinary) {
+        if (n.isSequence) {
+          for (const item of n.items || []) walk(item.children);
+          continue;
+        }
+        if (n.isBinary || getReadOnlyTagMessage(n.tag)) continue;
+
+        let nextVal = ruleMap.get(n.tag);
+        if (regenerateUids && n.vr === 'UI') {
           if (n.tag === '0020000D' || n.tag === '0020000E') {
-            const nextVal = mapUid(n.value, false);
-            snapshots.push({
-              node: n,
-              prevValue: n.value,
-              prevStatus: n.status,
-              nextValue: nextVal,
-              nextStatus: n.status === 'added' ? 'added' : 'modified',
-            });
-            continue;
-          }
-          if (n.tag === '00080018' || n.tag === '00020003') {
-            snapshots.push({
-              node: n,
-              prevValue: n.value,
-              prevStatus: n.status,
-              nextValue: newSopUid,
-              nextStatus: n.status === 'added' ? 'added' : 'modified',
-            });
-            continue;
+            nextVal = mapUid(n.value);
+          } else if (n.tag === '00080018' && ownSopUid && nodes === doc.datasetNodes) {
+            nextVal = ownSopUid;
+          } else if (n.tag === '00081155') {
+            nextVal = n.value.split('\\').map((uid) => (
+              sopUidMap.get(uid.trim()) || (uid.trim() === originalSopUid && ownSopUid) || uid
+            )).join('\\');
           }
         }
 
-        if (ruleMap.has(n.tag) && !n.isSequence && !n.isBinary) {
-          const nextVal = ruleMap.get(n.tag);
-          if (n.value !== nextVal) {
-            snapshots.push({
-              node: n,
-              prevValue: n.value,
-              prevStatus: n.status,
-              nextValue: nextVal,
-              nextStatus: n.status === 'added' ? 'added' : nextVal === n.originalValue ? 'unchanged' : 'modified',
-            });
-          }
-        }
-        if (n.isSequence && n.items) {
-          for (const item of n.items) walk(item.children);
+        if (nextVal !== undefined && n.value !== nextVal) {
+          snapshots.push({
+            node: n,
+            prevValue: n.value,
+            prevStatus: n.status,
+            nextValue: nextVal,
+            nextStatus: n.status === 'added' ? 'added' : nextVal === n.originalValue ? 'unchanged' : 'modified',
+          });
         }
       }
     };
@@ -1022,31 +1092,53 @@ export class AppStore {
    * Apply anonymization across ALL open files (preserving Study/Series UID grouping across slices).
    */
   async applyAnonymizationAllFiles(rules, opts = {}) {
+    if (this.anonymizing) return { affectedFiles: 0, totalChanges: 0, skippedFiles: 0 };
     this._saveActiveSnapshot();
-    let affectedFiles = 0;
-    let totalChanges = 0;
-    const sharedUidMap = new Map();
+    this.anonymizing = true;
+    this.emit('files');
+    try {
+      const entries = [];
+      let skippedFiles = 0;
+      for (const entry of this.files.slice()) {
+        try {
+          await this.ensureEntryParsed(entry);
+          entries.push(entry);
+        } catch {
+          skippedFiles++;
+        }
+      }
 
-    for (const entry of this.files) {
-      try {
-        const doc = await this.ensureEntryParsed(entry);
-        const built = this._buildAnonymizeCommandForDoc(doc, rules, { ...opts, sharedUidMap });
+      const openEntries = entries.filter((entry) => this.files.includes(entry));
+      const sopUidMap = new Map();
+      if (opts.regenerateUids) {
+        for (const { doc } of openEntries) {
+          const uid = getSopInstanceUid(doc);
+          if (uid && !sopUidMap.has(uid)) sopUidMap.set(uid, generateDicomUid());
+        }
+      }
+      const sharedUidMap = new Map();
+      const edits = openEntries.map((entry) => ({
+        entry,
+        built: this._buildAnonymizeCommandForDoc(entry.doc, rules, { ...opts, sharedUidMap, sopUidMap }),
+      }));
+      let affectedFiles = 0;
+      let totalChanges = 0;
+      for (const { entry, built } of edits) {
         if (!built) continue;
         built.cmd.redo();
-        this._noteEdit(doc);
+        this._noteEdit(entry.doc);
         entry.undoStack.push(built.cmd);
         entry.redoStack = [];
         affectedFiles++;
         totalChanges += built.changeCount;
-      } catch {
-        // skip unparseable entries
       }
+      const active = this.getActiveEntry();
+      if (active) this._bindEntryToActive(active);
+      return { affectedFiles, totalChanges, skippedFiles };
+    } finally {
+      this.anonymizing = false;
+      this.emit('edit');
     }
-
-    const active = this.getActiveEntry();
-    if (active) this._bindEntryToActive(active);
-    this.emit('edit');
-    return { affectedFiles, totalChanges };
   }
 
   /**
@@ -1055,7 +1147,7 @@ export class AppStore {
    */
   async batchEditAcrossFiles({ group, element, vr, value, mode }) {
     const hex = tagHex(group, element);
-    if (hex === '00020010') return { affectedFiles: 0, locked: true };
+    if (getReadOnlyTagMessage(hex)) return { affectedFiles: 0, locked: true };
     this._saveActiveSnapshot();
     const dict = lookupTag(group, element);
     const isMeta = group === 0x0002;
@@ -1231,6 +1323,7 @@ export class AppStore {
     if (!entry) return true;
     if (file) {
       entry.fileHandle = file.handle;
+      entry.sourceFile = null;
       entry.name = doc.fileName = file.name;
       entry.size = doc.fileSize = file.size;
       if (doc === this.doc) this.fileHandle = file.handle;
@@ -1241,6 +1334,8 @@ export class AppStore {
       return false;
     }
     doc.needsResave = false;
+    const uid = getSopInstanceUid(doc);
+    if (doc.hasPart10Header && uid) this._syncMediaStorageSopInstanceUid(doc, uid);
     const clean = (list) => {
       for (let i = list.length - 1; i >= 0; i--) {
         const n = list[i];
@@ -1255,6 +1350,7 @@ export class AppStore {
         n.originalValue = n.value;
         n.status = 'unchanged';
         if (n.isSequence && n.items) {
+          this._sequenceBaselines.delete(n);
           for (const item of n.items) clean(item.children);
         }
       }

@@ -5,7 +5,7 @@
 
 import { getVrSpec } from '../dicom/vrSpec.js';
 import { computeVm } from '../dicom/parser.js';
-import { canEditNodeValue } from '../state/store.js';
+import { canEditNodeValue, getReadOnlyTagMessage } from '../state/store.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
 
@@ -71,9 +71,9 @@ export class TreeView {
     const menu = document.createElement('div');
     menu.className = 'ctx-menu';
     const canEdit = canEditNodeValue(node);
-    const canRevert = node.status === 'modified' || node.status === 'added';
     const isDeleted = node.status === 'deleted';
-    const canDelete = node.tag !== '00020010';
+    const canDelete = !getReadOnlyTagMessage(node.tag);
+    const canRevert = canDelete && (node.status === 'modified' || node.status === 'added');
 
     menu.innerHTML = `
       <button class="ctx-item" data-ctx="copy-tag">${icons.copy(13)} ${escapeHtml(t('ctxCopyTag'))} <span class="muted mono">${node.formattedTag}</span></button>

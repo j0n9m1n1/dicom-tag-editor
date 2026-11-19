@@ -102,6 +102,7 @@ const MESSAGES = {
     inspFormatLabel: '형식:',
     inspEditTitle: '값 편집',
     transferSyntaxReadOnly: 'Transfer Syntax UID는 파일의 인코딩을 표시하는 읽기 전용 값입니다.',
+    mediaStorageSopReadOnly: '파일 헤더의 UID는 데이터셋의 SOP Instance UID (0008,0018)와 자동으로 일치합니다.',
     inspSwitchRaw: '원문(\\) 편집으로 전환',
     inspSwitchMv: '다중값 리스트 편집',
     inspSeqBoxDesc: '하위 Item <strong>{count}개</strong>가 포함되어 있습니다. 트리에서 펼쳐 개별 태그를 수정하세요.',
@@ -143,6 +144,7 @@ const MESSAGES = {
     pixelErrSmall: 'PixelData 크기({len} B)가 예상 해상도({cols}x{rows})보다 작습니다.',
     pixelErrBits: 'BitsAllocated={bits} 포맷은 현재 프리뷰를 지원하지 않습니다.',
     pixelErrStoredBits: 'Bits Stored 또는 High Bit 값이 유효하지 않습니다.',
+    pixelErrPhotometric: '{mode} 형식의 픽셀 배치를 미리 볼 수 없습니다.',
 
     // Modals
     modalAddTitle: '새 DICOM 태그 추가',
@@ -176,11 +178,11 @@ const MESSAGES = {
 
     modalAnonTitle: '익명화 (Anonymize) 프리셋',
     modalAnonSubtitle: '선택한 환자/기관 식별 태그를 일괄 치환합니다. (Ctrl+Z로 전체 되돌리기 가능)',
-    modalAnonColCur: '현재 값',
+    modalAnonColCur: '현재 파일의 값',
     modalAnonColRep: '치환 값',
     modalAnonMissing: '없음',
     modalAnonClearPh: '(비우기)',
-    modalAnonMarkDeid: '<code>(0012,0062) PatientIdentityRemoved = YES</code> 태그 자동 기록',
+    modalAnonMarkDeid: '선택 범위의 환자 식별 정보 제거를 직접 확인했으며 <code>PatientIdentityRemoved = YES</code>를 기록합니다.',
     modalAnonApplyBtn: '익명화 적용',
 
     // Drag overlay & Toasts & Confirms
@@ -252,8 +254,9 @@ const MESSAGES = {
     fileListBatchEdit: '일괄 수정',
     fileListBatchEditTitle: '열린 모든 파일의 태그 일괄 수정/삭제',
     fileListSaveZip: 'ZIP 저장',
-    fileListSaveZipTitle: '열린 모든 파일을 ZIP으로 한 번에 다운로드',
+    fileListSaveZipTitle: '열린 DICOM 파일을 ZIP으로 다운로드',
     fileListRemoveTitle: '목록에서 닫기',
+    confirmCloseFileDirty: '"{name}"에 저장하지 않은 변경 사항이 있습니다. 변경을 버리고 닫을까요?',
     fileListClearAllTitle: '열린 파일 모두 닫기',
     fileListModifiedTag: '수정 {n}',
     fileListErrorTag: '오류',
@@ -270,6 +273,10 @@ const MESSAGES = {
     toastFileAlreadyOpen: '이미 열려 있는 "{name}" 파일로 이동했습니다.',
     toastBatchDone: '{files}개 파일에 일괄 작업이 적용되었습니다.',
     toastZipDone: '{count}개 파일을 "{name}"으로 저장했습니다.',
+    toastZipSkipped: 'DICOM으로 읽을 수 없는 파일 {count}개를 ZIP에서 제외했습니다.',
+    toastZipNoDicom: 'ZIP에 저장할 수 있는 DICOM 파일이 없습니다.',
+    toastAnonSkipped: 'DICOM으로 읽을 수 없는 파일 {count}개에는 익명화를 적용하지 못했습니다.',
+    toastAnonErr: '일괄 익명화 실패: {msg}',
     toastNoDcmInDrop: '드롭된 항목에서 읽을 수 있는 파일을 찾지 못했습니다.',
 
     // Mobile Tabs
@@ -448,6 +455,7 @@ const MESSAGES = {
     inspFormatLabel: 'Format:',
     inspEditTitle: 'Edit Value',
     transferSyntaxReadOnly: 'Transfer Syntax UID is read-only and describes the file encoding.',
+    mediaStorageSopReadOnly: 'The file metadata UID follows the dataset SOP Instance UID (0008,0018).',
     inspSwitchRaw: 'Switch to raw (\\) input',
     inspSwitchMv: 'Multi-value list editor',
     inspSeqBoxDesc: 'Contains <strong>{count}</strong> child item(s). Expand in the tree to edit nested tags.',
@@ -489,6 +497,7 @@ const MESSAGES = {
     pixelErrSmall: 'PixelData size ({len} B) is smaller than expected dimensions ({cols}x{rows}).',
     pixelErrBits: 'BitsAllocated={bits} is not currently supported for preview.',
     pixelErrStoredBits: 'Bits Stored or High Bit is invalid.',
+    pixelErrPhotometric: 'The {mode} pixel layout is not supported for preview.',
 
     // Modals
     modalAddTitle: 'Add New DICOM Tag',
@@ -522,11 +531,11 @@ const MESSAGES = {
 
     modalAnonTitle: 'Anonymize Preset',
     modalAnonSubtitle: 'Batch replace selected patient/institution PHI tags. (Undoable via Ctrl+Z)',
-    modalAnonColCur: 'Current Value',
+    modalAnonColCur: 'Value in Current File',
     modalAnonColRep: 'Replacement',
     modalAnonMissing: 'Absent',
     modalAnonClearPh: '(clear)',
-    modalAnonMarkDeid: 'Automatically set <code>(0012,0062) PatientIdentityRemoved = YES</code>',
+    modalAnonMarkDeid: 'I verified that patient identifiers were removed from the selected files. Record <code>PatientIdentityRemoved = YES</code>.',
     modalAnonApplyBtn: 'Apply Anonymization',
 
     // Drag overlay & Toasts & Confirms
@@ -598,8 +607,9 @@ const MESSAGES = {
     fileListBatchEdit: 'Batch Edit',
     fileListBatchEditTitle: 'Edit or delete a tag across all open files',
     fileListSaveZip: 'Save ZIP',
-    fileListSaveZipTitle: 'Download all open files as a single ZIP archive',
+    fileListSaveZipTitle: 'Download open DICOM files as a ZIP archive',
     fileListRemoveTitle: 'Close file',
+    confirmCloseFileDirty: '"{name}" has unsaved changes. Discard changes and close it?',
     fileListClearAllTitle: 'Close all open files',
     fileListModifiedTag: 'Mod {n}',
     fileListErrorTag: 'Error',
@@ -616,6 +626,10 @@ const MESSAGES = {
     toastFileAlreadyOpen: '"{name}" is already open — switched to existing file.',
     toastBatchDone: 'Batch operation applied to {files} file(s).',
     toastZipDone: 'Saved {count} file(s) into "{name}".',
+    toastZipSkipped: 'Skipped {count} file(s) that could not be read as DICOM.',
+    toastZipNoDicom: 'There are no readable DICOM files to include in the ZIP.',
+    toastAnonSkipped: 'Anonymization skipped {count} file(s) that could not be read as DICOM.',
+    toastAnonErr: 'Batch anonymization failed: {msg}',
     toastNoDcmInDrop: 'No readable files found in the dropped selection.',
 
     // Mobile Tabs

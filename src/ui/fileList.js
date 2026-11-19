@@ -78,7 +78,7 @@ export class FileListPanel {
       <div class="filelist-actions filelist-actions-3">
         <button class="btn btn-xs" data-fl-action="compare" title="${escapeHtml(t('btnCompareTitle'))}" ${files.length < 2 ? 'disabled' : ''}>${icons.diff(12)} ${escapeHtml(t('btnCompare'))}</button>
         <button class="btn btn-xs" data-fl-action="batch-edit" title="${escapeHtml(t('fileListBatchEditTitle'))}" ${files.length < 1 ? 'disabled' : ''}>${icons.sliders(12)} ${escapeHtml(t('fileListBatchEdit'))}</button>
-        <button class="btn btn-xs btn-primary" data-fl-action="save-zip" title="${escapeHtml(t('fileListSaveZipTitle'))}" ${files.length < 1 ? 'disabled' : ''}>${icons.archive(12)} ${escapeHtml(t('fileListSaveZip'))}</button>
+        <button class="btn btn-xs btn-primary" data-fl-action="save-zip" title="${escapeHtml(t('fileListSaveZipTitle'))}" ${this.store.anonymizing ? 'disabled' : ''}>${icons.archive(12)} ${escapeHtml(t('fileListSaveZip'))}</button>
       </div>
       <div class="filelist-scroll">${itemsHtml}</div>
     `;
@@ -99,7 +99,10 @@ export class FileListPanel {
     const removeBtn = e.target.closest('[data-remove-file]');
     if (removeBtn) {
       e.stopPropagation();
-      await this.store.removeFile(removeBtn.dataset.removeFile);
+      const entry = this.store.files.find((file) => file.id === removeBtn.dataset.removeFile);
+      if (!entry) return;
+      if (countDocChanges(entry.doc) && !window.confirm(t('confirmCloseFileDirty', { name: entry.name }))) return;
+      await this.store.removeFile(entry.id);
       return;
     }
 

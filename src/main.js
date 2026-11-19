@@ -195,14 +195,14 @@ function updateToolbarAndHeader() {
   btnUndo.disabled = !store.canUndo();
   btnRedo.disabled = !store.canRedo();
   btnAddTag.disabled = !hasDoc;
-  btnAnonymize.disabled = !hasDoc;
+  btnAnonymize.disabled = !hasDoc || store.anonymizing || saveInProgress;
   btnDiff.disabled = !hasDoc;
   btnRaw.disabled = !hasDoc;
-  btnSaveAs.disabled = !hasDoc || saveInProgress;
+  btnSaveAs.disabled = !hasDoc || saveInProgress || store.anonymizing;
 
   const canDirectSave = hasDoc && Boolean(store.fileHandle);
   btnSaveDirect.classList.toggle('hidden', !canDirectSave);
-  btnSaveDirect.disabled = !canDirectSave || saveInProgress;
+  btnSaveDirect.disabled = !canDirectSave || saveInProgress || store.anonymizing;
 
   if (!hasDoc) {
     summaryStrip.classList.add('hidden');
@@ -409,7 +409,7 @@ function confirmInvalidBeforeSave() {
 }
 
 async function runSave(save) {
-  if (saveInProgress) return;
+  if (saveInProgress || store.anonymizing) return;
   saveInProgress = true;
   updateToolbarAndHeader();
   try {
@@ -465,7 +465,7 @@ async function pickSaveFile(suggestedName) {
 
 async function saveActiveDocument(direct = false) {
   const entry = store.getActiveEntry();
-  if (saveInProgress || !entry?.doc || !confirmInvalidBeforeSave()) return;
+  if (saveInProgress || store.anonymizing || !entry?.doc || !confirmInvalidBeforeSave()) return;
   const { doc, name, fileHandle } = entry;
   const suggestedName = `${name.split('/').at(-1).replace(/\.dcm$/i, '')}_edited.dcm`;
 
@@ -509,26 +509,33 @@ async function saveAllAsZip() {
   return runSave(async () => {
     const zipEntries = [];
     const savedDocs = [];
-    for (const { doc, name, sourceFile, arrayBuffer, error } of files) {
-      if (error) continue;
-
+    let skipped = 0;
+    for (const entry of files) {
       let dataBytes;
-      if (doc) {
+      if (!entry.doc) {
+        try {
+          const buffer = entry.arrayBuffer || await entry.sourceFile.arrayBuffer();
+          await parseDicomBuffer(buffer, entry.name);
+          dataBytes = new Uint8Array(buffer);
+        } catch {
+          skipped++;
+          continue;
+        }
+      }
+      // If the file was opened while validation ran, export its live document.
+      if (entry.doc) {
+        const { doc } = entry;
         const revision = store.getDocumentRevision(doc);
         dataBytes = await writeDicomDocument(doc);
         savedDocs.push({ doc, revision });
-      } else if (sourceFile) {
-        dataBytes = new Uint8Array(await sourceFile.arrayBuffer());
-      } else if (arrayBuffer) {
-        dataBytes = new Uint8Array(arrayBuffer);
-      } else {
-        continue;
       }
-
-      zipEntries.push({ name, data: dataBytes });
+      zipEntries.push({ name: entry.name, data: dataBytes });
     }
 
-    if (zipEntries.length === 0) return;
+    if (zipEntries.length === 0) {
+      showToast(t('toastZipNoDicom'), 'warn');
+      return;
+    }
 
     const zipBytes = buildZipArchive(zipEntries);
     const zipName = 'dicom_edited_batch.zip';
@@ -538,6 +545,7 @@ async function saveAllAsZip() {
       if (!store.markSaved(doc, revision)) isCurrent = false;
     }
     showToast(t('toastZipDone', { count: zipEntries.length, name: zipName }), 'ok');
+    if (skipped) showToast(t('toastZipSkipped', { count: skipped }), 'warn');
     if (!isCurrent) showToast(t('toastSavePending'), 'warn');
   });
 }

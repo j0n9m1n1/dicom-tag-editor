@@ -29,9 +29,9 @@ All parsing, editing, validation, multi-file comparison, anonymization, pixel re
   - Open multiple `.dcm` files or **drag & drop an entire directory** (with lazy parsing and independent per-file Undo/Redo stacks)
   - **Side-by-Side Compare:** Pick any two open files to inspect differing, A-only, and B-only tags
   - **Batch Edit & Batch Anonymize:** Set, update, or delete a tag across all open files, strip all odd-group Private tags, and regenerate consistent `Study / Series / SOP Instance UIDs` across slices
-  - **Batch ZIP Export:** Download all open files as a single standard `.zip` archive with zero external dependencies
+  - **Batch ZIP Export:** Download readable DICOM files as a single standard `.zip` archive with zero external dependencies
 - **Collapsible Pixel Preview Dock**
-  - Supports uncompressed Grayscale (8/16-bit signed/unsigned, `MONOCHROME1/2`, Rescale Slope/Intercept), RGB, **RLE Lossless**, **JPEG Baseline**, and multi-frame stepping
+  - Supports uncompressed Grayscale (8/16-bit signed/unsigned, `MONOCHROME1/2`, Rescale Slope/Intercept), RGB, `YBR_FULL`, `YBR_FULL_422`, **RLE Lossless**, **JPEG Baseline**, and multi-frame stepping
   - Interactive mouse/touch drag Window Center/Width (`WC/WW`), CT presets (`Brain`, `Soft`, `Lung`, `Bone`), wheel zoom, `Shift+Drag` pan, Invert, and live cursor `(X, Y)` + pixel/HU readout
 - **Bilingual UI, Neutral Dark Theme & Mobile Optimization**
   - Instant **English (`EN`) / Korean (`KO`)** and **Neutral Charcoal Dark / Light** theme switching via the Settings (`⚙`) dialog

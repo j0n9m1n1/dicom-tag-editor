@@ -5,7 +5,7 @@ import { parseDicomBuffer } from '../src/dicom/parser.js';
 import { decodePixelFrame, extractPixelMeta } from '../src/dicom/pixelRenderer.js';
 import { generateSampleDicomBuffer } from '../src/dicom/sampleGenerator.js';
 import { writeDicomDocument } from '../src/dicom/writer.js';
-import { AppStore, canEditNodeValue, countDocChanges } from '../src/state/store.js';
+import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges } from '../src/state/store.js';
 
 globalThis.localStorage = { getItem: () => null, setItem() {} };
 
@@ -169,4 +169,129 @@ test('saving a snapshot never cleans newer edits or the newly active file', asyn
   assert.equal(countDocChanges(first), 0);
   assert.equal(store.fileHandle, null);
   assert.equal(store.canUndo(), true);
+});
+
+test('opening two same-name, same-size files retains different content and recognizes exact duplicates', async () => {
+  const first = await generateSampleDicomBuffer();
+  const edited = await parseDicomBuffer(first);
+  const store = new AppStore();
+  store.loadDocument(edited);
+  store.updateNodeValue(patientName(edited).id, 'Test^SameSize=가^나다');
+  const second = await writeDicomDocument(edited);
+  assert.equal(first.byteLength, second.byteLength);
+
+  const workspace = new AppStore();
+  const item = (bytes) => ({ name: 'slice.dcm', sourceFile: new File([bytes], 'slice.dcm') });
+  await workspace.loadFileItems([item(first)]);
+  await workspace.loadFileItems([item(second)]);
+  assert.equal(workspace.files.length, 2);
+  assert.equal(patientName(workspace.doc).value, 'Test^SameSize=가^나다');
+  await workspace.loadFileItems([item(first)]);
+  assert.equal(workspace.files.length, 2);
+  assert.equal(patientName(workspace.doc).value, patientName(await parseDicomBuffer(first)).value);
+});
+
+test('reverting sequence item changes restores the saved item list and remains undoable', async () => {
+  const bytes = await generateSampleDicomBuffer();
+  const doc = await parseDicomBuffer(bytes);
+  const store = new AppStore();
+  store.loadDocument(doc);
+  const sequence = doc.datasetNodes.find((node) => node.tag === '00081115');
+  store.removeSequenceItem(sequence.items[0].id);
+  store.addSequenceItem(sequence.id);
+  store.toggleDeleteNode(sequence.id);
+  store.toggleDeleteNode(sequence.id);
+  assert.equal(countDocChanges(doc), 1);
+
+  store.revertNode(sequence.id);
+  assert.equal(countDocChanges(doc), 0);
+  assert.deepEqual(await writeDicomDocument(doc), new Uint8Array(bytes));
+  store.undo();
+  assert.equal(sequence.items[0].children.length, 0);
+  assert.equal(countDocChanges(doc), 1);
+  store.redo();
+  assert.deepEqual(await writeDicomDocument(doc), new Uint8Array(bytes));
+
+  store.addSequenceItem(sequence.id);
+  assert.equal(store.markSaved(doc, store.getDocumentRevision(doc)), true);
+  store.removeSequenceItem(sequence.items[0].id);
+  store.revertNode(sequence.id);
+  assert.equal(sequence.items.length, 2);
+  assert.equal(countDocChanges(doc), 0);
+});
+
+test('editing a SOP Instance UID keeps file metadata in sync through undo, batch edit, and export', async () => {
+  const doc = await parseDicomBuffer(await generateSampleDicomBuffer());
+  const store = new AppStore();
+  store.loadDocument(doc);
+  const sop = doc.datasetNodes.find((node) => node.tag === '00080018');
+  const meta = doc.metaNodes.find((node) => node.tag === '00020003');
+  const originalUid = sop.value;
+  const newUid = '2.25.1001';
+  assert.equal(canEditNodeValue(meta), false);
+
+  store.updateNodeValue(sop.id, newUid);
+  assert.equal(meta.value, newUid);
+  store.undo();
+  assert.equal(meta.value, originalUid);
+  await store.batchEditAcrossFiles({ group: 8, element: 24, vr: 'UI', value: newUid, mode: 'update' });
+  assert.equal(meta.value, newUid);
+
+  // A stale metadata value supplied to the writer cannot make the export inconsistent.
+  meta.value = originalUid;
+  const reopened = await parse(await writeDicomDocument(doc));
+  assert.equal(reopened.datasetNodes.find((node) => node.tag === '00080018').value, newUid);
+  assert.equal(reopened.metaNodes.find((node) => node.tag === '00020003').value, newUid);
+});
+
+test('batch anonymization applies the preset across files and updates only references to regenerated instances', async () => {
+  const bytes = await generateSampleDicomBuffer();
+  const source = await parseDicomBuffer(bytes);
+  const target = await parseDicomBuffer(bytes);
+  const store = new AppStore();
+  const sop = (doc) => doc.datasetNodes.find((node) => node.tag === '00080018');
+  const study = (doc) => doc.datasetNodes.find((node) => node.tag === '0020000D');
+  const references = (doc) => doc.datasetNodes.find((node) => node.tag === '00081115').items[0].children
+    .find((node) => node.tag === '0008114A').items[0].children;
+  const referenced = (doc) => references(doc).find((node) => node.tag === '00081155');
+  const externalUid = referenced(target).value;
+  const oldTargetUid = sop(target).value;
+  store.loadDocument(source);
+  store.updateNodeValue(sop(source).id, '2.25.2001');
+  store.updateNodeValue(referenced(source).id, oldTargetUid);
+  store.loadDocument(target, null, { append: true });
+  store.toggleDeleteNode(patientName(target).id);
+
+  const result = await store.applyAnonymizationAllFiles(ANONYMIZE_PRESET_TAGS, { regenerateUids: true });
+  assert.equal(result.affectedFiles, 2);
+  const savedSource = await parse(await writeDicomDocument(source));
+  const savedTarget = await parse(await writeDicomDocument(target));
+  assert.equal(patientName(savedSource).value, 'ANONYMOUS');
+  assert.equal(patientName(savedTarget), undefined);
+  assert.ok([savedSource, savedTarget].every((doc) => !doc.datasetNodes.some((node) => node.tag === '00120062')));
+  assert.notEqual(sop(savedTarget).value, oldTargetUid);
+  assert.notEqual(sop(savedTarget).value, sop(savedSource).value);
+  assert.equal(referenced(savedSource).value, sop(savedTarget).value);
+  assert.equal(referenced(savedTarget).value, externalUid);
+  assert.equal(study(savedSource).value, study(savedTarget).value);
+});
+
+test('YBR_FULL and packed multi-frame YBR_FULL_422 preview the expected RGB colors', async () => {
+  const meta = { rows: 1, cols: 2, samplesPerPixel: 3, planarConfig: 0, bitsAllocated: 8 };
+  const red = [254, 0, 0, 255];
+  const gray = [128, 128, 128, 255];
+  for (const [planarConfig, bytes] of [[0, [76, 85, 255, 128, 128, 128]], [1, [76, 128, 85, 128, 255, 128]]]) {
+    const frame = await decodePixelFrame({
+      ...meta, planarConfig, photometric: 'YBR_FULL', pixelNode: { rawBytes: Uint8Array.from(bytes) },
+    });
+    assert.deepEqual([...frame.rgba], [...red, ...gray]);
+  }
+  const packed = {
+    ...meta,
+    photometric: 'YBR_FULL_422',
+    pixelNode: { rawBytes: Uint8Array.of(128, 128, 128, 128, 76, 76, 85, 255) },
+  };
+  assert.deepEqual([...(await decodePixelFrame(packed, 0)).rgba], [...gray, ...gray]);
+  assert.deepEqual([...(await decodePixelFrame(packed, 1)).rgba], [...red, ...red]);
+  assert.equal((await decodePixelFrame(packed, 2)).kind, 'unsupported');
 });

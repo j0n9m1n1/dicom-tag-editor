@@ -14,6 +14,7 @@ import { lookupUidName } from '../dicom/dictionary.js';
 import { hasNonAscii, isUtf8Charset, usesSpecificCharacterSet } from '../dicom/charset.js';
 import { computeVm, formatByteSize } from '../dicom/parser.js';
 import { generateDicomUid } from '../dicom/uid.js';
+import { getReadOnlyTagMessage } from '../state/store.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLocalizedVrText } from '../i18n.js';
 
@@ -270,8 +271,8 @@ export class InspectorPanel {
           ? t('inspPadSpace')
           : t('inspPadNone');
 
-    const canRevert = node.status === 'modified' || node.status === 'added';
-    const canDelete = node.tag !== '00020010';
+    const canDelete = !getReadOnlyTagMessage(node.tag);
+    const canRevert = canDelete && (node.status === 'modified' || node.status === 'added');
 
     this.container.innerHTML = `
       <!-- 1. Compact Header with Breadcrumbs, Copy & Revert/Delete Actions -->
@@ -375,7 +376,7 @@ export class InspectorPanel {
   }
 
   _renderEditorModeToggle(node, spec) {
-    if (node.isBinary || node.isSequence || node.tag === '00020010') return '';
+    if (node.isBinary || node.isSequence || getReadOnlyTagMessage(node.tag)) return '';
     if (node.vr === 'PN') {
       return `
         <button class="btn-link small" data-action="toggle-pn-mode">
@@ -437,10 +438,11 @@ export class InspectorPanel {
   }
 
   _renderValueEditor(node, spec, isDeleted) {
-    if (node.tag === '00020010') {
+    const readOnlyMessage = getReadOnlyTagMessage(node.tag);
+    if (readOnlyMessage) {
       return `
-        <input class="input insp-input mono" value="${escapeHtml(node.value)}" readonly aria-label="Transfer Syntax UID" />
-        <p class="muted small">${escapeHtml(t('transferSyntaxReadOnly'))}</p>
+        <input class="input insp-input mono" value="${escapeHtml(node.value)}" readonly aria-label="${escapeHtml(node.name)}" />
+        <p class="muted small">${escapeHtml(t(readOnlyMessage))}</p>
       `;
     }
 

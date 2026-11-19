@@ -14,6 +14,7 @@ import {
 } from './vrSpec.js';
 import { getTransferSyntaxInfo, parseTagString } from './dictionary.js';
 import { encodeDicomString } from './charset.js';
+import { getSopInstanceUid } from './uid.js';
 
 function concatUint8Arrays(arrays) {
   let total = 0;
@@ -310,6 +311,16 @@ export async function writeDicomDocument(doc) {
 
     // Serialize all active group 0002 nodes EXCEPT (0002,0000)
     const activeMeta = (doc.metaNodes || []).filter((n) => n.status !== 'deleted' && n.tag !== '00020000');
+    const sopMetaIndex = activeMeta.findIndex((node) => node.tag === '00020003');
+    const sopInstanceUid = getSopInstanceUid(doc);
+    if (!sopInstanceUid && doc.datasetNodes.some((node) => node.tag === '00080018')) {
+      throw new Error('A Part 10 file requires a non-empty SOP Instance UID (0008,0018).');
+    }
+    if (sopInstanceUid && activeMeta[sopMetaIndex]?.value !== sopInstanceUid) {
+      const sopMeta = { group: 0x0002, element: 0x0003, vr: 'UI', value: sopInstanceUid };
+      if (sopMetaIndex === -1) activeMeta.push(sopMeta);
+      else activeMeta[sopMetaIndex] = sopMeta;
+    }
     const syntaxNode = activeMeta.find((n) => n.tag === '00020010');
     const uid = syntaxNode ? syntaxNode.value.trim() : doc.transferSyntaxUid;
     const syntax = getTransferSyntaxInfo(uid);

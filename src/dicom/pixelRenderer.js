@@ -2,7 +2,7 @@
  * Modular DICOM PixelData renderer.
  * Currently supports:
  *  - Uncompressed Grayscale (8/16-bit signed/unsigned, MONOCHROME1 & MONOCHROME2)
- *  - Uncompressed Color (RGB, PlanarConfiguration 0 & 1)
+ *  - Uncompressed Color (RGB, YBR_FULL, YBR_FULL_422)
  *  - RLE Lossless (1.2.840.10008.1.2.5)
  *  - JPEG Baseline / Extended (1.2.840.10008.1.2.4.50 / .51) via browser native decoder
  *  - Multi-frame stepping, Rescale Slope/Intercept, interactive Window/Level & Invert
@@ -233,9 +233,20 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
     return { kind: 'unsupported', reason: t('pixelErrBits', { bits: bitsAllocated }), codec: 'raw' };
   }
 
+  const isPackedYbr = photometric === 'YBR_FULL_422';
+  const isColor = samplesPerPixel === 3 &&
+    (photometric === 'RGB' || photometric === 'YBR_FULL' || isPackedYbr);
+  const isGrayscale = samplesPerPixel === 1 && (photometric === 'MONOCHROME1' || photometric === 'MONOCHROME2');
+  if ((!isColor && !isGrayscale) || (isPackedYbr && (cols % 2 !== 0 || planarConfig !== 0))) {
+    return { kind: 'unsupported', reason: t('pixelErrPhotometric', { mode: photometric }), codec: 'raw' };
+  }
+  if (isColor && bitsAllocated !== 8) {
+    return { kind: 'unsupported', reason: t('pixelErrBits', { bits: bitsAllocated }), codec: 'raw' };
+  }
+
   const pixelCount = rows * cols;
   const bytesPerSample = bitsAllocated / 8;
-  const frameByteSize = pixelCount * samplesPerPixel * bytesPerSample;
+  const frameByteSize = pixelCount * (isPackedYbr ? 2 : samplesPerPixel) * bytesPerSample;
   const frameOffset = frameIndex * frameByteSize;
 
   if (frameOffset + frameByteSize > rawBytes.length) {
@@ -246,31 +257,36 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
     };
   }
 
-  // Color RGB
-  if (samplesPerPixel === 3 && (photometric === 'RGB' || photometric.startsWith('YBR'))) {
-    if (bitsAllocated !== 8) {
-      return { kind: 'unsupported', reason: t('pixelErrBits', { bits: bitsAllocated }), codec: 'raw' };
-    }
+  if (isColor) {
     const rgba = new Uint8ClampedArray(pixelCount * 4);
-    if (planarConfig === 1) {
-      // RRR... GGG... BBB...
-      const rOff = frameOffset;
-      const gOff = frameOffset + pixelCount;
-      const bOff = frameOffset + pixelCount * 2;
-      for (let i = 0; i < pixelCount; i++) {
-        rgba[i * 4] = rawBytes[rOff + i];
-        rgba[i * 4 + 1] = rawBytes[gOff + i];
-        rgba[i * 4 + 2] = rawBytes[bOff + i];
-        rgba[i * 4 + 3] = 255;
+    const writePixel = (i, a, b, c) => {
+      const out = i * 4;
+      if (photometric === 'RGB') {
+        rgba[out] = a;
+        rgba[out + 1] = b;
+        rgba[out + 2] = c;
+      } else {
+        const cb = b - 128;
+        const cr = c - 128;
+        rgba[out] = a + 1.402 * cr;
+        rgba[out + 1] = a - 0.344136 * cb - 0.714136 * cr;
+        rgba[out + 2] = a + 1.772 * cb;
+      }
+      rgba[out + 3] = 255;
+    };
+    if (isPackedYbr) {
+      // Each Y1, Y2, Cb, Cr group represents two adjacent pixels.
+      for (let i = 0; i < pixelCount; i += 2) {
+        const start = frameOffset + i * 2;
+        writePixel(i, rawBytes[start], rawBytes[start + 2], rawBytes[start + 3]);
+        writePixel(i + 1, rawBytes[start + 1], rawBytes[start + 2], rawBytes[start + 3]);
       }
     } else {
-      // RGB RGB RGB...
+      const stride = planarConfig === 1 ? 1 : 3;
+      const channelOffset = planarConfig === 1 ? pixelCount : 1;
       for (let i = 0; i < pixelCount; i++) {
-        const s = frameOffset + i * 3;
-        rgba[i * 4] = rawBytes[s];
-        rgba[i * 4 + 1] = rawBytes[s + 1];
-        rgba[i * 4 + 2] = rawBytes[s + 2];
-        rgba[i * 4 + 3] = 255;
+        const start = frameOffset + i * stride;
+        writePixel(i, rawBytes[start], rawBytes[start + channelOffset], rawBytes[start + channelOffset * 2]);
       }
     }
     return { kind: 'rgb', width: cols, height: rows, rgba };

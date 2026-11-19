@@ -20,3 +20,7 @@ export function generateDicomUid() {
   }
   return `2.25.${value.toString(10)}`;
 }
+
+export function getSopInstanceUid(doc) {
+  return doc.datasetNodes.find((node) => node.tag === '00080018' && node.status !== 'deleted')?.value.trim() || '';
+}
