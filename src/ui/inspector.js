@@ -11,7 +11,7 @@
 
 import { getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
 import { lookupUidName } from '../dicom/dictionary.js';
-import { hasNonAscii, isUtf8Charset } from '../dicom/charset.js';
+import { hasNonAscii, isUtf8Charset, usesSpecificCharacterSet } from '../dicom/charset.js';
 import { computeVm, formatByteSize } from '../dicom/parser.js';
 import { generateDicomUid } from '../dicom/uid.js';
 import { icons, escapeHtml } from './icons.js';
@@ -245,8 +245,8 @@ export class InspectorPanel {
     const isDeleted = node.status === 'deleted';
     const charset = this.store.getSpecificCharacterSet();
     const needsUtf8Warn =
-      !node.isBinary &&
-      !node.isSequence &&
+      info.section === 'main' &&
+      usesSpecificCharacterSet(node.vr) &&
       hasNonAscii(node.value) &&
       !isUtf8Charset(charset);
 
@@ -375,7 +375,7 @@ export class InspectorPanel {
   }
 
   _renderEditorModeToggle(node, spec) {
-    if (node.isBinary || node.isSequence) return '';
+    if (node.isBinary || node.isSequence || node.tag === '00020010') return '';
     if (node.vr === 'PN') {
       return `
         <button class="btn-link small" data-action="toggle-pn-mode">
@@ -437,6 +437,13 @@ export class InspectorPanel {
   }
 
   _renderValueEditor(node, spec, isDeleted) {
+    if (node.tag === '00020010') {
+      return `
+        <input class="input insp-input mono" value="${escapeHtml(node.value)}" readonly aria-label="Transfer Syntax UID" />
+        <p class="muted small">${escapeHtml(t('transferSyntaxReadOnly'))}</p>
+      `;
+    }
+
     if (node.isSequence) {
       const count = (node.items || []).length;
       return `
@@ -515,7 +522,7 @@ export class InspectorPanel {
           <button class="btn btn-sm" data-action="fill-now">${escapeHtml(t('inspFillNow', { time: getNowDicomTime() }))}</button>
         </div>
       `;
-    } else if (node.vr === 'UI' && !isDeleted && node.tag !== '00020010' && node.tag !== '00020002' && node.tag !== '00080016') {
+    } else if (node.vr === 'UI' && !isDeleted && node.tag !== '00020002' && node.tag !== '00080016') {
       helperHtml = `
         <div class="quick-helpers">
           <button class="btn btn-sm" data-action="gen-uid">${icons.sparkles(13)} ${escapeHtml(t('inspGenUid'))}</button>
@@ -601,7 +608,7 @@ export class InspectorPanel {
     if (!el) return;
     const spec = getVrSpec(node.vr);
     const charset = this.store.getSpecificCharacterSet();
-    const needsUtf8Warn = hasNonAscii(node.value) && !isUtf8Charset(charset);
+    const needsUtf8Warn = usesSpecificCharacterSet(node.vr) && hasNonAscii(node.value) && !isUtf8Charset(charset);
     el.innerHTML = this._renderLiveMetricsHtml(node, spec, needsUtf8Warn);
   }
 

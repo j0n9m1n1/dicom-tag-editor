@@ -12,7 +12,7 @@ import {
   NULL_PAD_VRS,
   VR_SPECS,
 } from './vrSpec.js';
-import { parseTagString } from './dictionary.js';
+import { getTransferSyntaxInfo, parseTagString } from './dictionary.js';
 import { encodeDicomString } from './charset.js';
 
 function concatUint8Arrays(arrays) {
@@ -167,22 +167,25 @@ function buildElementHeader(group, element, vr, valueLength, explicit, littleEnd
 function serializeNode(node, explicit, littleEndian, charset) {
   // 1) Sequence (SQ)
   if (node.isSequence) {
+    const itemExplicit = explicit && !node.sequenceEncodedAsUn;
+    const itemLittleEndian = node.sequenceEncodedAsUn || littleEndian;
     const itemChunks = [];
     for (const item of node.items || []) {
-      const childBytes = serializeDatasetNodes(item.children || [], explicit, littleEndian, charset);
+      const childBytes = serializeDatasetNodes(item.children || [], itemExplicit, itemLittleEndian, charset);
       if (item.undefinedLength) {
-        itemChunks.push(makeItemHeader(0xfffe, 0xe000, 0xffffffff, littleEndian));
+        itemChunks.push(makeItemHeader(0xfffe, 0xe000, 0xffffffff, itemLittleEndian));
         itemChunks.push(childBytes);
-        itemChunks.push(makeItemHeader(0xfffe, 0xe00d, 0, littleEndian));
+        itemChunks.push(makeItemHeader(0xfffe, 0xe00d, 0, itemLittleEndian));
       } else {
-        itemChunks.push(makeItemHeader(0xfffe, 0xe000, childBytes.length, littleEndian));
+        itemChunks.push(makeItemHeader(0xfffe, 0xe000, childBytes.length, itemLittleEndian));
         itemChunks.push(childBytes);
       }
     }
 
     if (node.undefinedLength) {
-      const hdr = buildElementHeader(node.group, node.element, 'SQ', 0xffffffff, explicit, littleEndian);
-      const delim = makeItemHeader(0xfffe, 0xe0dd, 0, littleEndian);
+      const vr = node.sequenceEncodedAsUn ? 'UN' : 'SQ';
+      const hdr = buildElementHeader(node.group, node.element, vr, 0xffffffff, explicit, littleEndian);
+      const delim = makeItemHeader(0xfffe, 0xe0dd, 0, itemLittleEndian);
       return concatUint8Arrays([hdr, ...itemChunks, delim]);
     } else {
       const body = concatUint8Arrays(itemChunks);
@@ -198,7 +201,8 @@ function serializeNode(node, explicit, littleEndian, charset) {
   }
 
   // 3) Unchanged node with rawBytes — preserve verbatim!
-  if (node.status === 'unchanged' && node.rawBytes instanceof Uint8Array) {
+  if (node.status === 'unchanged' && node.rawBytes instanceof Uint8Array &&
+      (node.rawCharset === undefined || node.rawCharset === charset)) {
     const body = padEven(node.rawBytes, NULL_PAD_VRS.has(node.vr) ? 0x00 : 0x20);
     const hdr = buildElementHeader(node.group, node.element, node.vr, body.length, explicit, littleEndian);
     return concatUint8Arrays([hdr, body]);
@@ -277,26 +281,8 @@ async function deflateRawBytes(bytes) {
   if (typeof CompressionStream === 'undefined') {
     throw new Error('CompressionStream not supported');
   }
-  const cs = new CompressionStream('deflate-raw');
-  const writer = cs.writable.getWriter();
-  writer.write(bytes);
-  writer.close();
-  const chunks = [];
-  const reader = cs.readable.getReader();
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    total += value.length;
-  }
-  const out = new Uint8Array(total);
-  let pos = 0;
-  for (const c of chunks) {
-    out.set(c, pos);
-    pos += c.length;
-  }
-  return out;
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+  return padEven(new Uint8Array(await new Response(stream).arrayBuffer()), 0x00);
 }
 
 /**
@@ -307,23 +293,12 @@ async function deflateRawBytes(bytes) {
 export async function writeDicomDocument(doc) {
   const parts = [];
 
-  // Serialize Main Dataset first so we know if deflation succeeded
   const mainBytesRaw = serializeDatasetNodes(
     doc.datasetNodes,
     doc.explicit,
     doc.littleEndian,
     ''
   );
-
-  let mainBytes = mainBytesRaw;
-  let forceExplicitTs = false;
-  if (doc.wasDeflated) {
-    try {
-      mainBytes = await deflateRawBytes(mainBytesRaw);
-    } catch {
-      forceExplicitTs = true;
-    }
-  }
 
   if (doc.hasPart10Header) {
     // 128-byte preamble + "DICM"
@@ -334,18 +309,20 @@ export async function writeDicomDocument(doc) {
     parts.push(preamble, dicm);
 
     // Serialize all active group 0002 nodes EXCEPT (0002,0000)
-    const activeMeta = (doc.metaNodes || [])
-      .filter((n) => n.status !== 'deleted' && n.tag !== '00020000')
-      .slice()
-      .sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
-
-    const metaChunks = activeMeta.map((n) => {
-      if (forceExplicitTs && n.tag === '00020010') {
-        const patched = { ...n, value: '1.2.840.10008.1.2.1', status: 'modified' };
-        return serializeNode(patched, true, true, '');
-      }
-      return serializeNode(n, true, true, '');
-    });
+    const activeMeta = (doc.metaNodes || []).filter((n) => n.status !== 'deleted' && n.tag !== '00020000');
+    const syntaxNode = activeMeta.find((n) => n.tag === '00020010');
+    const uid = syntaxNode ? syntaxNode.value.trim() : doc.transferSyntaxUid;
+    const syntax = getTransferSyntaxInfo(uid);
+    if (!uid || (doc.transferSyntaxUid && uid !== doc.transferSyntaxUid) ||
+        syntax.explicit !== doc.explicit || syntax.littleEndian !== doc.littleEndian ||
+        Boolean(syntax.deflated) !== Boolean(doc.wasDeflated)) {
+      throw new Error('Transfer Syntax UID must match the original dataset encoding.');
+    }
+    if (!syntaxNode) {
+      activeMeta.push({ group: 0x0002, element: 0x0010, vr: 'UI', value: uid });
+    }
+    activeMeta.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+    const metaChunks = activeMeta.map((n) => serializeNode(n, true, true, ''));
 
     const metaBody = concatUint8Arrays(metaChunks);
 
@@ -357,6 +334,6 @@ export async function writeDicomDocument(doc) {
     parts.push(metaLenHeader, metaLenVal, metaBody);
   }
 
-  parts.push(mainBytes);
+  parts.push(doc.wasDeflated ? await deflateRawBytes(mainBytesRaw) : mainBytesRaw);
   return concatUint8Arrays(parts);
 }

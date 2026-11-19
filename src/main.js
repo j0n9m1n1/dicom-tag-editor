@@ -66,6 +66,7 @@ document.getElementById('welcome-gh-link').innerHTML = `${icons.github(14)}<span
 document.getElementById('status-gh-link').innerHTML = `${icons.github(13)}<span>GitHub</span>`;
 
 let _fileInputAppendMode = false;
+let saveInProgress = false;
 
 function showToast(message, type = 'info') {
   const el = document.createElement('div');
@@ -197,11 +198,11 @@ function updateToolbarAndHeader() {
   btnAnonymize.disabled = !hasDoc;
   btnDiff.disabled = !hasDoc;
   btnRaw.disabled = !hasDoc;
-  btnSaveAs.disabled = !hasDoc;
+  btnSaveAs.disabled = !hasDoc || saveInProgress;
 
   const canDirectSave = hasDoc && Boolean(store.fileHandle);
   btnSaveDirect.classList.toggle('hidden', !canDirectSave);
-  btnSaveDirect.disabled = !canDirectSave;
+  btnSaveDirect.disabled = !canDirectSave || saveInProgress;
 
   if (!hasDoc) {
     summaryStrip.classList.add('hidden');
@@ -211,7 +212,7 @@ function updateToolbarAndHeader() {
 
   const doc = store.doc;
   const stats = store.getStatsAndDiff();
-  const totalChanges = stats.modified + stats.added + stats.deleted;
+  const totalChanges = (stats.modified + stats.added + stats.deleted) || Number(Boolean(doc.needsResave));
 
   // Build file meta + key DICOM attributes in the summary strip below the topbar
   const tsText = doc.transferSyntaxInfo?.name || doc.transferSyntaxUid || '';
@@ -219,6 +220,7 @@ function updateToolbarAndHeader() {
   if (stats.modified) changeParts.push(t('changeMod', { n: stats.modified }));
   if (stats.added) changeParts.push(t('changeAdd', { n: stats.added }));
   if (stats.deleted) changeParts.push(t('changeDel', { n: stats.deleted }));
+  if (doc.needsResave) changeParts.push(t('changeSavePending'));
 
   const fileLeadHtml = `
     <div class="sum-file-group">
@@ -406,120 +408,138 @@ function confirmInvalidBeforeSave() {
   return true;
 }
 
-async function saveDocumentDirect() {
-  if (!store.doc || !store.fileHandle) {
-    return saveDocumentAs();
-  }
-  if (!confirmInvalidBeforeSave()) return;
+async function runSave(save) {
+  if (saveInProgress) return;
+  saveInProgress = true;
+  updateToolbarAndHeader();
   try {
-    const bytes = await writeDicomDocument(store.doc);
-    const writable = await store.fileHandle.createWritable();
-    await writable.write(bytes);
-    await writable.close();
-    store.markSaved();
-    showToast(t('toastSavedDirect', { name: store.doc.fileName, bytes: bytes.length.toLocaleString() }), 'ok');
+    await save();
   } catch (err) {
-    console.error(err);
-    showToast(t('toastDirectFail', { msg: err.message }), 'warn');
-    await saveDocumentAs();
+    if (err.name !== 'AbortError') {
+      console.error(err);
+      showToast(t('toastSaveErr', { msg: err.message }), 'error');
+    }
+  } finally {
+    saveInProgress = false;
+    store.emit('edit');
   }
 }
 
-async function saveDocumentAs() {
-  if (!store.doc) return;
-  if (!confirmInvalidBeforeSave()) return;
+async function writeToFile(handle, bytes) {
+  const writable = await handle.createWritable();
   try {
-    const bytes = await writeDicomDocument(store.doc);
-    const suggestedName = store.doc.fileName.toLowerCase().endsWith('.dcm')
-      ? store.doc.fileName.replace(/\.dcm$/i, '_edited.dcm')
-      : `${store.doc.fileName}_edited.dcm`;
+    await writable.write(bytes);
+    await writable.close();
+  } catch (err) {
+    await writable.abort().catch(() => {});
+    throw err;
+  }
+}
 
-    if (window.isSecureContext && typeof window.showSaveFilePicker === 'function') {
+function downloadBytes(bytes, type, name) {
+  const url = URL.createObjectURL(new Blob([bytes], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  try {
+    link.click();
+  } finally {
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+}
+
+async function pickSaveFile(suggestedName) {
+  if (!window.isSecureContext || typeof window.showSaveFilePicker !== 'function') return null;
+  try {
+    return await window.showSaveFilePicker({
+      suggestedName,
+      types: [{ description: 'DICOM File', accept: { 'application/dicom': ['.dcm'] } }],
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') throw err;
+    return null;
+  }
+}
+
+async function saveActiveDocument(direct = false) {
+  const entry = store.getActiveEntry();
+  if (saveInProgress || !entry?.doc || !confirmInvalidBeforeSave()) return;
+  const { doc, name, fileHandle } = entry;
+  const suggestedName = `${name.split('/').at(-1).replace(/\.dcm$/i, '')}_edited.dcm`;
+
+  return runSave(async () => {
+    const directHandle = direct ? fileHandle : null;
+    let handle = directHandle || await pickSaveFile(suggestedName);
+    const revision = store.getDocumentRevision(doc);
+    const bytes = await writeDicomDocument(doc);
+
+    if (handle) {
       try {
-        const handle = await window.showSaveFilePicker({
-          suggestedName,
-          types: [{ description: 'DICOM File', accept: { 'application/dicom': ['.dcm'] } }],
-        });
-        const writable = await handle.createWritable();
-        await writable.write(bytes);
-        await writable.close();
-        store.fileHandle = handle;
-        store.doc.fileName = handle.name || suggestedName;
-        const active = store.getActiveEntry();
-        if (active) {
-          active.name = store.doc.fileName;
-          active.fileHandle = handle;
-        }
-        store.markSaved();
-        showToast(t('toastSavedAs', { name: store.doc.fileName, bytes: bytes.length.toLocaleString() }), 'ok');
-        return;
+        await writeToFile(handle, bytes);
       } catch (err) {
-        if (err.name === 'AbortError') return;
+        showToast(t('toastDirectFail', { msg: err.message }), 'warn');
+        handle = null;
       }
     }
 
-    const blob = new Blob([bytes], { type: 'application/dicom' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = suggestedName;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    store.markSaved();
-    showToast(t('toastDownloadStart', { name: suggestedName, bytes: bytes.length.toLocaleString() }), 'ok');
-  } catch (err) {
-    console.error(err);
-    showToast(t('toastSaveErr', { msg: err.message }), 'error');
-  }
+    const savedName = handle?.name || (handle && directHandle ? name : suggestedName);
+    if (!handle) downloadBytes(bytes, 'application/dicom', savedName);
+    const file = handle ? { handle, name: savedName, size: bytes.length } : null;
+    const isCurrent = store.markSaved(doc, revision, file);
+    const message = handle ? (directHandle ? 'toastSavedDirect' : 'toastSavedAs') : 'toastDownloadStart';
+    showToast(t(message, { name: savedName, bytes: bytes.length.toLocaleString() }), 'ok');
+    if (!isCurrent) showToast(t('toastSavePending'), 'warn');
+  });
+}
+
+function saveDocumentDirect() {
+  return saveActiveDocument(true);
+}
+
+function saveDocumentAs() {
+  return saveActiveDocument();
 }
 
 async function saveAllAsZip() {
-  const files = store.files;
+  const files = store.files.slice();
   if (files.length === 0) return;
 
-  try {
+  return runSave(async () => {
     const zipEntries = [];
-    for (let i = 0; i < files.length; i++) {
-      const entry = files[i];
-      if (entry.error) continue;
+    const savedDocs = [];
+    for (const { doc, name, sourceFile, arrayBuffer, error } of files) {
+      if (error) continue;
 
       let dataBytes;
-      if (entry.doc) {
-        dataBytes = await writeDicomDocument(entry.doc);
-        store.markSaved(entry.doc);
-      } else if (entry.sourceFile) {
-        dataBytes = new Uint8Array(await entry.sourceFile.arrayBuffer());
-      } else if (entry.arrayBuffer) {
-        dataBytes = new Uint8Array(entry.arrayBuffer);
+      if (doc) {
+        const revision = store.getDocumentRevision(doc);
+        dataBytes = await writeDicomDocument(doc);
+        savedDocs.push({ doc, revision });
+      } else if (sourceFile) {
+        dataBytes = new Uint8Array(await sourceFile.arrayBuffer());
+      } else if (arrayBuffer) {
+        dataBytes = new Uint8Array(arrayBuffer);
       } else {
         continue;
       }
 
-      zipEntries.push({ name: entry.name, data: dataBytes });
+      zipEntries.push({ name, data: dataBytes });
     }
 
     if (zipEntries.length === 0) return;
 
     const zipBytes = buildZipArchive(zipEntries);
     const zipName = 'dicom_edited_batch.zip';
-    const blob = new Blob([zipBytes], { type: 'application/zip' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = zipName;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-
-    store.emit('edit');
+    downloadBytes(zipBytes, 'application/zip', zipName);
+    let isCurrent = true;
+    for (const { doc, revision } of savedDocs) {
+      if (!store.markSaved(doc, revision)) isCurrent = false;
+    }
     showToast(t('toastZipDone', { count: zipEntries.length, name: zipName }), 'ok');
-  } catch (err) {
-    console.error(err);
-    showToast(t('toastSaveErr', { msg: err.message }), 'error');
-  }
+    if (!isCurrent) showToast(t('toastSavePending'), 'warn');
+  });
 }
 
 // ============================================================================

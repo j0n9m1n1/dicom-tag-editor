@@ -30,6 +30,10 @@ const CHARSET_MAP = {
 
 const EXTENDED_CHARSET_VRS = new Set(['SH', 'LO', 'ST', 'PN', 'LT', 'UT', 'UC']);
 
+export function usesSpecificCharacterSet(vr) {
+  return EXTENDED_CHARSET_VRS.has(vr);
+}
+
 /**
  * Determine preferred TextDecoder label from SpecificCharacterSet tag value.
  * @param {string} specificCharacterSet
@@ -108,7 +112,7 @@ export function decodeDicomString(bytes, vr, specificCharacterSet) {
   while (end > 0 && bytes[end - 1] === 0x00) end--;
   const slice = end === bytes.length ? bytes : bytes.subarray(0, end);
 
-  const encoding = EXTENDED_CHARSET_VRS.has(vr)
+  const encoding = usesSpecificCharacterSet(vr)
     ? resolveDecoderEncoding(specificCharacterSet)
     : 'iso-8859-1';
 
@@ -130,17 +134,17 @@ export function decodeDicomString(bytes, vr, specificCharacterSet) {
 
 /**
  * Encode string to bytes for saving.
- * Uses UTF-8 for ISO_IR 192 / extended Unicode, and Latin-1/ASCII otherwise.
+ * Rejects text we cannot encode in the declared character set.
  * @param {string} value
  * @param {string} vr
  * @param {string} specificCharacterSet
  * @returns {Uint8Array}
  */
-export function encodeDicomString(value, vr, specificCharacterSet) {
+export function encodeDicomString(value, vr, specificCharacterSet = '') {
   const str = value ?? '';
   if (str.length === 0) return new Uint8Array(0);
 
-  if (vr === 'UI' || !EXTENDED_CHARSET_VRS.has(vr)) {
+  if (!usesSpecificCharacterSet(vr)) {
     // ASCII / single-byte encoding
     const out = new Uint8Array(str.length);
     for (let i = 0; i < str.length; i++) {
@@ -149,8 +153,12 @@ export function encodeDicomString(value, vr, specificCharacterSet) {
     return out;
   }
 
-  const enc = resolveDecoderEncoding(specificCharacterSet);
-  if (enc === 'iso-8859-1' && !hasNonLatin1(str)) {
+  if (!hasNonAscii(str) || isUtf8Charset(specificCharacterSet)) {
+    return new TextEncoder().encode(str);
+  }
+
+  const charset = specificCharacterSet.trim();
+  if ((charset === 'ISO_IR 100' || charset === 'ISO 2022 IR 100') && !hasNonLatin1(str)) {
     const out = new Uint8Array(str.length);
     for (let i = 0; i < str.length; i++) {
       out[i] = str.charCodeAt(i) & 0xff;
@@ -158,8 +166,7 @@ export function encodeDicomString(value, vr, specificCharacterSet) {
     return out;
   }
 
-  // Default modern standard: UTF-8 (compatible with ISO_IR 192)
-  return new TextEncoder().encode(str);
+  throw new Error(`Cannot encode text with SpecificCharacterSet ${charset || '(default)'}. Set it to ISO_IR 192 (UTF-8) to save Unicode text.`);
 }
 
 export function hasNonAscii(str) {

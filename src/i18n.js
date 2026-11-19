@@ -101,6 +101,7 @@ const MESSAGES = {
     inspPadNone: '없음 (짝수 고정)',
     inspFormatLabel: '형식:',
     inspEditTitle: '값 편집',
+    transferSyntaxReadOnly: 'Transfer Syntax UID는 파일의 인코딩을 표시하는 읽기 전용 값입니다.',
     inspSwitchRaw: '원문(\\) 편집으로 전환',
     inspSwitchMv: '다중값 리스트 편집',
     inspSeqBoxDesc: '하위 Item <strong>{count}개</strong>가 포함되어 있습니다. 트리에서 펼쳐 개별 태그를 수정하세요.',
@@ -141,6 +142,7 @@ const MESSAGES = {
     pixelErrEmpty: 'PixelData 바이트가 비어 있습니다.',
     pixelErrSmall: 'PixelData 크기({len} B)가 예상 해상도({cols}x{rows})보다 작습니다.',
     pixelErrBits: 'BitsAllocated={bits} 포맷은 현재 프리뷰를 지원하지 않습니다.',
+    pixelErrStoredBits: 'Bits Stored 또는 High Bit 값이 유효하지 않습니다.',
 
     // Modals
     modalAddTitle: '새 DICOM 태그 추가',
@@ -197,6 +199,8 @@ const MESSAGES = {
     toastSavedAs: '"{name}" 저장 완료 ({bytes} bytes)',
     toastDownloadStart: '"{name}" 다운로드 시작 ({bytes} bytes)',
     toastSaveErr: '저장 중 오류 발생: {msg}',
+    toastSavePending: '저장 중 추가 변경이 있었습니다. 최신 상태를 저장하려면 다시 저장하세요.',
+    changeSavePending: '다시 저장 필요',
 
     // Validation messages
     valItemPrefix: '[항목 #{n}] ',
@@ -443,6 +447,7 @@ const MESSAGES = {
     inspPadNone: 'None (even fixed)',
     inspFormatLabel: 'Format:',
     inspEditTitle: 'Edit Value',
+    transferSyntaxReadOnly: 'Transfer Syntax UID is read-only and describes the file encoding.',
     inspSwitchRaw: 'Switch to raw (\\) input',
     inspSwitchMv: 'Multi-value list editor',
     inspSeqBoxDesc: 'Contains <strong>{count}</strong> child item(s). Expand in the tree to edit nested tags.',
@@ -483,6 +488,7 @@ const MESSAGES = {
     pixelErrEmpty: 'PixelData buffer is empty.',
     pixelErrSmall: 'PixelData size ({len} B) is smaller than expected dimensions ({cols}x{rows}).',
     pixelErrBits: 'BitsAllocated={bits} is not currently supported for preview.',
+    pixelErrStoredBits: 'Bits Stored or High Bit is invalid.',
 
     // Modals
     modalAddTitle: 'Add New DICOM Tag',
@@ -539,6 +545,8 @@ const MESSAGES = {
     toastSavedAs: 'Saved "{name}" ({bytes} bytes)',
     toastDownloadStart: 'Downloading "{name}" ({bytes} bytes)',
     toastSaveErr: 'Failed to save file: {msg}',
+    toastSavePending: 'Changes were made during saving. Save again to include them.',
+    changeSavePending: 'Save again',
 
     // Validation messages
     valItemPrefix: '[Item #{n}] ',

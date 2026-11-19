@@ -184,6 +184,10 @@ export class ModalManager {
         targetList: target ? target.item.children : null,
         targetSection: target ? target.section : null,
       });
+      if (res?.locked) {
+        feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(t('transferSyntaxReadOnly'))}</span>`;
+        return;
+      }
       this.close();
       if (res?.duplicate) {
         this.callbacks.onToast?.(t('toastDupTag', { tag: parsed.formatted }), 'warn');
@@ -657,6 +661,11 @@ export class ModalManager {
         value: valInp.value,
         mode: modeSel.value,
       });
+      if (res.locked) {
+        valGroup.classList.remove('hidden');
+        feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(t('transferSyntaxReadOnly'))}</span>`;
+        return;
+      }
       this.close();
       this.callbacks.onToast?.(
         res.affectedFiles > 0 ? t('toastBatchDone', { files: res.affectedFiles }) : t('toastAnonNone'),

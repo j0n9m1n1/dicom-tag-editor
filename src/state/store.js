@@ -58,7 +58,11 @@ export function countDocChanges(doc) {
   };
   walk(doc.metaNodes);
   walk(doc.datasetNodes);
-  return count;
+  return count || Number(Boolean(doc.needsResave));
+}
+
+export function canEditNodeValue(node) {
+  return !node.isSequence && !node.isBinary && node.status !== 'deleted' && node.tag !== '00020010';
 }
 
 export class AppStore {
@@ -96,6 +100,7 @@ export class AppStore {
     this.redoStack = [];
     this.listeners = new Set();
     this.pixelVersion = 0;
+    this._revisions = new WeakMap();
   }
 
   subscribe(fn) {
@@ -485,7 +490,8 @@ export class AppStore {
   findNodeInfo(targetId) {
     if (!this.doc || !targetId) return null;
 
-    const searchList = (list, path, crumbs, section) => {
+    const searchList = (list, path, crumbs, section, inheritedCharsetNode = null) => {
+      const charsetNode = list.find((n) => n.tag === '00080005' && n.status !== 'deleted') || inheritedCharsetNode;
       for (let i = 0; i < list.length; i++) {
         const node = list[i];
         if (node.id === targetId) {
@@ -496,6 +502,7 @@ export class AppStore {
             path: [...path, node.formattedTag],
             breadcrumbs: [...crumbs, { id: node.id, label: node.formattedTag }],
             section,
+            charsetNode,
           };
         }
         if (node.isSequence && node.items) {
@@ -518,7 +525,8 @@ export class AppStore {
               item.children || [],
               [...path, `${node.formattedTag} ${node.keyword}`, `Item #${j}`],
               [...crumbs, seqCrumb, itemCrumb],
-              section
+              section,
+              charsetNode
             );
             if (found) return found;
           }
@@ -534,17 +542,25 @@ export class AppStore {
   }
 
   getSpecificCharacterSet() {
-    if (!this.doc) return '';
-    const cs = this.doc.datasetNodes.find((n) => n.tag === '00080005' && n.status !== 'deleted');
-    return cs ? cs.value : '';
+    const info = this.findNodeInfo(this.selectedId);
+    return info?.charsetNode?.value ?? '';
   }
 
   _isPixelDisplayTag(hex) {
     return hex.startsWith('0028') || hex === '7FE00010' || hex === '00020010';
   }
 
+  getDocumentRevision(doc) {
+    return this._revisions.get(doc) ?? 0;
+  }
+
+  _noteEdit(doc) {
+    this._revisions.set(doc, this.getDocumentRevision(doc) + 1);
+  }
+
   _executeCommand(cmd) {
     cmd.redo();
+    this._noteEdit(this.doc);
     this.undoStack.push(cmd);
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack = [];
@@ -565,6 +581,7 @@ export class AppStore {
     const cmd = this.undoStack.pop();
     if (!cmd) return;
     cmd.undo();
+    this._noteEdit(this.doc);
     this.redoStack.push(cmd);
     if (cmd.affectsPixel) this.pixelVersion++;
     this._saveActiveSnapshot();
@@ -575,6 +592,7 @@ export class AppStore {
     const cmd = this.redoStack.pop();
     if (!cmd) return;
     cmd.redo();
+    this._noteEdit(this.doc);
     this.undoStack.push(cmd);
     if (cmd.affectsPixel) this.pixelVersion++;
     this._saveActiveSnapshot();
@@ -583,7 +601,7 @@ export class AppStore {
 
   updateNodeValue(nodeId, newValue) {
     const info = this.findNodeInfo(nodeId);
-    if (!info || info.isSeqItem || info.node.isSequence || info.node.isBinary) return;
+    if (!info || info.isSeqItem || !canEditNodeValue(info.node)) return;
 
     const node = info.node;
     if (node.value === newValue) return;
@@ -695,6 +713,7 @@ export class AppStore {
   addTag({ group, element, vr, value, targetList = null, targetSection = null }) {
     if (!this.doc) return null;
     const hex = tagHex(group, element);
+    if (hex === '00020010') return { locked: true };
     const dict = lookupTag(group, element);
     const isMeta = targetList ? targetSection === 'meta' : group === 0x0002;
     const list = targetList || (isMeta ? this.doc.metaNodes : this.doc.datasetNodes);
@@ -813,19 +832,8 @@ export class AppStore {
 
   ensureUtf8Charset() {
     if (!this.doc) return;
-    const clearNonAsciiRaw = (nodes) => {
-      for (const n of nodes || []) {
-        if (!n.isBinary && !n.isSequence && /[^\x00-\x7F]/.test(n.value || '')) {
-          n.rawBytes = null;
-        }
-        if (n.isSequence && n.items) {
-          for (const item of n.items) clearNonAsciiRaw(item.children);
-        }
-      }
-    };
-    clearNonAsciiRaw(this.doc.datasetNodes);
-
-    const existing = this.doc.datasetNodes.find((n) => n.tag === '00080005');
+    const info = this.findNodeInfo(this.selectedId);
+    const existing = info?.charsetNode || this.doc.datasetNodes.find((n) => n.tag === '00080005');
     if (existing) {
       if (existing.status === 'deleted') {
         this.toggleDeleteNode(existing.id);
@@ -1025,6 +1033,7 @@ export class AppStore {
         const built = this._buildAnonymizeCommandForDoc(doc, rules, { ...opts, sharedUidMap });
         if (!built) continue;
         built.cmd.redo();
+        this._noteEdit(doc);
         entry.undoStack.push(built.cmd);
         entry.redoStack = [];
         affectedFiles++;
@@ -1045,8 +1054,9 @@ export class AppStore {
    * @param {{ group: number, element: number, vr: string, value: string, mode: 'set'|'update'|'delete' }} params
    */
   async batchEditAcrossFiles({ group, element, vr, value, mode }) {
-    this._saveActiveSnapshot();
     const hex = tagHex(group, element);
+    if (hex === '00020010') return { affectedFiles: 0, locked: true };
+    this._saveActiveSnapshot();
     const dict = lookupTag(group, element);
     const isMeta = group === 0x0002;
     let affectedFiles = 0;
@@ -1060,7 +1070,7 @@ export class AppStore {
         let cmd = null;
 
         if (mode === 'delete') {
-          if (existing && hex !== '00020010') {
+          if (existing) {
             if (existing.status === 'added') {
               cmd = {
                 label: `Batch remove ${existing.formattedTag}`,
@@ -1150,6 +1160,7 @@ export class AppStore {
 
         if (cmd) {
           cmd.redo();
+          this._noteEdit(doc);
           entry.undoStack.push(cmd);
           entry.redoStack = [];
           affectedFiles++;
@@ -1215,9 +1226,21 @@ export class AppStore {
     return stats;
   }
 
-  markSaved(targetDoc = null) {
-    const doc = targetDoc || this.doc;
-    if (!doc) return;
+  markSaved(doc, revision, file = null) {
+    const entry = this.files.find((item) => item.doc === doc);
+    if (!entry) return true;
+    if (file) {
+      entry.fileHandle = file.handle;
+      entry.name = doc.fileName = file.name;
+      entry.size = doc.fileSize = file.size;
+      if (doc === this.doc) this.fileHandle = file.handle;
+    }
+    if (this.getDocumentRevision(doc) !== revision) {
+      // The written snapshot is older than the editor, even if undo restored the prior baseline.
+      doc.needsResave = true;
+      return false;
+    }
+    doc.needsResave = false;
     const clean = (list) => {
       for (let i = list.length - 1; i >= 0; i--) {
         const n = list[i];
@@ -1239,17 +1262,13 @@ export class AppStore {
     clean(doc.metaNodes);
     clean(doc.datasetNodes);
 
-    if (!targetDoc || targetDoc === this.doc) {
+    entry.undoStack = [];
+    entry.redoStack = [];
+    if (doc === this.doc) {
       this.undoStack = [];
       this.redoStack = [];
       this._saveActiveSnapshot();
-      this.emit('edit');
-    } else {
-      const entry = this.files.find((f) => f.doc === doc);
-      if (entry) {
-        entry.undoStack = [];
-        entry.redoStack = [];
-      }
     }
+    return true;
   }
 }

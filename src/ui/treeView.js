@@ -5,6 +5,7 @@
 
 import { getVrSpec } from '../dicom/vrSpec.js';
 import { computeVm } from '../dicom/parser.js';
+import { canEditNodeValue } from '../state/store.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
 
@@ -69,7 +70,7 @@ export class TreeView {
 
     const menu = document.createElement('div');
     menu.className = 'ctx-menu';
-    const canEdit = !node.isSequence && !node.isBinary && node.status !== 'deleted';
+    const canEdit = canEditNodeValue(node);
     const canRevert = node.status === 'modified' || node.status === 'added';
     const isDeleted = node.status === 'deleted';
     const canDelete = node.tag !== '00020010';
@@ -322,7 +323,7 @@ export class TreeView {
           : new TextEncoder().encode(n.value || '').length;
 
       let valueHtml;
-      if (this.inlineEditId === n.id && !n.isSequence && !n.isBinary && n.status !== 'deleted') {
+      if (this.inlineEditId === n.id && canEditNodeValue(n)) {
         valueHtml = `<input class="inline-edit-input" data-inline-id="${n.id}" value="${escapeHtml(n.value)}" />`;
       } else if (n.isSequence) {
         valueHtml = `<span class="val-seq">${(n.items || []).length} item(s)</span>`;
@@ -400,7 +401,7 @@ export class TreeView {
 
   startInlineEdit(nodeId) {
     const info = this.store.findNodeInfo(nodeId);
-    if (!info || info.isSeqItem || info.node.isSequence || info.node.isBinary || info.node.status === 'deleted') {
+    if (!info || info.isSeqItem || !canEditNodeValue(info.node)) {
       return;
     }
     this.inlineEditId = nodeId;

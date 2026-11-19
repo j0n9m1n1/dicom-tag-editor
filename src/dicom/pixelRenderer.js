@@ -222,18 +222,23 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
     planarConfig,
     bitsAllocated,
     bitsStored,
+    highBit = bitsStored - 1,
     pixelRepresentation,
     rescaleSlope,
     rescaleIntercept,
     littleEndian,
   } = meta;
 
+  if (bitsAllocated !== 8 && bitsAllocated !== 16) {
+    return { kind: 'unsupported', reason: t('pixelErrBits', { bits: bitsAllocated }), codec: 'raw' };
+  }
+
   const pixelCount = rows * cols;
-  const bytesPerSample = Math.max(1, Math.ceil(bitsAllocated / 8));
+  const bytesPerSample = bitsAllocated / 8;
   const frameByteSize = pixelCount * samplesPerPixel * bytesPerSample;
   const frameOffset = frameIndex * frameByteSize;
 
-  if (frameOffset + pixelCount * samplesPerPixel > rawBytes.length) {
+  if (frameOffset + frameByteSize > rawBytes.length) {
     return {
       kind: 'unsupported',
       reason: t('pixelErrSmall', { len: rawBytes.length, cols, rows }),
@@ -243,6 +248,9 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
 
   // Color RGB
   if (samplesPerPixel === 3 && (photometric === 'RGB' || photometric.startsWith('YBR'))) {
+    if (bitsAllocated !== 8) {
+      return { kind: 'unsupported', reason: t('pixelErrBits', { bits: bitsAllocated }), codec: 'raw' };
+    }
     const rgba = new Uint8ClampedArray(pixelCount * 4);
     if (planarConfig === 1) {
       // RRR... GGG... BBB...
@@ -269,44 +277,27 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
   }
 
   // Grayscale (8-bit or 16-bit)
+  if (!Number.isInteger(bitsStored) || !Number.isInteger(highBit) ||
+      bitsStored < 1 || highBit < bitsStored - 1 || highBit >= bitsAllocated) {
+    return { kind: 'unsupported', reason: t('pixelErrStoredBits'), codec: 'raw' };
+  }
   const values = new Float32Array(pixelCount);
-  const view = new DataView(rawBytes.buffer, rawBytes.byteOffset + frameOffset, Math.min(frameByteSize, rawBytes.length - frameOffset));
+  const view = new DataView(rawBytes.buffer, rawBytes.byteOffset + frameOffset, frameByteSize);
 
   let min = Infinity;
   let max = -Infinity;
-  const signBit = 1 << (bitsStored - 1);
-  const mask = bitsStored < 16 ? (1 << bitsStored) - 1 : 0xffff;
+  const rangeSize = 1 << bitsStored;
+  const signBit = rangeSize >> 1;
+  const shift = highBit + 1 - bitsStored;
 
-  if (bitsAllocated <= 8) {
-    for (let i = 0; i < pixelCount; i++) {
-      let v = pixelRepresentation === 1 ? view.getInt8(i) : view.getUint8(i);
-      const modalityVal = v * rescaleSlope + rescaleIntercept;
-      values[i] = modalityVal;
-      if (modalityVal < min) min = modalityVal;
-      if (modalityVal > max) max = modalityVal;
-    }
-  } else if (bitsAllocated <= 16) {
-    for (let i = 0; i < pixelCount; i++) {
-      let rawVal = view.getUint16(i * 2, littleEndian);
-      if (bitsStored < 16) {
-        rawVal &= mask;
-        if (pixelRepresentation === 1 && (rawVal & signBit)) {
-          rawVal = rawVal - (1 << bitsStored);
-        }
-      } else if (pixelRepresentation === 1) {
-        rawVal = view.getInt16(i * 2, littleEndian);
-      }
-      const modalityVal = rawVal * rescaleSlope + rescaleIntercept;
-      values[i] = modalityVal;
-      if (modalityVal < min) min = modalityVal;
-      if (modalityVal > max) max = modalityVal;
-    }
-  } else {
-    return {
-      kind: 'unsupported',
-      reason: t('pixelErrBits', { bits: bitsAllocated }),
-      codec: 'raw',
-    };
+  for (let i = 0; i < pixelCount; i++) {
+    const sample = bitsAllocated === 8 ? view.getUint8(i) : view.getUint16(i * 2, littleEndian);
+    let value = (sample >>> shift) & (rangeSize - 1);
+    if (pixelRepresentation === 1 && (value & signBit)) value -= rangeSize;
+    const modalityValue = value * rescaleSlope + rescaleIntercept;
+    values[i] = modalityValue;
+    if (modalityValue < min) min = modalityValue;
+    if (modalityValue > max) max = modalityValue;
   }
 
   const range = Math.max(1, max - min);

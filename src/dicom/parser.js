@@ -18,7 +18,7 @@ import {
   lookupTag,
   getTransferSyntaxInfo,
 } from './dictionary.js';
-import { decodeDicomString } from './charset.js';
+import { decodeDicomString, usesSpecificCharacterSet } from './charset.js';
 
 let _nextNodeId = 1;
 export function genNodeId() {
@@ -44,26 +44,19 @@ async function inflateRawBytes(compressed) {
   if (typeof DecompressionStream === 'undefined') {
     throw new Error('이 브라우저는 Deflated Transfer Syntax 압축 해제를 지원하지 않습니다.');
   }
-  const ds = new DecompressionStream('deflate-raw');
-  const writer = ds.writable.getWriter();
-  writer.write(compressed);
-  writer.close();
-  const chunks = [];
-  const reader = ds.readable.getReader();
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    total += value.length;
+  const inflate = async (input) => {
+    const stream = new Blob([input]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  };
+  try {
+    return await inflate(compressed);
+  } catch (err) {
+    // PS3.5 A.5 pads an odd-length Deflate stream with one trailing NUL.
+    if (compressed.length % 2 === 0 && compressed.at(-1) === 0) {
+      return inflate(compressed.subarray(0, -1));
+    }
+    throw err;
   }
-  const out = new Uint8Array(total);
-  let pos = 0;
-  for (const c of chunks) {
-    out.set(c, pos);
-    pos += c.length;
-  }
-  return out;
 }
 
 /**
@@ -148,13 +141,18 @@ function detectRawExplicitVr(bytes, startOffset) {
   return false;
 }
 
+function checkedValueEnd(start, length, limit, tag) {
+  const end = start + length;
+  if (end > limit) throw new Error(`Truncated DICOM value at ${tag}.`);
+  return end;
+}
+
 /**
  * Parse encapsulated PixelData (undefined length) into raw bytes + fragment slices.
  */
 function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleEndian) {
   let pos = startOffset;
   const fragments = [];
-  let isFirstItem = true;
   let basicOffsetTable = null;
 
   while (pos + 8 <= endOffset) {
@@ -163,33 +161,20 @@ function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleE
     const len = view.getUint32(pos + 4, littleEndian);
     pos += 8;
 
-    if (g === 0xfffe && e === 0xe0dd) {
-      // Sequence delimitation item ends encapsulated pixel data
-      break;
+    if (g === 0xfffe && e === 0xe0dd && len === 0 && basicOffsetTable !== null) {
+      return { nextOffset: pos, rawBytes: bytes.slice(startOffset, pos), fragments, basicOffsetTable };
     }
-    if (g === 0xfffe && e === 0xe000) {
-      const fragEnd = Math.min(pos + len, endOffset);
-      const fragBytes = bytes.slice(pos, fragEnd);
-      if (isFirstItem) {
-        basicOffsetTable = fragBytes;
-        isFirstItem = false;
-      } else {
-        fragments.push(fragBytes);
-      }
-      pos = fragEnd;
+    if (g !== 0xfffe || e !== 0xe000) throw new Error('Invalid encapsulated Pixel Data item.');
+    const fragEnd = checkedValueEnd(pos, len, endOffset, '(7FE0,0010)');
+    const fragBytes = bytes.slice(pos, fragEnd);
+    if (basicOffsetTable === null) {
+      basicOffsetTable = fragBytes;
     } else {
-      // Unexpected tag inside encapsulated pixel data; advance safely to end
-      pos = endOffset;
-      break;
+      fragments.push(fragBytes);
     }
+    pos = fragEnd;
   }
-
-  return {
-    nextOffset: pos,
-    rawBytes: bytes.slice(startOffset, pos),
-    fragments,
-    basicOffsetTable,
-  };
+  throw new Error('Missing Sequence Delimitation Item for encapsulated Pixel Data.');
 }
 
 /**
@@ -202,7 +187,7 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     isMetaSection = false,
     stopAfterGroup0002 = false,
     inheritedCharset = '',
-    depth = 0,
+    expectItemDelimiter = false,
   } = opts;
 
   let pos = startOffset;
@@ -215,14 +200,15 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     const group = view.getUint16(pos, littleEndian);
     const element = view.getUint16(pos + 2, littleEndian);
 
-    // Delimitation items stop current dataset/item
-    if (group === 0xfffe && (element === 0xe00d || element === 0xe0dd)) {
-      pos += 8; // skip tag + 4-byte zero length
-      return { nodes, nextOffset: pos, delimited: true, charset };
+    if (stopAfterGroup0002 && group !== 0x0002) {
+      return { nodes, nextOffset: tagStart };
     }
 
-    if (stopAfterGroup0002 && group > 0x0002) {
-      return { nodes, nextOffset: tagStart, delimited: false, charset };
+    if (group === 0xfffe) {
+      if (expectItemDelimiter && element === 0xe00d && view.getUint32(pos + 4, littleEndian) === 0) {
+        return { nodes, nextOffset: pos + 8 };
+      }
+      throw new Error(`Unexpected DICOM item ${formatTag(group, element)}.`);
     }
 
     pos += 4;
@@ -237,11 +223,10 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
         pos += 2;
         if (VR_32BIT_LENGTH.has(vr)) {
           pos += 2; // 2 reserved bytes
-          if (pos + 4 > endOffset) break;
+          if (pos + 4 > endOffset) throw new Error(`Truncated DICOM header at ${formatTag(group, element)}.`);
           length = view.getUint32(pos, littleEndian);
           pos += 4;
         } else {
-          if (pos + 2 > endOffset) break;
           length = view.getUint16(pos, littleEndian);
           pos += 2;
         }
@@ -264,15 +249,14 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     const undefinedLength = length === 0xffffffff;
     const hex = tagHex(group, element);
 
-    // Heuristic for Implicit VR or UN-encoded Private SQ (when length === 0xFFFFFFFF and next tag is FFFE,E000)
+    // PS3.5 6.2.2 defines an explicit UN sequence's value as Implicit VR Little Endian.
+    const sequenceEncodedAsUn = explicit && vrSource === 'explicit' && vr === 'UN' && undefinedLength && hex !== '7FE00010';
     if (
-      (!explicit || vr === 'UN') &&
-      undefinedLength &&
-      vr !== 'SQ' &&
-      hex !== '7FE00010' &&
-      pos + 4 <= endOffset &&
-      view.getUint16(pos, littleEndian) === 0xfffe &&
-      view.getUint16(pos + 2, littleEndian) === 0xe000
+      sequenceEncodedAsUn || (
+        !explicit && undefinedLength && vr !== 'SQ' && hex !== '7FE00010' &&
+        pos + 4 <= endOffset && view.getUint16(pos, littleEndian) === 0xfffe &&
+        [0xe000, 0xe0dd].includes(view.getUint16(pos + 2, littleEndian))
+      )
     ) {
       vr = 'SQ';
       vrSource = 'inferred';
@@ -283,54 +267,50 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
 
     // 1) Sequence (SQ)
     if (vr === 'SQ') {
-      const sqEnd = undefinedLength ? endOffset : Math.min(pos + length, endOffset);
+      const label = formatTag(group, element);
+      const sqEnd = undefinedLength ? endOffset : checkedValueEnd(pos, length, endOffset, label);
+      const itemExplicit = explicit && !sequenceEncodedAsUn;
+      const itemLittleEndian = sequenceEncodedAsUn || littleEndian;
       const items = [];
       let sqPos = pos;
+      let delimited = false;
 
       while (sqPos + 8 <= sqEnd) {
-        const itemG = view.getUint16(sqPos, littleEndian);
-        const itemE = view.getUint16(sqPos + 2, littleEndian);
-        const itemLen = view.getUint32(sqPos + 4, littleEndian);
+        const itemG = view.getUint16(sqPos, itemLittleEndian);
+        const itemE = view.getUint16(sqPos + 2, itemLittleEndian);
+        const itemLen = view.getUint32(sqPos + 4, itemLittleEndian);
         sqPos += 8;
 
-        if (itemG === 0xfffe && itemE === 0xe0dd) {
+        if (undefinedLength && itemG === 0xfffe && itemE === 0xe0dd && itemLen === 0) {
+          delimited = true;
           break;
         }
-        if (itemG === 0xfffe && itemE === 0xe000) {
-          const itemUndef = itemLen === 0xffffffff;
-          const itemLimit = itemUndef ? sqEnd : Math.min(sqPos + itemLen, sqEnd);
-          const itemResult = parseDatasetRange(bytes, view, sqPos, itemLimit, {
-            explicit,
-            littleEndian,
-            isMetaSection: false,
-            stopAfterGroup0002: false,
-            inheritedCharset: charset,
-            depth: depth + 1,
-          });
-          items.push({
-            id: genNodeId(),
-            undefinedLength: itemUndef,
-            children: itemResult.nodes,
-          });
-          sqPos = itemUndef ? itemResult.nextOffset : itemLimit;
-        } else {
-          // Unexpected tag inside SQ without delimiter; rewind 8 bytes so outer loop can read it
-          sqPos -= 8;
-          break;
-        }
+        if (itemG !== 0xfffe || itemE !== 0xe000) throw new Error(`Invalid DICOM sequence item at ${label}.`);
+        const itemUndef = itemLen === 0xffffffff;
+        const itemLimit = itemUndef ? sqEnd : checkedValueEnd(sqPos, itemLen, sqEnd, label);
+        const itemResult = parseDatasetRange(bytes, view, sqPos, itemLimit, {
+          explicit: itemExplicit,
+          littleEndian: itemLittleEndian,
+          inheritedCharset: charset,
+          expectItemDelimiter: itemUndef,
+        });
+        items.push({ id: genNodeId(), undefinedLength: itemUndef, children: itemResult.nodes });
+        sqPos = itemResult.nextOffset;
       }
 
-      const rawEnd = undefinedLength ? sqPos : Math.min(pos + length, endOffset);
+      if (undefinedLength && !delimited) throw new Error(`Missing Sequence Delimitation Item at ${label}.`);
+      if (!undefinedLength && sqPos !== sqEnd) throw new Error(`Truncated DICOM sequence at ${label}.`);
       nodes.push({
         id: genNodeId(),
         group,
         element,
         tag: hex,
-        formattedTag: formatTag(group, element),
+        formattedTag: label,
         keyword: dictInfo.keyword,
         name: dictInfo.name,
         vr: 'SQ',
         vrSource,
+        sequenceEncodedAsUn,
         vmSpec: dictInfo.vm,
         isMeta: isMetaSection,
         isPrivate,
@@ -338,7 +318,7 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
         isBinary: false,
         encapsulated: false,
         undefinedLength,
-        rawLength: rawEnd - pos,
+        rawLength: sqPos - pos,
         rawBytes: null,
         originalValue: '',
         value: '',
@@ -346,7 +326,7 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
         status: 'unchanged',
         validation: { valid: true, severity: 'ok', messages: [] },
       });
-      pos = rawEnd;
+      pos = sqPos;
       continue;
     }
 
@@ -383,29 +363,14 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       continue;
     }
 
-    // 3) Unknown undefined-length non-SQ element (rare fallback: scan for FFFE,E0DD)
-    let valEnd;
-    if (undefinedLength) {
-      let scan = pos;
-      while (scan + 8 <= endOffset) {
-        if (
-          view.getUint16(scan, littleEndian) === 0xfffe &&
-          view.getUint16(scan + 2, littleEndian) === 0xe0dd
-        ) {
-          scan += 8;
-          break;
-        }
-        scan += 2;
-      }
-      valEnd = Math.min(scan, endOffset);
-    } else {
-      valEnd = Math.min(pos + length, endOffset);
-    }
-
+    const label = formatTag(group, element);
+    if (undefinedLength) throw new Error(`Unsupported undefined DICOM value length at ${label}.`);
+    const valEnd = checkedValueEnd(pos, length, endOffset, label);
     const rawBytes = bytes.slice(pos, valEnd);
     pos = valEnd;
 
     const isBinary = BINARY_VRS.has(vr) || hex === '7FE00010';
+    const rawCharset = usesSpecificCharacterSet(vr) ? charset : undefined;
     let decodedValue = '';
 
     if (isBinary) {
@@ -443,7 +408,7 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       group,
       element,
       tag: hex,
-      formattedTag: formatTag(group, element),
+      formattedTag: label,
       keyword: dictInfo.keyword,
       name: dictInfo.name,
       vr,
@@ -457,14 +422,21 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       undefinedLength,
       rawLength: rawBytes.length,
       rawBytes,
+      rawCharset,
       originalValue: decodedValue,
       value: decodedValue,
       status: 'unchanged',
       validation,
     });
+
+    if (stopAfterGroup0002 && hex === '00020000' && length === 4 && nodes.length === 1) {
+      endOffset = checkedValueEnd(pos, view.getUint32(valEnd - 4, true), endOffset, label);
+    }
   }
 
-  return { nodes, nextOffset: pos, delimited: false, charset };
+  if (expectItemDelimiter) throw new Error('Missing DICOM Item Delimitation Item.');
+  if (!stopAfterGroup0002 && pos !== endOffset) throw new Error('Truncated DICOM element header.');
+  return { nodes, nextOffset: pos };
 }
 
 export function formatByteSize(bytes) {
