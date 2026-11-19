@@ -3,7 +3,61 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DICOM Tag Editor — 100% Local Browser Tool</title>
+  <title>DICOM Tag Editor — Free Online Local DICOM Metadata Viewer &amp; Editor</title>
+  <meta name="description" content="Free browser-based DICOM tag editor and metadata viewer running 100% locally with zero upload. Inspect and edit nested SQ sequences, validate DICOM VR rules, anonymize PHI tags, preview pixel data with Window/Level, and save byte-preserving .dcm files. 서버 전송 없는 무료 웹 DICOM 태그 편집기." />
+  <meta name="keywords" content="DICOM tag editor, DICOM metadata viewer, online DICOM editor, DICOM anonymizer, DICOM VR validator, local DICOM viewer, browser DICOM tool, DICOM 태그 편집기, DICOM 뷰어, DICOM 익명화" />
+  <meta name="robots" content="index, follow" />
+  <meta name="theme-color" content="#0d1117" />
+  <link rel="canonical" href="https://dcm.tyty.uk/" />
+
+  <!-- Open Graph / Social Preview -->
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://dcm.tyty.uk/" />
+  <meta property="og:site_name" content="DICOM Tag Editor" />
+  <meta property="og:title" content="DICOM Tag Editor — 100% Local Online DICOM Metadata Viewer &amp; Editor" />
+  <meta property="og:description" content="Edit DICOM tags, nested SQ sequences, validate VR specs, anonymize PHI, and preview pixel data directly in your browser with zero server upload." />
+  <meta property="og:image" content="https://dcm.tyty.uk/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:locale" content="ko_KR" />
+  <meta property="og:locale:alternate" content="en_US" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="DICOM Tag Editor — 100% Local Browser Tool" />
+  <meta name="twitter:description" content="Zero-upload DICOM metadata viewer &amp; tag editor with nested SQ tree, VR validation, anonymization, and Pixel W/L preview." />
+  <meta name="twitter:image" content="https://dcm.tyty.uk/og-image.png" />
+
+  <!-- Structured Data (Schema.org WebApplication) -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "DICOM Tag Editor",
+    "url": "https://dcm.tyty.uk/",
+    "description": "Free 100% browser-local DICOM tag editor, metadata viewer, VR validator, PHI anonymizer, and pixel preview tool with zero server upload.",
+    "applicationCategory": "UtilitiesApplication",
+    "operatingSystem": "Any (Web Browser)",
+    "browserRequirements": "Requires modern browser with JavaScript enabled",
+    "inLanguage": ["ko", "en"],
+    "isAccessibleForFree": true,
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    },
+    "featureList": [
+      "Hierarchical DICOM tag tree with Group 0002 File Meta and nested SQ sequences",
+      "Real-time DICOM PS3.5 VR specification guide and value validation",
+      "Byte-preserving round-trip DICOM saving without modifying untouched PixelData",
+      "Batch PHI anonymization preset with Undo/Redo and Diff review",
+      "Interactive PixelData preview with Window Center/Width and multi-frame support",
+      "100% client-side local processing with zero file upload",
+      "Korean and English UI switching"
+    ]
+  }
+  </script>
+
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Cpath d='M8 10h6a6 6 0 0 1 0 12H8V10Zm3 3v6h3a3 3 0 0 0 0-6h-3Z' fill='%23fff'/%3E%3Ccircle cx='23' cy='21' r='2.5' fill='%2338bdf8'/%3E%3C/svg%3E" />
   <link rel="stylesheet" href="./src/styles.css" />
 </head>
