@@ -254,13 +254,17 @@ code {
 }
 
 .file-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 600;
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 220px;
+  max-width: 340px;
 }
 
 .ts-badge {
@@ -1930,7 +1934,7 @@ kbd {
 .summary-strip {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 6px 12px;
   background: var(--bg-elevated);
   border-bottom: 1px solid var(--border);
@@ -1938,6 +1942,27 @@ kbd {
   color: var(--text-secondary);
   overflow-x: auto;
   white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.sum-file-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+
+.sum-sep {
+  width: 1px;
+  height: 15px;
+  background: var(--border-strong);
+  flex-shrink: 0;
+}
+
+.sum-meta-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
 }
 
@@ -2160,9 +2185,7 @@ kbd {
   }
 
   .brand-sub,
-  .ts-badge,
   .toolbar-sep,
-  #btn-toggle-pixel,
   #btn-files {
     display: none !important;
   }

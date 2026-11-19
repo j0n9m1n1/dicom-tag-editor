@@ -23,10 +23,6 @@ const store = new AppStore();
 const brandHome = document.getElementById('brand-home');
 const welcomeView = document.getElementById('welcome-view');
 const editorView = document.getElementById('editor-view');
-const fileMetaBar = document.getElementById('file-meta-bar');
-const fileNameLabel = document.getElementById('file-name-label');
-const tsBadge = document.getElementById('ts-badge');
-const changeSummary = document.getElementById('change-summary');
 
 const btnOpen = document.getElementById('btn-open');
 const btnSample = document.getElementById('btn-sample');
@@ -185,7 +181,6 @@ function updateToolbarAndHeader() {
 
   welcomeView.classList.toggle('hidden', hasDoc);
   editorView.classList.toggle('hidden', !hasDoc);
-  fileMetaBar.classList.toggle('hidden', !hasDoc);
   mobileNav.classList.toggle('hidden', !hasDoc);
 
   // Sync mobile tab state on editor view & bottom nav
@@ -221,12 +216,24 @@ function updateToolbarAndHeader() {
   }
 
   const doc = store.doc;
-  fileNameLabel.textContent = doc.fileName;
-  fileNameLabel.title = doc.fileName;
-  tsBadge.textContent = doc.transferSyntaxInfo?.name || doc.transferSyntaxUid;
-  tsBadge.title = `Transfer Syntax UID: ${doc.transferSyntaxUid}`;
+  const stats = store.getStatsAndDiff();
+  const totalChanges = stats.modified + stats.added + stats.deleted;
 
-  // Update top key metadata summary strip
+  // Build file meta + key DICOM attributes in the summary strip below the topbar
+  const tsText = doc.transferSyntaxInfo?.name || doc.transferSyntaxUid || '';
+  const changeParts = [];
+  if (stats.modified) changeParts.push(t('changeMod', { n: stats.modified }));
+  if (stats.added) changeParts.push(t('changeAdd', { n: stats.added }));
+  if (stats.deleted) changeParts.push(t('changeDel', { n: stats.deleted }));
+
+  const fileLeadHtml = `
+    <div class="sum-file-group">
+      <span class="file-name" title="${escapeHtml(doc.fileName)}">${icons.files(13)} ${escapeHtml(doc.fileName)}</span>
+      ${tsText ? `<span class="ts-badge" title="Transfer Syntax UID: ${escapeHtml(doc.transferSyntaxUid)}">${escapeHtml(tsText)}</span>` : ''}
+      ${changeParts.length > 0 ? `<span class="change-summary">${escapeHtml(changeParts.join(' · '))}</span>` : ''}
+    </div>
+  `;
+
   const getVal = (hex) => {
     const node = doc.datasetNodes.find((n) => n.tag === hex && n.status !== 'deleted');
     return node && !node.isBinary && !node.isSequence ? (node.value || '').trim() : '';
@@ -257,26 +264,12 @@ function updateToolbarAndHeader() {
   }
   if (studyDesc) summaryItems.push(`<span class="sum-item sum-desc" title="${escapeHtml(studyDesc)}">${escapeHtml(studyDesc)}</span>`);
 
-  if (summaryItems.length > 0) {
-    summaryStrip.innerHTML = summaryItems.join('<span class="sum-dot">·</span>');
-    summaryStrip.classList.remove('hidden');
-  } else {
-    summaryStrip.classList.add('hidden');
-  }
-
-  const stats = store.getStatsAndDiff();
-  const totalChanges = stats.modified + stats.added + stats.deleted;
-
-  if (totalChanges > 0) {
-    const parts = [];
-    if (stats.modified) parts.push(t('changeMod', { n: stats.modified }));
-    if (stats.added) parts.push(t('changeAdd', { n: stats.added }));
-    if (stats.deleted) parts.push(t('changeDel', { n: stats.deleted }));
-    changeSummary.textContent = parts.join(' · ');
-    changeSummary.classList.remove('hidden');
-  } else {
-    changeSummary.classList.add('hidden');
-  }
+  summaryStrip.innerHTML =
+    fileLeadHtml +
+    (summaryItems.length > 0
+      ? `<span class="sum-sep"></span><div class="sum-meta-group">${summaryItems.join('<span class="sum-dot">·</span>')}</div>`
+      : '');
+  summaryStrip.classList.remove('hidden');
 
   cntModified.textContent = String(totalChanges);
   cntInvalid.textContent = String(stats.invalid);
