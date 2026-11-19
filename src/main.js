@@ -118,16 +118,24 @@ function applyLanguage() {
       : '<span class="lang-dim">KO/</span><span class="lang-act">EN</span>';
 
   document.querySelectorAll('[data-i18n]').forEach((el) => {
-    el.textContent = t(el.dataset.i18n);
+    const key = el.dataset.i18n;
+    const val = t(key);
+    if (val !== key) el.textContent = val;
   });
   document.querySelectorAll('[data-i18n-html]').forEach((el) => {
-    el.innerHTML = t(el.dataset.i18nHtml);
+    const key = el.dataset.i18nHtml;
+    const val = t(key);
+    if (val !== key) el.innerHTML = val;
   });
   document.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
-    el.placeholder = t(el.dataset.i18nPlaceholder);
+    const key = el.dataset.i18nPlaceholder;
+    const val = t(key);
+    if (val !== key) el.placeholder = val;
   });
   document.querySelectorAll('[data-i18n-title]').forEach((el) => {
-    el.title = t(el.dataset.i18nTitle);
+    const key = el.dataset.i18nTitle;
+    const val = t(key);
+    if (val !== key) el.title = val;
   });
 }
 
