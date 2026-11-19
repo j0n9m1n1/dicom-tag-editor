@@ -358,6 +358,10 @@ export class ModalManager {
               <strong>${escapeHtml(t('modalAnonScopeAll', { n: this.store.files.length }))}</strong>
             </label>
           ` : ''}
+          <div class="val-feedback val-warn" style="margin-top:12px">
+            ${icons.alertCircle(15)}
+            <span>${escapeHtml(t('modalAnonDisclaimer'))}</span>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn" data-modal-close>${escapeHtml(t('modalCancel'))}</button>

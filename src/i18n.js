@@ -311,6 +311,10 @@ const MESSAGES = {
     pixelPresetBone: 'Bone',
     pixelZoomReset: '1:1',
     pixelCanvasHintV3: '드래그: W/L · 휠: 줌 · Shift+드래그: 이동',
+
+    // Legal Disclaimers
+    disclaimerFooter: '<strong>비진단용 (Not for Clinical / Diagnostic Use):</strong> 본 도구는 개발·연구·메타데이터 점검 용도이며 의료기기가 아닙니다. 모든 처리는 브라우저 로컬에서만 수행되며(서버 전송 없음), "있는 그대로(AS IS)" 제공되므로 편집 전 원본 파일 백업을 권장합니다.',
+    modalAnonDisclaimer: '주의: 태그 익명화는 영상 픽셀 자체에 새겨진 텍스트(Burned-in Annotation)나 비표준/중첩 태그 내 잔여 정보를 완전히 제거하지 못할 수 있습니다. 개인정보보호법·HIPAA·GDPR 준수 여부는 최종 저장 전 직접 확인하세요.',
   },
 
   en: {
@@ -618,6 +622,10 @@ const MESSAGES = {
     pixelPresetBone: 'Bone',
     pixelZoomReset: '1:1',
     pixelCanvasHintV3: 'Drag: W/L · Wheel: Zoom · Shift+Drag: Pan',
+
+    // Legal Disclaimers
+    disclaimerFooter: '<strong>Not for Clinical or Diagnostic Use:</strong> This tool is provided "AS IS" for development, research, and metadata inspection only and is not a certified medical device. All processing runs 100% locally in your browser with zero upload. Always keep a backup of original DICOM files.',
+    modalAnonDisclaimer: 'Notice: Tag anonymization does not remove burned-in text within pixel data (Burned-in Annotation) and may not cover non-standard or nested private attributes. Users are solely responsible for verifying compliance with HIPAA, GDPR, or local privacy laws.',
   },
 };
 
