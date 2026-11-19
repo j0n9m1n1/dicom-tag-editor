@@ -749,6 +749,80 @@ resizer.addEventListener('mousedown', (e) => {
   window.addEventListener('mouseup', onUp);
 });
 
+// Resizable Tree Table Columns (Drag to resize, Double-click to reset)
+const COL_SPECS = {
+  tag: { cssVar: '--col-tag-w', defaultWidth: 195, min: 110, max: 520 },
+  name: { cssVar: '--col-name-w', defaultWidth: 225, min: 100, max: 600 },
+  vr: { cssVar: '--col-vr-w', defaultWidth: 56, min: 42, max: 140 },
+  vm: { cssVar: '--col-vm-w', defaultWidth: 44, min: 34, max: 120 },
+  len: { cssVar: '--col-len-w', defaultWidth: 64, min: 44, max: 160 },
+};
+const COL_STORAGE_KEY = 'dcm_editor_col_widths';
+const colWidths = {};
+
+try {
+  const savedCols = JSON.parse(localStorage.getItem(COL_STORAGE_KEY) || '{}');
+  for (const [key, spec] of Object.entries(COL_SPECS)) {
+    const w = Number(savedCols[key]);
+    colWidths[key] = Number.isFinite(w)
+      ? Math.max(spec.min, Math.min(spec.max, w))
+      : spec.defaultWidth;
+    document.documentElement.style.setProperty(spec.cssVar, `${colWidths[key]}px`);
+  }
+} catch {
+  for (const [key, spec] of Object.entries(COL_SPECS)) {
+    colWidths[key] = spec.defaultWidth;
+  }
+}
+
+function saveColWidths() {
+  try {
+    localStorage.setItem(COL_STORAGE_KEY, JSON.stringify(colWidths));
+  } catch {
+    // ignore
+  }
+}
+
+const treeTableHeader = document.getElementById('tree-table-header');
+treeTableHeader.addEventListener('mousedown', (e) => {
+  const handle = e.target.closest('[data-resize-col]');
+  if (!handle) return;
+  e.preventDefault();
+  const colKey = handle.dataset.resizeCol;
+  const spec = COL_SPECS[colKey];
+  if (!spec) return;
+
+  handle.classList.add('active');
+  const startX = e.clientX;
+  const startW = colWidths[colKey] || spec.defaultWidth;
+
+  const onMove = (ev) => {
+    const nextW = Math.max(spec.min, Math.min(spec.max, Math.round(startW + (ev.clientX - startX))));
+    colWidths[colKey] = nextW;
+    document.documentElement.style.setProperty(spec.cssVar, `${nextW}px`);
+  };
+  const onUp = () => {
+    handle.classList.remove('active');
+    saveColWidths();
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+});
+
+treeTableHeader.addEventListener('dblclick', (e) => {
+  const handle = e.target.closest('[data-resize-col]');
+  if (!handle) return;
+  e.preventDefault();
+  const colKey = handle.dataset.resizeCol;
+  const spec = COL_SPECS[colKey];
+  if (!spec) return;
+  colWidths[colKey] = spec.defaultWidth;
+  document.documentElement.style.setProperty(spec.cssVar, `${spec.defaultWidth}px`);
+  saveColWidths();
+});
+
 // Initial render
 applyTheme();
 applyLanguage();
