@@ -25,7 +25,6 @@ const welcomeView = document.getElementById('welcome-view');
 const editorView = document.getElementById('editor-view');
 
 const btnOpen = document.getElementById('btn-open');
-const btnSample = document.getElementById('btn-sample');
 const btnFiles = document.getElementById('btn-files');
 const btnUndo = document.getElementById('btn-undo');
 const btnRedo = document.getElementById('btn-redo');
@@ -87,8 +86,6 @@ function applyLanguage() {
 
   btnOpen.innerHTML = `${icons.folderOpen(15)}<span>${t('btnOpen')}</span>`;
   btnOpen.title = t('btnOpenTitle');
-  btnSample.innerHTML = `${icons.sparkles(15)}<span>${t('btnSample')}</span>`;
-  btnSample.title = t('btnSampleTitle');
   btnFiles.innerHTML = `${icons.files(15)}<span>${t('btnFiles')} (${store.files.length})</span>`;
   btnFiles.title = t('btnFilesTitle');
   btnUndo.innerHTML = `${icons.undo(15)}`;
@@ -661,7 +658,6 @@ window.addEventListener('beforeunload', (e) => {
 
 btnOpen.addEventListener('click', () => openFileDialog());
 btnWelcomeOpen.addEventListener('click', () => openFileDialog());
-btnSample.addEventListener('click', loadSampleDicom);
 btnWelcomeSample.addEventListener('click', loadSampleDicom);
 btnFiles.addEventListener('click', () => store.toggleFileList());
 
