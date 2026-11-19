@@ -1295,6 +1295,60 @@ code {
   margin: 8px 0 12px;
 }
 
+/* Inspector Collapsible Accordions (Raw Bytes & VR Spec) */
+.insp-accordion {
+  padding: 0;
+}
+
+.insp-acc-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 15px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s;
+}
+.insp-acc-header:hover {
+  background: var(--bg-hover);
+}
+.insp-acc-header .insp-section-title {
+  margin-bottom: 0;
+}
+
+.insp-acc-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.insp-acc-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insp-acc-body {
+  padding: 2px 15px 13px;
+}
+
+.insp-acc-body .hex-dump {
+  margin-top: 2px;
+}
+
 /* VR Spec Card */
 .vr-spec-card {
   background: var(--bg-elevated);

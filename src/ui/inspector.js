@@ -118,6 +118,7 @@ export class InspectorPanel {
     this._multiValueMode = false;
     this._pnStructuredMode = false;
     this._showRawHex = false;
+    this._showVrSpec = true;
 
     this.container.addEventListener('click', (e) => this._onClick(e));
     this.container.addEventListener('input', (e) => this._onInput(e));
@@ -315,37 +316,47 @@ export class InspectorPanel {
         ` : ''}
       </div>
 
-      <!-- 3. Slim VR Standard Spec Card -->
-      <div class="insp-section">
-        <div class="insp-section-title">${escapeHtml(t('inspVrSpecTitle'))}</div>
-        <div class="vr-spec-card">
-          <div class="vr-spec-head">
-            <span class="vr-pill vr-cat-${spec.category}">${escapeHtml(node.vr)}</span>
-            <strong>${escapeHtml(spec.name)}</strong>
-          </div>
-          <div class="vr-spec-grid">
-            <div><span class="lbl">${escapeHtml(t('inspSpecCategory'))}</span><span>${escapeHtml(spec.category)}</span></div>
-            <div><span class="lbl">${escapeHtml(t('inspSpecLength'))}</span><span>${escapeHtml(maxLenText)}</span></div>
-            <div><span class="lbl">${escapeHtml(t('inspSpecVm'))}</span><span>${escapeHtml(spec.allowMultiValue ? t('inspVmAllowed') : t('inspVmSingle'))}</span></div>
-            <div><span class="lbl">${escapeHtml(t('inspSpecPadding'))}</span><span>${escapeHtml(padText)}</span></div>
-          </div>
-          <div class="vr-spec-hint"><strong>${escapeHtml(t('inspFormatLabel'))}</strong> ${escapeHtml(vrText.formatHint)}</div>
-          <div class="vr-spec-desc">${escapeHtml(vrText.description)}</div>
-        </div>
-      </div>
-
-      <!-- 4. Raw Bytes (Hex) Toggle -->
+      <!-- 3. Raw Bytes (Hex) Accordion (above VR Spec) -->
       ${!node.isBinary && !node.isSequence ? `
-        <div class="insp-section">
-          <div class="insp-section-header">
-            <div class="insp-section-title">${escapeHtml(t('inspRawHexTitle'))}</div>
-            <button class="btn-link small" data-action="toggle-raw-hex">
-              ${escapeHtml(this._showRawHex ? t('inspRawHexHide') : t('inspRawHexShow'))}
-            </button>
-          </div>
-          ${this._showRawHex ? this._renderRawHexBody(node) : ''}
+        <div class="insp-section insp-accordion ${this._showRawHex ? 'open' : ''}" id="insp-sec-rawhex">
+          <button type="button" class="insp-acc-header" data-action="toggle-raw-hex" aria-expanded="${this._showRawHex}">
+            <span class="insp-acc-left">
+              ${this._showRawHex ? icons.chevronDown(14) : icons.chevronRight(14)}
+              <span class="insp-section-title">${escapeHtml(t('inspRawHexTitle'))}</span>
+            </span>
+            <span class="insp-acc-meta mono">${node.rawBytes ? `${node.rawBytes.length} B` : `${new TextEncoder().encode(node.value || '').length} B`}</span>
+          </button>
+          ${this._showRawHex ? `<div class="insp-acc-body">${this._renderRawHexBody(node)}</div>` : ''}
         </div>
       ` : ''}
+
+      <!-- 4. VR Standard Spec Accordion -->
+      <div class="insp-section insp-accordion ${this._showVrSpec ? 'open' : ''}" id="insp-sec-vrspec">
+        <button type="button" class="insp-acc-header" data-action="toggle-vr-spec" aria-expanded="${this._showVrSpec}">
+          <span class="insp-acc-left">
+            ${this._showVrSpec ? icons.chevronDown(14) : icons.chevronRight(14)}
+            <span class="insp-section-title">${escapeHtml(t('inspVrSpecTitle'))}</span>
+          </span>
+          <span class="insp-acc-meta">
+            <span class="vr-pill vr-cat-${spec.category}">${escapeHtml(node.vr)}</span>
+            <span class="muted small">${escapeHtml(spec.name)}</span>
+          </span>
+        </button>
+        ${this._showVrSpec ? `
+          <div class="insp-acc-body">
+            <div class="vr-spec-card">
+              <div class="vr-spec-grid">
+                <div><span class="lbl">${escapeHtml(t('inspSpecCategory'))}</span><span>${escapeHtml(spec.category)}</span></div>
+                <div><span class="lbl">${escapeHtml(t('inspSpecLength'))}</span><span>${escapeHtml(maxLenText)}</span></div>
+                <div><span class="lbl">${escapeHtml(t('inspSpecVm'))}</span><span>${escapeHtml(spec.allowMultiValue ? t('inspVmAllowed') : t('inspVmSingle'))}</span></div>
+                <div><span class="lbl">${escapeHtml(t('inspSpecPadding'))}</span><span>${escapeHtml(padText)}</span></div>
+              </div>
+              <div class="vr-spec-hint"><strong>${escapeHtml(t('inspFormatLabel'))}</strong> ${escapeHtml(vrText.formatHint)}</div>
+              <div class="vr-spec-desc">${escapeHtml(vrText.description)}</div>
+            </div>
+          </div>
+        ` : ''}
+      </div>
     `;
   }
 
@@ -702,6 +713,20 @@ export class InspectorPanel {
       case 'toggle-raw-hex':
         this._showRawHex = !this._showRawHex;
         this._renderNode(info);
+        if (this._showRawHex) {
+          requestAnimationFrame(() => {
+            this.container.querySelector('#insp-sec-rawhex')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          });
+        }
+        break;
+      case 'toggle-vr-spec':
+        this._showVrSpec = !this._showVrSpec;
+        this._renderNode(info);
+        if (this._showVrSpec) {
+          requestAnimationFrame(() => {
+            this.container.querySelector('#insp-sec-vrspec')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          });
+        }
         break;
       case 'mv-add': {
         const cur = info.node.value || '';
