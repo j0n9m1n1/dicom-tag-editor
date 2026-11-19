@@ -7,6 +7,7 @@
 
 import { ALL_VR_CODES, getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
 import { parseTagString, searchDictionary, lookupTag } from '../dicom/dictionary.js';
+import { formatDcmDump, formatDicomJson } from '../dicom/dcmdump.js';
 import { ANONYMIZE_PRESET_TAGS } from '../state/store.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLocalizedVrText } from '../i18n.js';
@@ -343,6 +344,12 @@ export class ModalManager {
             <input type="checkbox" id="anon-mark-deid" checked />
             <span>${t('modalAnonMarkDeid')}</span>
           </label>
+          ${this.store.files.length > 1 ? `
+            <label class="checkbox-row" style="margin-top:8px">
+              <input type="checkbox" id="anon-all-files" checked />
+              <strong>${escapeHtml(t('modalAnonScopeAll', { n: this.store.files.length }))}</strong>
+            </label>
+          ` : ''}
         </div>
         <div class="modal-footer">
           <button class="btn" data-modal-close>${escapeHtml(t('modalCancel'))}</button>
@@ -353,7 +360,7 @@ export class ModalManager {
 
     this.root.classList.remove('hidden');
 
-    this.root.querySelector('#btn-apply-anon').addEventListener('click', () => {
+    this.root.querySelector('#btn-apply-anon').addEventListener('click', async () => {
       const rules = [];
       this.root.querySelectorAll('[data-anon-check]').forEach((cb) => {
         if (cb.checked) {
@@ -363,12 +370,284 @@ export class ModalManager {
         }
       });
       const markDeid = this.root.querySelector('#anon-mark-deid').checked;
-      const count = this.store.applyAnonymization(rules, markDeid);
+      const allFilesCb = this.root.querySelector('#anon-all-files');
+      const applyAll = Boolean(allFilesCb && allFilesCb.checked && this.store.files.length > 1);
+      this.close();
+
+      if (applyAll) {
+        const res = await this.store.applyAnonymizationAllFiles(rules, markDeid);
+        this.callbacks.onToast?.(
+          res.affectedFiles > 0
+            ? t('toastBatchDone', { files: res.affectedFiles })
+            : t('toastAnonNone'),
+          res.affectedFiles > 0 ? 'ok' : 'info'
+        );
+      } else {
+        const count = this.store.applyAnonymization(rules, markDeid);
+        this.callbacks.onToast?.(
+          count > 0 ? t('toastAnonDone', { count }) : t('toastAnonNone'),
+          count > 0 ? 'ok' : 'info'
+        );
+      }
+    });
+  }
+
+  /**
+   * Open Raw DICOM View modal (DCMTK dcmdump text & structured JSON).
+   */
+  openRawView() {
+    if (!this.store.doc) return;
+    let mode = 'dcmdump';
+    let includeDeleted = false;
+
+    const getText = () =>
+      mode === 'dcmdump'
+        ? formatDcmDump(this.store.doc, { includeDeleted })
+        : formatDicomJson(this.store.doc, { includeDeleted });
+
+    this.root.innerHTML = `
+      <div class="modal-card modal-xl" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <div>
+            <h3>${escapeHtml(t('modalRawTitle'))}</h3>
+            <div class="muted small">${escapeHtml(t('modalRawSubtitle'))}</div>
+          </div>
+          <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
+        </div>
+        <div class="raw-toolbar">
+          <div class="raw-tabs">
+            <button class="chip active" data-raw-mode="dcmdump">dcmdump (Text)</button>
+            <button class="chip" data-raw-mode="json">DICOM JSON</button>
+          </div>
+          <label class="checkbox-row small">
+            <input type="checkbox" id="raw-inc-del" />
+            <span>${escapeHtml(t('modalRawIncludeDeleted'))}</span>
+          </label>
+        </div>
+        <div class="modal-body modal-scroll raw-body">
+          <pre class="raw-pre" id="raw-output-pre"></pre>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" id="btn-raw-copy">${icons.copy(14)} ${escapeHtml(t('modalRawCopy'))}</button>
+          <button class="btn btn-primary" id="btn-raw-download">${icons.download(14)} ${escapeHtml(t('modalRawExport'))}</button>
+          <button class="btn" data-modal-close>${escapeHtml(t('modalClose'))}</button>
+        </div>
+      </div>
+    `;
+
+    this.root.classList.remove('hidden');
+
+    const preEl = this.root.querySelector('#raw-output-pre');
+    const delCb = this.root.querySelector('#raw-inc-del');
+    const renderRaw = () => {
+      preEl.textContent = getText();
+    };
+    renderRaw();
+
+    this.root.querySelectorAll('[data-raw-mode]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        mode = btn.dataset.rawMode;
+        this.root.querySelectorAll('[data-raw-mode]').forEach((b) =>
+          b.classList.toggle('active', b.dataset.rawMode === mode)
+        );
+        renderRaw();
+      });
+    });
+
+    delCb.addEventListener('change', () => {
+      includeDeleted = delCb.checked;
+      renderRaw();
+    });
+
+    this.root.querySelector('#btn-raw-copy').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(getText());
+        this.callbacks.onToast?.(t('toastCopied'), 'ok');
+      } catch {
+        const range = document.createRange();
+        range.selectNodeContents(preEl);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        document.execCommand('copy');
+        sel.removeAllRanges();
+        this.callbacks.onToast?.(t('toastCopied'), 'ok');
+      }
+    });
+
+    this.root.querySelector('#btn-raw-download').addEventListener('click', () => {
+      const ext = mode === 'dcmdump' ? 'txt' : 'json';
+      const mime = mode === 'dcmdump' ? 'text/plain;charset=utf-8' : 'application/json;charset=utf-8';
+      const base = this.store.doc.fileName.replace(/\.dcm$/i, '');
+      const blob = new Blob([getText()], { type: mime });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${base}_${mode}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+  }
+
+  /**
+   * Open Batch Edit modal to modify/add/delete a tag across all open files.
+   */
+  openBatchEdit() {
+    const fileCount = this.store.files.length;
+    if (fileCount === 0) return;
+
+    const editableVrs = ALL_VR_CODES.filter((c) => {
+      const cat = getVrSpec(c).category;
+      return cat !== 'sequence' && cat !== 'binary';
+    });
+    const vrOptions = editableVrs
+      .map((c) => `<option value="${c}">${c} — ${escapeHtml(getVrSpec(c).name)}</option>`)
+      .join('');
+
+    this.root.innerHTML = `
+      <div class="modal-card modal-md" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <div>
+            <h3>${escapeHtml(t('modalBatchTitle'))}</h3>
+            <div class="muted small">${escapeHtml(t('modalBatchSubtitle', { n: fileCount }))}</div>
+          </div>
+          <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>${escapeHtml(t('modalAddSearchLabel'))}</label>
+            <input type="text" class="input" id="batch-dict-search" placeholder="${escapeHtml(t('modalAddSearchPh'))}" autocomplete="off" />
+            <div class="dict-suggestions" id="batch-dict-list"></div>
+          </div>
+
+          <div class="form-row-2">
+            <div class="form-group">
+              <label>${escapeHtml(t('modalAddTagLabel'))}</label>
+              <input type="text" class="input mono" id="batch-tag-input" placeholder="(0008,1030)" />
+            </div>
+            <div class="form-group">
+              <label>${escapeHtml(t('modalAddVrLabel'))}</label>
+              <select class="input" id="batch-vr-select">${vrOptions}</select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>${escapeHtml(t('modalBatchActionLabel'))}</label>
+            <select class="input" id="batch-mode-select">
+              <option value="set">${escapeHtml(t('modalBatchActSet'))}</option>
+              <option value="update">${escapeHtml(t('modalBatchActUpdateOnly'))}</option>
+              <option value="delete">${escapeHtml(t('modalBatchActDelete'))}</option>
+            </select>
+          </div>
+
+          <div class="form-group" id="batch-val-group">
+            <label>${escapeHtml(t('modalAddValLabel'))}</label>
+            <input type="text" class="input" id="batch-val-input" placeholder="${escapeHtml(t('inspPlaceholderEmpty'))}" />
+            <div id="batch-val-feedback" class="small" style="margin-top:6px"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" data-modal-close>${escapeHtml(t('modalCancel'))}</button>
+          <button class="btn btn-primary" id="btn-confirm-batch">${icons.sliders(15)} ${escapeHtml(t('modalBatchApplyBtn', { n: fileCount }))}</button>
+        </div>
+      </div>
+    `;
+
+    this.root.classList.remove('hidden');
+
+    const searchInp = this.root.querySelector('#batch-dict-search');
+    const listEl = this.root.querySelector('#batch-dict-list');
+    const tagInp = this.root.querySelector('#batch-tag-input');
+    const vrSel = this.root.querySelector('#batch-vr-select');
+    const modeSel = this.root.querySelector('#batch-mode-select');
+    const valGroup = this.root.querySelector('#batch-val-group');
+    const valInp = this.root.querySelector('#batch-val-input');
+    const feedbackEl = this.root.querySelector('#batch-val-feedback');
+
+    vrSel.value = 'LO';
+
+    const updateState = () => {
+      const isDel = modeSel.value === 'delete';
+      valGroup.classList.toggle('hidden', isDel);
+      if (!isDel) {
+        const v = validateVrValue(vrSel.value, valInp.value);
+        feedbackEl.innerHTML = v.valid
+          ? ''
+          : `<span class="text-danger">${escapeHtml(v.messages.join(' / '))}</span>`;
+      }
+    };
+
+    const renderSuggestions = (q) => {
+      const hits = searchDictionary(q, 8).filter((h) => editableVrs.includes(h.vr));
+      if (hits.length === 0) {
+        listEl.innerHTML = `<div class="dict-empty">${escapeHtml(t('modalAddNoDict'))}</div>`;
+        return;
+      }
+      listEl.innerHTML = hits
+        .map(
+          (h) => `
+        <button type="button" class="dict-item" data-tag="${h.formattedTag}" data-vr="${h.vr}">
+          <span class="mono">${h.formattedTag}</span>
+          <span class="dict-kw">${escapeHtml(h.keyword)}</span>
+          <span class="vr-pill vr-cat-${getVrSpec(h.vr).category}">${h.vr}</span>
+        </button>
+      `
+        )
+        .join('');
+    };
+
+    renderSuggestions('');
+    updateState();
+
+    searchInp.addEventListener('input', () => renderSuggestions(searchInp.value));
+    listEl.addEventListener('click', (e) => {
+      const item = e.target.closest('.dict-item');
+      if (!item) return;
+      tagInp.value = item.dataset.tag;
+      if (editableVrs.includes(item.dataset.vr)) vrSel.value = item.dataset.vr;
+      updateState();
+      valInp.focus();
+    });
+
+    tagInp.addEventListener('input', () => {
+      const parsed = parseTagString(tagInp.value);
+      if (parsed) {
+        const info = lookupTag(parsed.group, parsed.element);
+        if (info.keyword !== 'UnknownTag' && editableVrs.includes(info.vr)) {
+          vrSel.value = info.vr;
+          updateState();
+        }
+      }
+    });
+
+    modeSel.addEventListener('change', updateState);
+    vrSel.addEventListener('change', updateState);
+    valInp.addEventListener('input', updateState);
+
+    this.root.querySelector('#btn-confirm-batch').addEventListener('click', async () => {
+      const parsed = parseTagString(tagInp.value);
+      if (!parsed) {
+        feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(t('modalAddInvalidTag'))}</span>`;
+        valGroup.classList.remove('hidden');
+        tagInp.focus();
+        return;
+      }
+      const res = await this.store.batchEditAcrossFiles({
+        group: parsed.group,
+        element: parsed.element,
+        vr: vrSel.value,
+        value: valInp.value,
+        mode: modeSel.value,
+      });
       this.close();
       this.callbacks.onToast?.(
-        count > 0 ? t('toastAnonDone', { count }) : t('toastAnonNone'),
-        count > 0 ? 'ok' : 'info'
+        res.affectedFiles > 0 ? t('toastBatchDone', { files: res.affectedFiles }) : t('toastAnonNone'),
+        res.affectedFiles > 0 ? 'ok' : 'info'
       );
     });
+
+    searchInp.focus();
   }
 }

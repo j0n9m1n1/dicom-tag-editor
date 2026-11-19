@@ -33,11 +33,13 @@ export class PixelPanel {
   }
 
   async sync(force = false) {
-    if (!this.store.showPixelPanel) {
-      this.container.classList.add('hidden');
-      return;
-    }
-    this.container.classList.remove('hidden');
+    const isMobile = window.innerWidth <= 820;
+    const shouldHide = isMobile
+      ? this.store.mobileTab !== 'pixel'
+      : !this.store.showPixelPanel;
+
+    this.container.classList.toggle('hidden', shouldHide);
+    if (shouldHide) return;
 
     if (!this.store.doc) {
       this._lastPixelVersion = -1;
@@ -228,6 +230,32 @@ export class PixelPanel {
         this._dragStart = { x: e.clientX, y: e.clientY, wc: this._wc, ww: this._ww };
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
+      });
+
+      // Touch drag W/L adjustment for mobile devices
+      canvas.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 1) return;
+        e.preventDefault();
+        const pt = e.touches[0];
+        this._dragging = true;
+        this._dragStart = { x: pt.clientX, y: pt.clientY, wc: this._wc, ww: this._ww };
+      }, { passive: false });
+
+      canvas.addEventListener('touchmove', (e) => {
+        if (!this._dragging || !this._dragStart || e.touches.length !== 1) return;
+        e.preventDefault();
+        const pt = e.touches[0];
+        const dx = pt.clientX - this._dragStart.x;
+        const dy = pt.clientY - this._dragStart.y;
+        const scale = Math.max(1, (decoded.max - decoded.min) / 220);
+        this._ww = Math.max(1, Math.round(this._dragStart.ww + dx * scale));
+        this._wc = Math.round(this._dragStart.wc + dy * scale);
+        this._updateWlReadout();
+        this._redrawCanvas();
+      }, { passive: false });
+
+      canvas.addEventListener('touchend', () => {
+        this._dragging = false;
       });
     }
   }

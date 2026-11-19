@@ -1,13 +1,15 @@
 /**
  * Main entry point for DICOM Tag Editor web app.
- * Coordinates file I/O (Drag & Drop, File System Access API, Download),
- * Store, TreeView, InspectorPanel, PixelPanel, Modals, and Keyboard Shortcuts.
+ * Coordinates multi-file & folder I/O (Drag & Drop, File System Access API, ZIP batch export),
+ * Store, FileListPanel, TreeView, InspectorPanel, PixelPanel, Modals, Mobile Tabs, and Shortcuts.
  */
 
 import { parseDicomBuffer } from './dicom/parser.js';
 import { writeDicomDocument } from './dicom/writer.js';
 import { generateSampleDicomBuffer } from './dicom/sampleGenerator.js';
+import { buildZipArchive } from './utils/zipWriter.js';
 import { AppStore } from './state/store.js';
+import { FileListPanel } from './ui/fileList.js';
 import { TreeView } from './ui/treeView.js';
 import { InspectorPanel } from './ui/inspector.js';
 import { PixelPanel } from './ui/pixelPanel.js';
@@ -27,11 +29,13 @@ const changeSummary = document.getElementById('change-summary');
 
 const btnOpen = document.getElementById('btn-open');
 const btnSample = document.getElementById('btn-sample');
+const btnFiles = document.getElementById('btn-files');
 const btnUndo = document.getElementById('btn-undo');
 const btnRedo = document.getElementById('btn-redo');
 const btnAddTag = document.getElementById('btn-add-tag');
 const btnAnonymize = document.getElementById('btn-anonymize');
 const btnDiff = document.getElementById('btn-diff');
+const btnRaw = document.getElementById('btn-raw');
 const btnSaveDirect = document.getElementById('btn-save-direct');
 const btnSaveAs = document.getElementById('btn-save-as');
 const btnTogglePixel = document.getElementById('btn-toggle-pixel');
@@ -51,9 +55,12 @@ const btnExpandAll = document.getElementById('btn-expand-all');
 const btnCollapseAll = document.getElementById('btn-collapse-all');
 const statusCounts = document.getElementById('status-counts');
 
+const fileListPane = document.getElementById('filelist-pane');
 const treeBody = document.getElementById('tree-body');
 const inspectorContainer = document.getElementById('inspector-container');
 const pixelContainer = document.getElementById('pixel-container');
+const mobileNav = document.getElementById('mobile-nav');
+const mobFilesCount = document.getElementById('mob-files-count');
 const modalRoot = document.getElementById('modal-root');
 const dragOverlay = document.getElementById('drag-overlay');
 const toastContainer = document.getElementById('toast-container');
@@ -61,15 +68,30 @@ const toastContainer = document.getElementById('toast-container');
 // Populate search icon once
 document.getElementById('search-icon-slot').innerHTML = icons.search(14);
 
+let _fileInputAppendMode = false;
+
+function showToast(message, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = message;
+  toastContainer.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transition = 'opacity 0.25s';
+    setTimeout(() => el.remove(), 260);
+  }, 3200);
+}
+
 function applyLanguage() {
   const lang = getLang();
   document.documentElement.lang = lang;
 
-  // Update toolbar buttons & tooltips
   btnOpen.innerHTML = `${icons.folderOpen(15)}<span>${t('btnOpen')}</span>`;
   btnOpen.title = t('btnOpenTitle');
   btnSample.innerHTML = `${icons.sparkles(15)}<span>${t('btnSample')}</span>`;
   btnSample.title = t('btnSampleTitle');
+  btnFiles.innerHTML = `${icons.files(15)}<span>${t('btnFiles')} (${store.files.length})</span>`;
+  btnFiles.title = t('btnFilesTitle');
   btnUndo.innerHTML = `${icons.undo(15)}`;
   btnUndo.title = t('btnUndoTitle');
   btnRedo.innerHTML = `${icons.redo(15)}`;
@@ -80,6 +102,8 @@ function applyLanguage() {
   btnAnonymize.title = t('btnAnonymizeTitle');
   btnDiff.innerHTML = `${icons.diff(15)}<span>${t('btnDiff')}</span>`;
   btnDiff.title = t('btnDiffTitle');
+  btnRaw.innerHTML = `${icons.code(15)}<span>${t('btnRaw')}</span>`;
+  btnRaw.title = t('btnRawTitle');
   btnSaveDirect.innerHTML = `${icons.save(15)}<span>${t('btnSaveDirect')}</span>`;
   btnSaveDirect.title = t('btnSaveDirectTitle');
   btnSaveAs.innerHTML = `${icons.download(15)}<span>${t('btnSaveAs')}</span>`;
@@ -93,7 +117,6 @@ function applyLanguage() {
       ? '<span class="lang-act">KO</span><span class="lang-dim">/EN</span>'
       : '<span class="lang-dim">KO/</span><span class="lang-act">EN</span>';
 
-  // Update static data-i18n attributes across DOM
   document.querySelectorAll('[data-i18n]').forEach((el) => {
     el.textContent = t(el.dataset.i18n);
   });
@@ -108,18 +131,6 @@ function applyLanguage() {
   });
 }
 
-function showToast(message, type = 'info') {
-  const el = document.createElement('div');
-  el.className = `toast toast-${type}`;
-  el.textContent = message;
-  toastContainer.appendChild(el);
-  setTimeout(() => {
-    el.style.opacity = '0';
-    el.style.transition = 'opacity 0.25s';
-    setTimeout(() => el.remove(), 260);
-  }, 3200);
-}
-
 // Instantiate UI controllers
 const treeView = new TreeView(treeBody, store);
 
@@ -130,9 +141,17 @@ const modals = new ModalManager(modalRoot, store, {
     store.setFilterMode('all');
     store.expandAll();
     store.selectNode(id);
+    store.setMobileTab('tree');
     treeView.scrollToNode(id);
   },
   onToast: showToast,
+});
+
+const fileListPanel = new FileListPanel(fileListPane, store, {
+  onAddFiles: () => openFileDialog({ append: true }),
+  onBatchEdit: () => modals.openBatchEdit(),
+  onSaveZip: () => saveAllAsZip(),
+  onSwitchError: (err) => showToast(t('toastParseErr', { msg: err.message }), 'error'),
 });
 
 const inspector = new InspectorPanel(inspectorContainer, store, {
@@ -153,15 +172,31 @@ function applyTheme() {
 
 function updateToolbarAndHeader() {
   const hasDoc = Boolean(store.doc);
+  const fileCount = store.files.length;
+
   welcomeView.classList.toggle('hidden', hasDoc);
   editorView.classList.toggle('hidden', !hasDoc);
   fileMetaBar.classList.toggle('hidden', !hasDoc);
+  mobileNav.classList.toggle('hidden', !hasDoc);
+
+  // Sync mobile tab state on editor view & bottom nav
+  editorView.setAttribute('data-mobile-tab', store.mobileTab);
+  mobFilesCount.textContent = String(fileCount);
+  mobileNav.querySelectorAll('.mob-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.mobTab === store.mobileTab);
+  });
+
+  // Files toggle button on desktop
+  btnFiles.classList.toggle('hidden', !hasDoc);
+  btnFiles.innerHTML = `${icons.files(15)}<span>${t('btnFiles')} (${fileCount})</span>`;
+  btnFiles.classList.toggle('btn-primary', store.showFileList && hasDoc);
 
   btnUndo.disabled = !store.canUndo();
   btnRedo.disabled = !store.canRedo();
   btnAddTag.disabled = !hasDoc;
   btnAnonymize.disabled = !hasDoc;
   btnDiff.disabled = !hasDoc;
+  btnRaw.disabled = !hasDoc;
   btnSaveAs.disabled = !hasDoc;
 
   const canDirectSave = hasDoc && Boolean(store.fileHandle);
@@ -199,7 +234,6 @@ function updateToolbarAndHeader() {
     t('statusCounts', { total: stats.total, sq: stats.sequenceCount, priv: stats.privateCount }) +
     (stats.invalid > 0 ? t('statusInvalidSuffix', { invalid: stats.invalid }) : '');
 
-  // Sync filter chips active state & search input
   filterChips.querySelectorAll('.chip').forEach((chip) => {
     chip.classList.toggle('active', chip.dataset.filter === store.filterMode);
   });
@@ -218,31 +252,53 @@ store.subscribe((reason) => {
     applyLanguage();
   }
   updateToolbarAndHeader();
+  fileListPanel.render();
   treeView.render();
   inspector.render(reason);
   pixelPanel.sync(reason === 'document' || reason === 'layout' || reason === 'lang');
 });
 
+window.addEventListener('resize', () => {
+  pixelPanel.sync(false);
+});
+
 // ============================================================================
-// File Open / Sample / Save
+// Multi-File & Folder Open / Sample / Save / ZIP Export
 // ============================================================================
-async function openArrayBuffer(arrayBuffer, fileName, fileHandle = null) {
+async function loadSelectedFileItems(items, { append = false } = {}) {
+  if (!items || items.length === 0) {
+    showToast(t('toastNoDcmInDrop'), 'warn');
+    return;
+  }
+  // Natural sort by filename (so slice_2.dcm comes before slice_10.dcm)
+  items.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+
   try {
-    const doc = await parseDicomBuffer(arrayBuffer, fileName);
-    store.loadDocument(doc, fileHandle);
-    showToast(t('toastLoaded', { name: fileName, count: doc.datasetNodes.length + doc.metaNodes.length }), 'ok');
+    const res = await store.loadFileItems(items, { append });
+    if (append) {
+      showToast(t('toastFilesAdded', { count: res.loadedCount }), 'ok');
+    } else if (res.loadedCount > 1) {
+      showToast(t('toastFilesLoaded', { count: res.loadedCount }), 'ok');
+    } else if (store.doc) {
+      showToast(
+        t('toastLoaded', {
+          name: store.doc.fileName,
+          count: store.doc.datasetNodes.length + store.doc.metaNodes.length,
+        }),
+        'ok'
+      );
+    }
   } catch (err) {
     console.error(err);
     showToast(t('toastParseErr', { msg: err.message }), 'error');
   }
 }
 
-async function openFileDialog() {
-  // Prefer File System Access API (Chrome/Edge, secure context only) for direct overwrite support
+async function openFileDialog({ append = false } = {}) {
   if (window.isSecureContext && typeof window.showOpenFilePicker === 'function') {
     try {
-      const [handle] = await window.showOpenFilePicker({
-        multiple: false,
+      const handles = await window.showOpenFilePicker({
+        multiple: true,
         types: [
           {
             description: 'DICOM Files',
@@ -251,30 +307,46 @@ async function openFileDialog() {
         ],
         excludeAcceptAllOption: false,
       });
-      const file = await handle.getFile();
-      const buf = await file.arrayBuffer();
-      await openArrayBuffer(buf, file.name, handle);
+      const items = [];
+      for (const handle of handles) {
+        const file = await handle.getFile();
+        items.push({
+          name: file.name,
+          size: file.size,
+          sourceFile: file,
+          fileHandle: handle,
+        });
+      }
+      await loadSelectedFileItems(items, { append });
       return;
     } catch (err) {
       if (err.name === 'AbortError') return;
-      // Fallback to standard file input on unsupported/blocked picker
     }
   }
+  _fileInputAppendMode = append;
   fileInput.value = '';
   fileInput.click();
 }
 
 fileInput.addEventListener('change', async () => {
-  const file = fileInput.files?.[0];
-  if (!file) return;
-  const buf = await file.arrayBuffer();
-  await openArrayBuffer(buf, file.name, null);
+  const files = Array.from(fileInput.files || []);
+  if (files.length === 0) return;
+  const items = files.map((f) => ({ name: f.name, size: f.size, sourceFile: f, fileHandle: null }));
+  await loadSelectedFileItems(items, { append: _fileInputAppendMode });
 });
 
 async function loadSampleDicom() {
   try {
     const buf = await generateSampleDicomBuffer();
-    await openArrayBuffer(buf, 'sample_brain_ct.dcm', null);
+    const doc = await parseDicomBuffer(buf, 'sample_brain_ct.dcm');
+    store.loadDocument(doc, null, { append: false });
+    showToast(
+      t('toastLoaded', {
+        name: doc.fileName,
+        count: doc.datasetNodes.length + doc.metaNodes.length,
+      }),
+      'ok'
+    );
   } catch (err) {
     console.error(err);
     showToast(t('toastSampleErr', { msg: err.message }), 'error');
@@ -317,7 +389,6 @@ async function saveDocumentAs() {
       ? store.doc.fileName.replace(/\.dcm$/i, '_edited.dcm')
       : `${store.doc.fileName}_edited.dcm`;
 
-    // Try native Save As picker if available in a secure context
     if (window.isSecureContext && typeof window.showSaveFilePicker === 'function') {
       try {
         const handle = await window.showSaveFilePicker({
@@ -329,12 +400,16 @@ async function saveDocumentAs() {
         await writable.close();
         store.fileHandle = handle;
         store.doc.fileName = handle.name || suggestedName;
+        const active = store.getActiveEntry();
+        if (active) {
+          active.name = store.doc.fileName;
+          active.fileHandle = handle;
+        }
         store.markSaved();
         showToast(t('toastSavedAs', { name: store.doc.fileName, bytes: bytes.length.toLocaleString() }), 'ok');
         return;
       } catch (err) {
         if (err.name === 'AbortError') return;
-        // Fallback to Blob download
       }
     }
 
@@ -355,9 +430,97 @@ async function saveDocumentAs() {
   }
 }
 
+async function saveAllAsZip() {
+  const files = store.files;
+  if (files.length === 0) return;
+
+  try {
+    const zipEntries = [];
+    for (let i = 0; i < files.length; i++) {
+      const entry = files[i];
+      if (entry.error) continue;
+
+      let dataBytes;
+      if (entry.doc) {
+        dataBytes = await writeDicomDocument(entry.doc);
+        store.markSaved(entry.doc);
+      } else if (entry.sourceFile) {
+        dataBytes = new Uint8Array(await entry.sourceFile.arrayBuffer());
+      } else if (entry.arrayBuffer) {
+        dataBytes = new Uint8Array(entry.arrayBuffer);
+      } else {
+        continue;
+      }
+
+      zipEntries.push({ name: entry.name, data: dataBytes });
+    }
+
+    if (zipEntries.length === 0) return;
+
+    const zipBytes = buildZipArchive(zipEntries);
+    const zipName = 'dicom_edited_batch.zip';
+    const blob = new Blob([zipBytes], { type: 'application/zip' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = zipName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    store.emit('edit');
+    showToast(t('toastZipDone', { count: zipEntries.length, name: zipName }), 'ok');
+  } catch (err) {
+    console.error(err);
+    showToast(t('toastSaveErr', { msg: err.message }), 'error');
+  }
+}
+
 // ============================================================================
-// Drag & Drop
+// Multi-File & Folder Drag & Drop (Safe, Zero getAsFileSystemHandle)
 // ============================================================================
+function readEntryRecursive(entry, prefix = '') {
+  return new Promise((resolve) => {
+    if (entry.isFile) {
+      entry.file(
+        (file) => {
+          // Skip hidden OS junk files like .DS_Store / Thumbs.db / desktop.ini
+          if (/^(\.|thumbs\.db$|desktop\.ini$)/i.test(file.name)) {
+            resolve([]);
+            return;
+          }
+          resolve([{ name: prefix ? `${prefix}/${file.name}` : file.name, size: file.size, sourceFile: file, fileHandle: null }]);
+        },
+        () => resolve([])
+      );
+    } else if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const collected = [];
+      const readBatch = () => {
+        reader.readEntries(
+          async (entries) => {
+            if (!entries || entries.length === 0) {
+              resolve(collected);
+              return;
+            }
+            for (const child of entries) {
+              const childPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
+              const sub = await readEntryRecursive(child, childPrefix);
+              collected.push(...sub);
+            }
+            readBatch();
+          },
+          () => resolve(collected)
+        );
+      };
+      readBatch();
+    } else {
+      resolve([]);
+    }
+  });
+}
+
 let dragDepth = 0;
 
 window.addEventListener('dragenter', (e) => {
@@ -382,33 +545,52 @@ window.addEventListener('drop', (e) => {
   dragDepth = 0;
   dragOverlay.classList.add('hidden');
 
-  // Synchronously extract File before the drop event turn ends.
-  // Avoid getAsFileSystemHandle() which triggers Chromium RESULT_CODE_KILLED_BAD_MESSAGE
-  // on insecure contexts (http://) and certain Chrome builds.
-  const file = e.dataTransfer?.files?.[0];
-  if (!file) return;
+  // Synchronously capture entries/files within the drop event turn.
+  // Never call getAsFileSystemHandle() to avoid Chromium RESULT_CODE_KILLED_BAD_MESSAGE.
+  const dtItems = Array.from(e.dataTransfer?.items || []);
+  const entries = dtItems
+    .map((it) => (typeof it.webkitGetAsEntry === 'function' ? it.webkitGetAsEntry() : null))
+    .filter(Boolean);
 
-  file.arrayBuffer()
-    .then((buf) => openArrayBuffer(buf, file.name, null))
-    .catch((err) => {
-      console.error(err);
-      showToast(t('toastParseErr', { msg: err.message }), 'error');
-    });
+  const fallbackFiles = Array.from(e.dataTransfer?.files || []);
+
+  (async () => {
+    let items = [];
+    if (entries.length > 0 && entries.some((en) => en.isDirectory)) {
+      for (const en of entries) {
+        const found = await readEntryRecursive(en, '');
+        items.push(...found);
+      }
+    } else if (fallbackFiles.length > 0) {
+      items = fallbackFiles.map((f) => ({ name: f.name, size: f.size, sourceFile: f, fileHandle: null }));
+    }
+
+    if (items.length === 0) {
+      showToast(t('toastNoDcmInDrop'), 'warn');
+      return;
+    }
+
+    // If multiple files are already open, append when Shift is held or replace cleanly
+    const append = Boolean(e.shiftKey && store.files.length > 0);
+    await loadSelectedFileItems(items, { append });
+  })();
 });
 
 // ============================================================================
 // UI Event Bindings
 // ============================================================================
-btnOpen.addEventListener('click', openFileDialog);
-btnWelcomeOpen.addEventListener('click', openFileDialog);
+btnOpen.addEventListener('click', () => openFileDialog({ append: false }));
+btnWelcomeOpen.addEventListener('click', () => openFileDialog({ append: false }));
 btnSample.addEventListener('click', loadSampleDicom);
 btnWelcomeSample.addEventListener('click', loadSampleDicom);
+btnFiles.addEventListener('click', () => store.toggleFileList());
 
 btnUndo.addEventListener('click', () => store.undo());
 btnRedo.addEventListener('click', () => store.redo());
 btnAddTag.addEventListener('click', () => modals.openAddTag(null));
 btnAnonymize.addEventListener('click', () => modals.openAnonymize());
 btnDiff.addEventListener('click', () => modals.openDiff());
+btnRaw.addEventListener('click', () => modals.openRawView());
 btnSaveDirect.addEventListener('click', saveDocumentDirect);
 btnSaveAs.addEventListener('click', saveDocumentAs);
 btnTogglePixel.addEventListener('click', () => store.togglePixelPanel());
@@ -417,6 +599,12 @@ btnLang.addEventListener('click', () => {
 });
 btnTheme.addEventListener('click', () => {
   store.setTheme(store.theme === 'dark' ? 'light' : 'dark');
+});
+
+mobileNav.addEventListener('click', (e) => {
+  const tab = e.target.closest('.mob-tab');
+  if (!tab) return;
+  store.setMobileTab(tab.dataset.mobTab);
 });
 
 searchInput.addEventListener('input', () => store.setSearchQuery(searchInput.value));
@@ -442,7 +630,7 @@ window.addEventListener('keydown', (e) => {
 
   if (key === 'o') {
     e.preventDefault();
-    openFileDialog();
+    openFileDialog({ append: false });
   } else if (key === 's' && store.doc) {
     e.preventDefault();
     if (e.shiftKey || !store.fileHandle) saveDocumentAs();
@@ -493,5 +681,6 @@ resizer.addEventListener('mousedown', (e) => {
 applyTheme();
 applyLanguage();
 updateToolbarAndHeader();
+fileListPanel.render();
 inspector.render();
 pixelPanel.sync(true);

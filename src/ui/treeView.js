@@ -258,7 +258,10 @@ export class TreeView {
           </div>
           <div class="col-vm">${vm}</div>
           <div class="col-len">${byteLen}</div>
-          <div class="col-val">${valueHtml}</div>
+          <div class="col-val">
+            ${valueHtml}
+            ${selected ? `<button class="btn btn-xs btn-primary mob-edit-pill" data-mob-inspect="${n.id}">${escapeHtml(t('mobEditTagBtn'))}</button>` : ''}
+          </div>
         </div>
       `);
     }
@@ -308,6 +311,14 @@ export class TreeView {
   }
 
   _onClick(e) {
+    const mobBtn = e.target.closest('[data-mob-inspect]');
+    if (mobBtn) {
+      e.stopPropagation();
+      this.store.selectNode(mobBtn.dataset.mobInspect);
+      this.store.setMobileTab('inspector');
+      return;
+    }
+
     const clearBtn = e.target.closest('[data-action="clear-filter"]');
     if (clearBtn) {
       this.store.setSearchQuery('');

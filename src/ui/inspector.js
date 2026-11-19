@@ -67,6 +67,7 @@ export class InspectorPanel {
     this.callbacks = callbacks || {};
     this._renderedNodeId = null;
     this._multiValueMode = false;
+    this._showRawHex = false;
 
     this.container.addEventListener('click', (e) => this._onClick(e));
     this.container.addEventListener('input', (e) => this._onInput(e));
@@ -231,6 +232,18 @@ export class InspectorPanel {
         </div>
       ` : ''}
 
+      ${!node.isBinary && !node.isSequence ? `
+        <div class="insp-section">
+          <div class="insp-section-header">
+            <div class="insp-section-title">${escapeHtml(t('inspRawHexTitle'))}</div>
+            <button class="btn-link small" data-action="toggle-raw-hex">
+              ${escapeHtml(this._showRawHex ? t('inspRawHexHide') : t('inspRawHexShow'))}
+            </button>
+          </div>
+          ${this._showRawHex ? this._renderRawHexBody(node) : ''}
+        </div>
+      ` : ''}
+
       <div class="insp-section insp-footer-actions">
         ${node.status === 'modified' || node.status === 'added' ? `
           <button class="btn btn-sm" data-action="revert-node">
@@ -243,6 +256,24 @@ export class InspectorPanel {
           </button>
         ` : `<span class="muted small">${escapeHtml(t('inspCannotDeleteTs'))}</span>`}
       </div>
+    `;
+  }
+
+  _renderRawHexBody(node) {
+    if (node.rawBytes && node.rawBytes.length > 0) {
+      const note =
+        node.status !== 'unchanged'
+          ? `<p class="muted small" style="margin:6px 0 0">${escapeHtml(t('inspRawHexNewNote'))}</p>`
+          : '';
+      return `
+        <pre class="hex-dump">${escapeHtml(buildHexDump(node.rawBytes, 256))}</pre>
+        ${note}
+      `;
+    }
+    const encoded = new TextEncoder().encode(node.value || '');
+    return `
+      <pre class="hex-dump">${escapeHtml(buildHexDump(encoded, 256))}</pre>
+      <p class="muted small" style="margin:6px 0 0">${escapeHtml(t('inspRawHexNewNote'))}</p>
     `;
   }
 
@@ -455,6 +486,10 @@ export class InspectorPanel {
         break;
       case 'toggle-mv-mode':
         this._multiValueMode = !this._multiValueMode;
+        this._renderNode(info);
+        break;
+      case 'toggle-raw-hex':
+        this._showRawHex = !this._showRawHex;
         this._renderNode(info);
         break;
       case 'mv-add': {

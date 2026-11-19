@@ -59,6 +59,11 @@
   </script>
 
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Cpath d='M8 10h6a6 6 0 0 1 0 12H8V10Zm3 3v6h3a3 3 0 0 0 0-6h-3Z' fill='%23fff'/%3E%3Ccircle cx='23' cy='21' r='2.5' fill='%2338bdf8'/%3E%3C/svg%3E" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="./src/styles.css" />
 </head>
 <body>
@@ -83,6 +88,7 @@
       <div class="topbar-actions" id="toolbar-actions">
         <button class="btn btn-sm" id="btn-open" title="로컬 DICOM 파일 열기 (Ctrl+O)"></button>
         <button class="btn btn-sm" id="btn-sample" title="테스트용 샘플 DICOM 생성 및 열기"></button>
+        <button class="btn btn-sm hidden" id="btn-files" title="열린 파일 목록 패널 표시/숨기기"></button>
         <div class="toolbar-sep"></div>
         <button class="btn btn-sm" id="btn-undo" disabled title="실행 취소 (Ctrl+Z)"></button>
         <button class="btn btn-sm" id="btn-redo" disabled title="다시 실행 (Ctrl+Y)"></button>
@@ -90,6 +96,7 @@
         <button class="btn btn-sm" id="btn-add-tag" disabled title="새 DICOM 태그 추가"></button>
         <button class="btn btn-sm" id="btn-anonymize" disabled title="개인정보 일괄 익명화 프리셋"></button>
         <button class="btn btn-sm" id="btn-diff" disabled title="변경 내역 비교 (Diff)"></button>
+        <button class="btn btn-sm" id="btn-raw" disabled title="Raw 텍스트(dcmdump) / JSON 보기"></button>
         <div class="toolbar-sep"></div>
         <button class="btn btn-sm hidden" id="btn-save-direct" disabled title="열려있는 원본 파일에 덮어쓰기 (Ctrl+S)"></button>
         <button class="btn btn-sm btn-primary" id="btn-save-as" disabled title="수정된 DICOM 파일 저장 (Ctrl+S)"></button>
@@ -100,8 +107,8 @@
       </div>
     </header>
 
-    <!-- Hidden fallback file input -->
-    <input type="file" id="file-input" accept=".dcm,.dicom,application/dicom,*/*" class="hidden" />
+    <!-- Hidden fallback file input (multi-file enabled) -->
+    <input type="file" id="file-input" multiple accept=".dcm,.dicom,application/dicom,*/*" class="hidden" />
 
     <!-- Empty Welcome / Drop Landing -->
     <main id="welcome-view" class="welcome-view">
@@ -119,6 +126,7 @@
           모든 파싱·편집·저장은 <strong>내 브라우저 안에서 100% 로컬로 처리</strong>되며,<br/>
           외부 서버로 의료 영상이나 환자 정보가 전송되지 않습니다.
         </p>
+        <p class="welcome-subhint" data-i18n-html="welcomeDescMulti">여러 DICOM 파일이나 <strong>폴더째 드래그 앤 드롭</strong>도 지원합니다.</p>
         <div class="welcome-buttons">
           <button class="btn btn-primary btn-lg" id="btn-welcome-open" data-i18n="welcomeBtnOpen">DICOM 파일 열기 (.dcm)</button>
           <button class="btn btn-lg" id="btn-welcome-sample" data-i18n="welcomeBtnSample">샘플 CT DICOM으로 바로 체험</button>
@@ -133,8 +141,11 @@
     </main>
 
     <!-- Main Editor Workspace -->
-    <main id="editor-view" class="editor-view hidden">
-      <!-- Left/Center Pane: Filter bar + Tag Tree Table -->
+    <main id="editor-view" class="editor-view hidden" data-mobile-tab="tree">
+      <!-- Left Multi-File Sidebar -->
+      <aside class="filelist-pane desktop-hidden" id="filelist-pane"></aside>
+
+      <!-- Center Pane: Filter bar + Tag Tree Table -->
       <section class="tree-pane">
         <div class="filter-bar">
           <div class="search-box">
@@ -181,6 +192,23 @@
         <div class="pixel-dock" id="pixel-container"></div>
       </aside>
     </main>
+
+    <!-- Mobile Bottom Tab Bar (visible <= 820px when a file is open) -->
+    <nav id="mobile-nav" class="mobile-nav hidden" aria-label="Mobile sections">
+      <button class="mob-tab" data-mob-tab="files" id="mob-tab-files">
+        <span class="mob-tab-label" data-i18n="mobTabFiles">파일</span>
+        <span class="mob-tab-badge" id="mob-files-count">1</span>
+      </button>
+      <button class="mob-tab active" data-mob-tab="tree">
+        <span class="mob-tab-label" data-i18n="mobTabTree">태그</span>
+      </button>
+      <button class="mob-tab" data-mob-tab="inspector">
+        <span class="mob-tab-label" data-i18n="mobTabInspector">상세</span>
+      </button>
+      <button class="mob-tab" data-mob-tab="pixel">
+        <span class="mob-tab-label" data-i18n="mobTabPixel">Pixel</span>
+      </button>
+    </nav>
 
     <!-- Fullscreen Drag Overlay -->
     <div id="drag-overlay" class="drag-overlay hidden">

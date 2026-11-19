@@ -1,11 +1,14 @@
 /**
- * Central application state store with command-based Undo/Redo,
- * recursive tree lookup, search/filter matching, diff extraction, and batch anonymization.
+ * Central application state store with:
+ *  - Multi-file workspace (lazy parsing, per-file Undo/Redo & selection state)
+ *  - Command-based Undo/Redo, recursive tree lookup, search/filter matching
+ *  - Diff extraction, single/batch anonymization, and batch tag editing
+ *  - Mobile tab navigation & theme/language state
  */
 
 import { validateVrValue, BINARY_VRS } from '../dicom/vrSpec.js';
 import { formatTag, tagHex, lookupTag } from '../dicom/dictionary.js';
-import { genNodeId } from '../dicom/parser.js';
+import { genNodeId, parseDicomBuffer } from '../dicom/parser.js';
 import { getLang, setLang as setI18nLang } from '../i18n.js';
 
 export const ANONYMIZE_PRESET_TAGS = [
@@ -25,8 +28,57 @@ export const ANONYMIZE_PRESET_TAGS = [
   { tag: '00181000', label: 'DeviceSerialNumber', replacement: '' },
 ];
 
+let _fileIdSeq = 1;
+function nextFileId() {
+  return `file_${_fileIdSeq++}`;
+}
+
+function buildDefaultExpandedIds(doc) {
+  const expanded = new Set(['__meta__', '__main__']);
+  for (const n of doc.datasetNodes || []) {
+    if (n.isSequence) {
+      expanded.add(n.id);
+      for (const item of n.items || []) expanded.add(item.id);
+    }
+  }
+  return expanded;
+}
+
+export function countDocChanges(doc) {
+  if (!doc) return 0;
+  let count = 0;
+  const walk = (nodes) => {
+    for (const n of nodes || []) {
+      if (n.status !== 'unchanged') count++;
+      if (n.isSequence && n.items) {
+        for (const item of n.items) walk(item.children);
+      }
+    }
+  };
+  walk(doc.metaNodes);
+  walk(doc.datasetNodes);
+  return count;
+}
+
 export class AppStore {
   constructor() {
+    /** @type {Array<{
+     *   id: string,
+     *   name: string,
+     *   size: number,
+     *   sourceFile: File|null,
+     *   arrayBuffer: ArrayBuffer|null,
+     *   fileHandle: any,
+     *   doc: any,
+     *   error: string|null,
+     *   undoStack: any[],
+     *   redoStack: any[],
+     *   selectedId: string|null,
+     *   expandedIds: Set<string>,
+     * }>} */
+    this.files = [];
+    this.activeFileId = null;
+
     this.doc = null;
     this.fileHandle = null;
     this.selectedId = null;
@@ -34,6 +86,8 @@ export class AppStore {
     this.searchQuery = '';
     this.filterMode = 'all'; // 'all' | 'modified' | 'invalid' | 'sequence' | 'private' | 'meta'
     this.showPixelPanel = true;
+    this.showFileList = false;
+    this.mobileTab = 'tree'; // 'files' | 'tree' | 'inspector' | 'pixel'
     this.theme = localStorage.getItem('dcm_editor_theme') || 'dark';
     this.lang = getLang();
     this.undoStack = [];
@@ -60,19 +114,21 @@ export class AppStore {
   setLang(lang) {
     setI18nLang(lang);
     this.lang = getLang();
-    if (this.doc) {
-      const revalidate = (nodes) => {
-        for (const n of nodes || []) {
-          if (!n.isBinary && !n.isSequence) {
-            n.validation = validateVrValue(n.vr, n.value);
-          }
-          if (n.isSequence && n.items) {
-            for (const item of n.items) revalidate(item.children);
-          }
+    const revalidate = (nodes) => {
+      for (const n of nodes || []) {
+        if (!n.isBinary && !n.isSequence) {
+          n.validation = validateVrValue(n.vr, n.value);
         }
-      };
-      revalidate(this.doc.metaNodes);
-      revalidate(this.doc.datasetNodes);
+        if (n.isSequence && n.items) {
+          for (const item of n.items) revalidate(item.children);
+        }
+      }
+    };
+    for (const entry of this.files) {
+      if (entry.doc) {
+        revalidate(entry.doc.metaNodes);
+        revalidate(entry.doc.datasetNodes);
+      }
     }
     this.emit('lang');
   }
@@ -82,24 +138,223 @@ export class AppStore {
     this.emit('layout');
   }
 
-  loadDocument(doc, fileHandle = null) {
-    this.doc = doc;
-    this.fileHandle = fileHandle;
-    this.selectedId = doc.datasetNodes[0]?.id || doc.metaNodes[0]?.id || null;
-    this.expandedIds = new Set(['__meta__', '__main__']);
-    // Auto-expand first-level SQ nodes for immediate discoverability
-    for (const n of doc.datasetNodes) {
-      if (n.isSequence) {
-        this.expandedIds.add(n.id);
-        for (const item of n.items || []) this.expandedIds.add(item.id);
+  toggleFileList() {
+    this.showFileList = !this.showFileList;
+    this.emit('layout');
+  }
+
+  setMobileTab(tab) {
+    if (this.mobileTab === tab) return;
+    this.mobileTab = tab;
+    this.emit('layout');
+  }
+
+  getActiveEntry() {
+    return this.files.find((f) => f.id === this.activeFileId) || null;
+  }
+
+  _saveActiveSnapshot() {
+    const cur = this.getActiveEntry();
+    if (!cur) return;
+    cur.doc = this.doc;
+    cur.fileHandle = this.fileHandle;
+    cur.selectedId = this.selectedId;
+    cur.expandedIds = this.expandedIds;
+    cur.undoStack = this.undoStack;
+    cur.redoStack = this.redoStack;
+  }
+
+  _bindEntryToActive(entry) {
+    this.activeFileId = entry ? entry.id : null;
+    this.doc = entry ? entry.doc : null;
+    this.fileHandle = entry ? entry.fileHandle : null;
+    this.selectedId = entry ? entry.selectedId : null;
+    this.expandedIds = entry ? entry.expandedIds : new Set(['__meta__', '__main__']);
+    this.undoStack = entry ? entry.undoStack : [];
+    this.redoStack = entry ? entry.redoStack : [];
+  }
+
+  /**
+   * Ensure a file entry has been parsed into a live DICOM document (lazy parsing).
+   */
+  async ensureEntryParsed(entry) {
+    if (!entry) return null;
+    if (entry.doc) return entry.doc;
+    try {
+      const buf = entry.arrayBuffer || (entry.sourceFile ? await entry.sourceFile.arrayBuffer() : null);
+      if (!buf) throw new Error('No file data available');
+      const doc = await parseDicomBuffer(buf, entry.name);
+      entry.doc = doc;
+      entry.error = null;
+      entry.arrayBuffer = null; // free duplicate raw buffer once parsed
+      if (!entry.selectedId) {
+        entry.selectedId = doc.datasetNodes[0]?.id || doc.metaNodes[0]?.id || null;
       }
+      if (!entry.expandedIds || entry.expandedIds.size === 0) {
+        entry.expandedIds = buildDefaultExpandedIds(doc);
+      }
+      return doc;
+    } catch (err) {
+      entry.error = err.message || 'Parse error';
+      throw err;
     }
+  }
+
+  /**
+   * Load a single pre-parsed document (e.g. sample DICOM). Replaces current list unless append=true.
+   */
+  loadDocument(doc, fileHandle = null, { append = false } = {}) {
+    this._saveActiveSnapshot();
+    const entry = {
+      id: nextFileId(),
+      name: doc.fileName,
+      size: doc.fileSize || 0,
+      sourceFile: null,
+      arrayBuffer: null,
+      fileHandle,
+      doc,
+      error: null,
+      undoStack: [],
+      redoStack: [],
+      selectedId: doc.datasetNodes[0]?.id || doc.metaNodes[0]?.id || null,
+      expandedIds: buildDefaultExpandedIds(doc),
+    };
+
+    if (append && this.files.length > 0) {
+      this.files.push(entry);
+      if (this.files.length > 1) this.showFileList = true;
+    } else {
+      this.files = [entry];
+      this.showFileList = false;
+    }
+
+    this._bindEntryToActive(entry);
     this.searchQuery = '';
     this.filterMode = 'all';
-    this.undoStack = [];
-    this.redoStack = [];
+    this.mobileTab = 'tree';
     this.pixelVersion++;
     this.emit('document');
+  }
+
+  /**
+   * Register one or multiple files (File / ArrayBuffer / FileSystemFileHandle) with lazy parsing.
+   * Immediately parses and activates the first newly added file.
+   * @param {Array<{ name: string, size?: number, sourceFile?: File, arrayBuffer?: ArrayBuffer, fileHandle?: any }>} items
+   * @param {{ append?: boolean }} [opts]
+   */
+  async loadFileItems(items, { append = false } = {}) {
+    if (!items || items.length === 0) return { loadedCount: 0 };
+    this._saveActiveSnapshot();
+
+    const newEntries = items.map((it) => ({
+      id: nextFileId(),
+      name: it.name,
+      size: it.size ?? it.sourceFile?.size ?? it.arrayBuffer?.byteLength ?? 0,
+      sourceFile: it.sourceFile || null,
+      arrayBuffer: it.arrayBuffer || null,
+      fileHandle: it.fileHandle || null,
+      doc: null,
+      error: null,
+      undoStack: [],
+      redoStack: [],
+      selectedId: null,
+      expandedIds: new Set(['__meta__', '__main__']),
+    }));
+
+    if (append && this.files.length > 0) {
+      this.files.push(...newEntries);
+    } else {
+      this.files = newEntries;
+    }
+
+    if (this.files.length > 1) {
+      this.showFileList = true;
+    } else if (!append) {
+      this.showFileList = false;
+    }
+
+    // Parse and activate the first newly added valid file
+    let activated = null;
+    let firstError = null;
+    for (const entry of newEntries) {
+      try {
+        await this.ensureEntryParsed(entry);
+        activated = entry;
+        break;
+      } catch (err) {
+        if (!firstError) firstError = err;
+      }
+    }
+
+    if (!activated) {
+      if (!append) {
+        this.files = [];
+        this._bindEntryToActive(null);
+        this.emit('document');
+      } else {
+        this.emit('files');
+      }
+      throw firstError || new Error('Failed to parse DICOM file(s).');
+    }
+
+    this._bindEntryToActive(activated);
+    this.searchQuery = '';
+    this.filterMode = 'all';
+    this.mobileTab = 'tree';
+    this.pixelVersion++;
+    this.emit('document');
+    return { loadedCount: newEntries.length, activeEntry: activated };
+  }
+
+  /**
+   * Switch active file in the multi-file list (lazy-parsing if needed).
+   */
+  async switchToFile(fileId) {
+    if (this.activeFileId === fileId) return;
+    const target = this.files.find((f) => f.id === fileId);
+    if (!target) return;
+
+    this._saveActiveSnapshot();
+    await this.ensureEntryParsed(target);
+    this._bindEntryToActive(target);
+    this.pixelVersion++;
+    this.emit('document');
+  }
+
+  /**
+   * Remove a file from the open files list.
+   */
+  async removeFile(fileId) {
+    const idx = this.files.findIndex((f) => f.id === fileId);
+    if (idx < 0) return;
+
+    const wasActive = this.activeFileId === fileId;
+    this.files.splice(idx, 1);
+
+    if (this.files.length <= 1) {
+      this.showFileList = false;
+    }
+
+    if (this.files.length === 0) {
+      this._bindEntryToActive(null);
+      this.pixelVersion++;
+      this.emit('document');
+      return;
+    }
+
+    if (wasActive) {
+      const next = this.files[Math.min(idx, this.files.length - 1)];
+      try {
+        await this.ensureEntryParsed(next);
+        this._bindEntryToActive(next);
+      } catch {
+        this._bindEntryToActive(null);
+      }
+      this.pixelVersion++;
+      this.emit('document');
+    } else {
+      this.emit('files');
+    }
   }
 
   selectNode(id) {
@@ -151,7 +406,6 @@ export class AppStore {
 
   /**
    * Find a node by ID across Meta and Main Dataset (recursively in SQ items).
-   * Also returns breadcrumb path and parent list.
    */
   findNodeInfo(targetId) {
     if (!this.doc || !targetId) return null;
@@ -199,15 +453,8 @@ export class AppStore {
     return cs ? cs.value : '';
   }
 
-  /**
-   * Check whether modifying a tag affects live pixel rendering.
-   */
   _isPixelDisplayTag(hex) {
-    return (
-      hex.startsWith('0028') ||
-      hex === '7FE00010' ||
-      hex === '00020010'
-    );
+    return hex.startsWith('0028') || hex === '7FE00010' || hex === '00020010';
   }
 
   _executeCommand(cmd) {
@@ -216,6 +463,7 @@ export class AppStore {
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack = [];
     if (cmd.affectsPixel) this.pixelVersion++;
+    this._saveActiveSnapshot();
     this.emit('edit');
   }
 
@@ -233,6 +481,7 @@ export class AppStore {
     cmd.undo();
     this.redoStack.push(cmd);
     if (cmd.affectsPixel) this.pixelVersion++;
+    this._saveActiveSnapshot();
     this.emit('edit');
   }
 
@@ -242,6 +491,7 @@ export class AppStore {
     cmd.redo();
     this.undoStack.push(cmd);
     if (cmd.affectsPixel) this.pixelVersion++;
+    this._saveActiveSnapshot();
     this.emit('edit');
   }
 
@@ -283,7 +533,6 @@ export class AppStore {
     const node = info.node;
 
     if (node.status === 'added') {
-      // Remove added node
       const { parentList } = info;
       this._executeCommand({
         label: `Remove added ${node.formattedTag}`,
@@ -356,9 +605,6 @@ export class AppStore {
     });
   }
 
-  /**
-   * Add a new tag to Meta (if group === 0x0002), Main Dataset, or selected SQ Item.
-   */
   addTag({ group, element, vr, value, targetList = null, targetSection = null }) {
     if (!this.doc) return null;
     const hex = tagHex(group, element);
@@ -366,7 +612,6 @@ export class AppStore {
     const isMeta = targetList ? targetSection === 'meta' : group === 0x0002;
     const list = targetList || (isMeta ? this.doc.metaNodes : this.doc.datasetNodes);
 
-    // Check duplicate in same list
     const existing = list.find((n) => n.tag === hex && n.status !== 'deleted');
     if (existing) {
       this.selectedId = existing.id;
@@ -450,10 +695,6 @@ export class AppStore {
     });
   }
 
-  /**
-   * Ensure (0008,0005) SpecificCharacterSet is set to ISO_IR 192 (UTF-8).
-   * Also clears cached rawBytes on existing non-ASCII string tags so they re-encode consistently as UTF-8.
-   */
   ensureUtf8Charset() {
     if (!this.doc) return;
     const clearNonAsciiRaw = (nodes) => {
@@ -480,12 +721,9 @@ export class AppStore {
   }
 
   /**
-   * Batch anonymize selected tags as a single Undo-able transaction.
-   * @param {Array<{ tag: string, replacement: string }>} rules
-   * @param {boolean} markDeidentified
+   * Internal helper: build an undoable anonymization command for any given doc.
    */
-  applyAnonymization(rules, markDeidentified = true) {
-    if (!this.doc) return 0;
+  _buildAnonymizeCommandForDoc(doc, rules, markDeidentified) {
     const ruleMap = new Map(rules.map((r) => [r.tag, r.replacement]));
     const snapshots = [];
 
@@ -509,12 +747,11 @@ export class AppStore {
         }
       }
     };
-    walk(this.doc.datasetNodes);
+    walk(doc.datasetNodes);
 
-    // Optionally add (0012,0062) PatientIdentityRemoved = YES
     let addedDeidNode = null;
     if (markDeidentified) {
-      const existing = this.doc.datasetNodes.find((n) => n.tag === '00120062' && n.status !== 'deleted');
+      const existing = doc.datasetNodes.find((n) => n.tag === '00120062' && n.status !== 'deleted');
       if (existing) {
         if (existing.value !== 'YES') {
           snapshots.push({
@@ -554,41 +791,206 @@ export class AppStore {
       }
     }
 
-    if (snapshots.length === 0 && !addedDeidNode) return 0;
+    const changeCount = snapshots.length + (addedDeidNode ? 1 : 0);
+    if (changeCount === 0) return null;
 
-    this._executeCommand({
-      label: 'Batch Anonymize',
-      affectsPixel: false,
-      redo: () => {
-        for (const s of snapshots) {
-          s.node.value = s.nextValue;
-          s.node.status = s.nextStatus;
-          s.node.validation = validateVrValue(s.node.vr, s.nextValue);
-        }
-        if (addedDeidNode) {
-          this.doc.datasetNodes.push(addedDeidNode);
-          this.doc.datasetNodes.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
-        }
+    return {
+      changeCount,
+      cmd: {
+        label: 'Batch Anonymize',
+        affectsPixel: false,
+        redo: () => {
+          for (const s of snapshots) {
+            s.node.value = s.nextValue;
+            s.node.status = s.nextStatus;
+            s.node.validation = validateVrValue(s.node.vr, s.nextValue);
+          }
+          if (addedDeidNode) {
+            doc.datasetNodes.push(addedDeidNode);
+            doc.datasetNodes.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+          }
+        },
+        undo: () => {
+          for (const s of snapshots) {
+            s.node.value = s.prevValue;
+            s.node.status = s.prevStatus;
+            s.node.validation = validateVrValue(s.node.vr, s.prevValue);
+          }
+          if (addedDeidNode) {
+            const idx = doc.datasetNodes.indexOf(addedDeidNode);
+            if (idx >= 0) doc.datasetNodes.splice(idx, 1);
+          }
+        },
       },
-      undo: () => {
-        for (const s of snapshots) {
-          s.node.value = s.prevValue;
-          s.node.status = s.prevStatus;
-          s.node.validation = validateVrValue(s.node.vr, s.prevValue);
-        }
-        if (addedDeidNode) {
-          const idx = this.doc.datasetNodes.indexOf(addedDeidNode);
-          if (idx >= 0) this.doc.datasetNodes.splice(idx, 1);
-        }
-      },
-    });
+    };
+  }
 
-    return snapshots.length + (addedDeidNode ? 1 : 0);
+  applyAnonymization(rules, markDeidentified = true) {
+    if (!this.doc) return 0;
+    const built = this._buildAnonymizeCommandForDoc(this.doc, rules, markDeidentified);
+    if (!built) return 0;
+    this._executeCommand(built.cmd);
+    return built.changeCount;
   }
 
   /**
-   * Collect statistics and all changed nodes (Diff) across the entire document.
+   * Apply anonymization across ALL open files (parsing lazy entries automatically).
    */
+  async applyAnonymizationAllFiles(rules, markDeidentified = true) {
+    this._saveActiveSnapshot();
+    let affectedFiles = 0;
+    let totalChanges = 0;
+
+    for (const entry of this.files) {
+      try {
+        const doc = await this.ensureEntryParsed(entry);
+        const built = this._buildAnonymizeCommandForDoc(doc, rules, markDeidentified);
+        if (!built) continue;
+        built.cmd.redo();
+        entry.undoStack.push(built.cmd);
+        entry.redoStack = [];
+        affectedFiles++;
+        totalChanges += built.changeCount;
+      } catch {
+        // skip unparseable entries
+      }
+    }
+
+    const active = this.getActiveEntry();
+    if (active) this._bindEntryToActive(active);
+    this.emit('edit');
+    return { affectedFiles, totalChanges };
+  }
+
+  /**
+   * Batch set/update/delete a single tag across ALL open files.
+   * @param {{ group: number, element: number, vr: string, value: string, mode: 'set'|'update'|'delete' }} params
+   */
+  async batchEditAcrossFiles({ group, element, vr, value, mode }) {
+    this._saveActiveSnapshot();
+    const hex = tagHex(group, element);
+    const dict = lookupTag(group, element);
+    const isMeta = group === 0x0002;
+    let affectedFiles = 0;
+    let activePixelChanged = false;
+
+    for (const entry of this.files) {
+      try {
+        const doc = await this.ensureEntryParsed(entry);
+        const list = isMeta ? doc.metaNodes : doc.datasetNodes;
+        const existing = list.find((n) => n.tag === hex && n.status !== 'deleted');
+        let cmd = null;
+
+        if (mode === 'delete') {
+          if (existing && hex !== '00020010') {
+            if (existing.status === 'added') {
+              cmd = {
+                label: `Batch remove ${existing.formattedTag}`,
+                affectsPixel: this._isPixelDisplayTag(hex),
+                redo: () => {
+                  const idx = list.indexOf(existing);
+                  if (idx >= 0) list.splice(idx, 1);
+                },
+                undo: () => {
+                  list.push(existing);
+                  list.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+                },
+              };
+            } else {
+              const prevStatus = existing.status;
+              cmd = {
+                label: `Batch delete ${existing.formattedTag}`,
+                affectsPixel: this._isPixelDisplayTag(hex),
+                redo: () => { existing.status = 'deleted'; },
+                undo: () => { existing.status = prevStatus; },
+              };
+            }
+          }
+        } else if (existing && !existing.isSequence && !existing.isBinary) {
+          if (existing.value !== value) {
+            const prevValue = existing.value;
+            const prevStatus = existing.status;
+            const nextStatus =
+              prevStatus === 'added'
+                ? 'added'
+                : value === existing.originalValue
+                  ? 'unchanged'
+                  : 'modified';
+            cmd = {
+              label: `Batch edit ${existing.formattedTag}`,
+              affectsPixel: this._isPixelDisplayTag(hex),
+              redo: () => {
+                existing.value = value;
+                existing.status = nextStatus;
+                existing.validation = validateVrValue(existing.vr, value);
+              },
+              undo: () => {
+                existing.value = prevValue;
+                existing.status = prevStatus;
+                existing.validation = validateVrValue(existing.vr, prevValue);
+              },
+            };
+          }
+        } else if (!existing && mode === 'set' && !BINARY_VRS.has(vr) && vr !== 'SQ') {
+          const newNode = {
+            id: genNodeId(),
+            group,
+            element,
+            tag: hex,
+            formattedTag: formatTag(group, element),
+            keyword: dict.keyword,
+            name: dict.name,
+            vr,
+            vrSource: 'explicit',
+            vmSpec: dict.vm,
+            isMeta,
+            isPrivate: (group & 1) === 1,
+            isSequence: false,
+            isBinary: false,
+            encapsulated: false,
+            undefinedLength: false,
+            rawLength: 0,
+            rawBytes: null,
+            originalValue: '',
+            value: value ?? '',
+            status: 'added',
+            validation: validateVrValue(vr, value ?? ''),
+          };
+          cmd = {
+            label: `Batch add ${newNode.formattedTag}`,
+            affectsPixel: this._isPixelDisplayTag(hex),
+            redo: () => {
+              list.push(newNode);
+              list.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+            },
+            undo: () => {
+              const idx = list.indexOf(newNode);
+              if (idx >= 0) list.splice(idx, 1);
+            },
+          };
+        }
+
+        if (cmd) {
+          cmd.redo();
+          entry.undoStack.push(cmd);
+          entry.redoStack = [];
+          affectedFiles++;
+          if (entry.id === this.activeFileId && cmd.affectsPixel) {
+            activePixelChanged = true;
+          }
+        }
+      } catch {
+        // skip unparseable entries
+      }
+    }
+
+    const active = this.getActiveEntry();
+    if (active) this._bindEntryToActive(active);
+    if (activePixelChanged) this.pixelVersion++;
+    this.emit('edit');
+    return { affectedFiles };
+  }
+
   getStatsAndDiff() {
     const stats = {
       total: 0,
@@ -635,11 +1037,9 @@ export class AppStore {
     return stats;
   }
 
-  /**
-   * Mark all current edits as saved baseline (after writing file).
-   */
-  markSaved() {
-    if (!this.doc) return;
+  markSaved(targetDoc = null) {
+    const doc = targetDoc || this.doc;
+    if (!doc) return;
     const clean = (list) => {
       for (let i = list.length - 1; i >= 0; i--) {
         const n = list[i];
@@ -654,10 +1054,20 @@ export class AppStore {
         }
       }
     };
-    clean(this.doc.metaNodes);
-    clean(this.doc.datasetNodes);
-    this.undoStack = [];
-    this.redoStack = [];
-    this.emit('edit');
+    clean(doc.metaNodes);
+    clean(doc.datasetNodes);
+
+    if (!targetDoc || targetDoc === this.doc) {
+      this.undoStack = [];
+      this.redoStack = [];
+      this._saveActiveSnapshot();
+      this.emit('edit');
+    } else {
+      const entry = this.files.find((f) => f.doc === doc);
+      if (entry) {
+        entry.undoStack = [];
+        entry.redoStack = [];
+      }
+    }
   }
 }
