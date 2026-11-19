@@ -344,8 +344,16 @@ export class ModalManager {
             <input type="checkbox" id="anon-mark-deid" checked />
             <span>${t('modalAnonMarkDeid')}</span>
           </label>
+          <label class="checkbox-row" style="margin-top:8px">
+            <input type="checkbox" id="anon-strip-private" />
+            <span>${escapeHtml(t('modalAnonStripPrivate'))}</span>
+          </label>
+          <label class="checkbox-row" style="margin-top:8px">
+            <input type="checkbox" id="anon-regen-uid" />
+            <span>${escapeHtml(t('modalAnonRegenUid'))}</span>
+          </label>
           ${this.store.files.length > 1 ? `
-            <label class="checkbox-row" style="margin-top:8px">
+            <label class="checkbox-row" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
               <input type="checkbox" id="anon-all-files" checked />
               <strong>${escapeHtml(t('modalAnonScopeAll', { n: this.store.files.length }))}</strong>
             </label>
@@ -369,13 +377,17 @@ export class ModalManager {
           rules.push({ tag, replacement: valInp ? valInp.value : '' });
         }
       });
-      const markDeid = this.root.querySelector('#anon-mark-deid').checked;
+      const opts = {
+        markDeidentified: this.root.querySelector('#anon-mark-deid').checked,
+        stripPrivate: this.root.querySelector('#anon-strip-private').checked,
+        regenerateUids: this.root.querySelector('#anon-regen-uid').checked,
+      };
       const allFilesCb = this.root.querySelector('#anon-all-files');
       const applyAll = Boolean(allFilesCb && allFilesCb.checked && this.store.files.length > 1);
       this.close();
 
       if (applyAll) {
-        const res = await this.store.applyAnonymizationAllFiles(rules, markDeid);
+        const res = await this.store.applyAnonymizationAllFiles(rules, opts);
         this.callbacks.onToast?.(
           res.affectedFiles > 0
             ? t('toastBatchDone', { files: res.affectedFiles })
@@ -383,7 +395,7 @@ export class ModalManager {
           res.affectedFiles > 0 ? 'ok' : 'info'
         );
       } else {
-        const count = this.store.applyAnonymization(rules, markDeid);
+        const count = this.store.applyAnonymization(rules, opts);
         this.callbacks.onToast?.(
           count > 0 ? t('toastAnonDone', { count }) : t('toastAnonNone'),
           count > 0 ? 'ok' : 'info'
@@ -649,5 +661,219 @@ export class ModalManager {
     });
 
     searchInp.focus();
+  }
+
+  /**
+   * Open Side-by-Side Compare modal for any two open DICOM files.
+   */
+  async openCompare() {
+    const files = this.store.files;
+    if (files.length < 2) return;
+
+    let idA = this.store.activeFileId || files[0].id;
+    let idB = (files.find((f) => f.id !== idA) || files[1]).id;
+    let diffOnly = true;
+
+    const flattenDoc = (doc) => {
+      const map = new Map();
+      const walk = (nodes, prefix) => {
+        for (const n of nodes || []) {
+          if (n.status === 'deleted') continue;
+          const key = prefix ? `${prefix}/${n.tag}` : n.tag;
+          const displayPath = prefix ? `${prefix} › ${n.formattedTag}` : n.formattedTag;
+          if (n.isSequence) {
+            map.set(key, {
+              key,
+              path: displayPath,
+              keyword: n.keyword,
+              vr: n.vr,
+              value: `${(n.items || []).length} item(s)`,
+              isBinary: false,
+            });
+            (n.items || []).forEach((item, idx) => {
+              walk(item.children, prefix ? `${prefix} › ${n.formattedTag}[#${idx}]` : `${n.formattedTag}[#${idx}]`);
+            });
+          } else {
+            map.set(key, {
+              key,
+              path: displayPath,
+              keyword: n.keyword,
+              vr: n.vr,
+              value: n.isBinary ? n.value : (n.value || ''),
+              isBinary: n.isBinary,
+              rawBytes: n.rawBytes,
+            });
+          }
+        }
+      };
+      walk(doc.metaNodes, 'Meta');
+      walk(doc.datasetNodes, '');
+      return map;
+    };
+
+    const bytesEqual = (a, b) => {
+      if (!a || !b) return a === b;
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+      return true;
+    };
+
+    const optionsHtml = (selectedId) =>
+      files
+        .map((f, i) => `<option value="${f.id}" ${f.id === selectedId ? 'selected' : ''}>#${i + 1} ${escapeHtml(f.name)}</option>`)
+        .join('');
+
+    this.root.innerHTML = `
+      <div class="modal-card modal-xl" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <div>
+            <h3>${escapeHtml(t('modalCompareTitle'))}</h3>
+            <div class="muted small">${escapeHtml(t('modalCompareSubtitle'))}</div>
+          </div>
+          <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
+        </div>
+        <div class="compare-toolbar">
+          <label class="compare-pick">
+            <span>${escapeHtml(t('modalCompareFileA'))}</span>
+            <select class="input input-sm" id="cmp-sel-a">${optionsHtml(idA)}</select>
+          </label>
+          <label class="compare-pick">
+            <span>${escapeHtml(t('modalCompareFileB'))}</span>
+            <select class="input input-sm" id="cmp-sel-b">${optionsHtml(idB)}</select>
+          </label>
+          <label class="checkbox-row small">
+            <input type="checkbox" id="cmp-diff-only" checked />
+            <span>${escapeHtml(t('modalCompareDiffOnly'))}</span>
+          </label>
+        </div>
+        <div class="compare-summary-bar muted small" id="cmp-summary"></div>
+        <div class="modal-body modal-scroll" id="cmp-body"></div>
+        <div class="modal-footer">
+          <button class="btn" data-modal-close>${escapeHtml(t('modalClose'))}</button>
+        </div>
+      </div>
+    `;
+
+    this.root.classList.remove('hidden');
+
+    const selA = this.root.querySelector('#cmp-sel-a');
+    const selB = this.root.querySelector('#cmp-sel-b');
+    const cbDiff = this.root.querySelector('#cmp-diff-only');
+    const summaryEl = this.root.querySelector('#cmp-summary');
+    const bodyEl = this.root.querySelector('#cmp-body');
+
+    const runCompare = async () => {
+      const entryA = files.find((f) => f.id === idA);
+      const entryB = files.find((f) => f.id === idB);
+      if (!entryA || !entryB) return;
+
+      let docA, docB;
+      try {
+        docA = await this.store.ensureEntryParsed(entryA);
+        docB = await this.store.ensureEntryParsed(entryB);
+      } catch (err) {
+        bodyEl.innerHTML = `<div class="modal-empty text-danger">${escapeHtml(err.message)}</div>`;
+        return;
+      }
+
+      const mapA = flattenDoc(docA);
+      const mapB = flattenDoc(docB);
+      const allKeys = Array.from(new Set([...mapA.keys(), ...mapB.keys()])).sort();
+
+      let changed = 0;
+      let onlyA = 0;
+      let onlyB = 0;
+      const rows = [];
+
+      for (const k of allKeys) {
+        const a = mapA.get(k);
+        const b = mapB.get(k);
+        let kind = 'equal';
+        if (a && !b) {
+          kind = 'onlyA';
+          onlyA++;
+        } else if (!a && b) {
+          kind = 'onlyB';
+          onlyB++;
+        } else if (a.isBinary && b.isBinary) {
+          if (!bytesEqual(a.rawBytes, b.rawBytes)) {
+            kind = 'changed';
+            changed++;
+          }
+        } else if (a.value !== b.value || a.vr !== b.vr) {
+          kind = 'changed';
+          changed++;
+        }
+
+        if (!diffOnly || kind !== 'equal') {
+          rows.push({ kind, a, b, ref: a || b });
+        }
+      }
+
+      const diffs = changed + onlyA + onlyB;
+      summaryEl.textContent = t('modalCompareSummary', {
+        total: allKeys.length,
+        diffs,
+        changed,
+        onlyA,
+        onlyB,
+      });
+
+      if (rows.length === 0) {
+        bodyEl.innerHTML = `<div class="modal-empty">${escapeHtml(t('modalCompareSame'))}</div>`;
+        return;
+      }
+
+      const badgeMap = {
+        changed: `<span class="status-pill st-modified">${escapeHtml(t('modalCompareStChanged'))}</span>`,
+        onlyA: `<span class="status-pill st-added">${escapeHtml(t('modalCompareStOnlyA'))}</span>`,
+        onlyB: `<span class="status-pill st-deleted">${escapeHtml(t('modalCompareStOnlyB'))}</span>`,
+        equal: `<span class="status-pill st-unchanged">${escapeHtml(t('modalCompareStEqual'))}</span>`,
+      };
+
+      bodyEl.innerHTML = `
+        <table class="diff-table">
+          <thead>
+            <tr>
+              <th>${escapeHtml(t('modalDiffColStatus'))}</th>
+              <th>${escapeHtml(t('modalDiffColPath'))}</th>
+              <th>${escapeHtml(t('modalDiffColName'))}</th>
+              <th>${escapeHtml(entryA.name)}</th>
+              <th>${escapeHtml(entryB.name)}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map(
+                ({ kind, a, b, ref }) => `
+              <tr>
+                <td>${badgeMap[kind]}</td>
+                <td class="mono">${escapeHtml(ref.path)}</td>
+                <td>${escapeHtml(ref.keyword)} <span class="muted">(${escapeHtml(ref.vr)})</span></td>
+                <td class="mono diff-cell-old">${a ? escapeHtml(a.value || '(empty)') : '<span class="muted">—</span>'}</td>
+                <td class="mono diff-cell-new">${b ? escapeHtml(b.value || '(empty)') : '<span class="muted">—</span>'}</td>
+              </tr>
+            `
+              )
+              .join('')}
+          </tbody>
+        </table>
+      `;
+    };
+
+    selA.addEventListener('change', () => {
+      idA = selA.value;
+      runCompare();
+    });
+    selB.addEventListener('change', () => {
+      idB = selB.value;
+      runCompare();
+    });
+    cbDiff.addEventListener('change', () => {
+      diffOnly = cbDiff.checked;
+      runCompare();
+    });
+
+    await runCompare();
   }
 }

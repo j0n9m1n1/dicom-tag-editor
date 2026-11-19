@@ -12,16 +12,110 @@ export class TreeView {
   /**
    * @param {HTMLElement} container
    * @param {import('../state/store.js').AppStore} store
+   * @param {{ onToast?: (msg: string, type?: string) => void }} [callbacks]
    */
-  constructor(container, store) {
+  constructor(container, store, callbacks = {}) {
     this.container = container;
     this.store = store;
+    this.callbacks = callbacks;
     this.visibleRows = [];
     this.inlineEditId = null;
+    this._ctxMenu = null;
 
     this.container.addEventListener('click', (e) => this._onClick(e));
     this.container.addEventListener('dblclick', (e) => this._onDblClick(e));
     this.container.addEventListener('keydown', (e) => this._onKeyDown(e));
+    this.container.addEventListener('contextmenu', (e) => this._onContextMenu(e));
+    window.addEventListener('click', () => this._closeContextMenu());
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') this._closeContextMenu();
+    });
+    this.container.addEventListener('scroll', () => this._closeContextMenu());
+  }
+
+  _closeContextMenu() {
+    if (this._ctxMenu) {
+      this._ctxMenu.remove();
+      this._ctxMenu = null;
+    }
+  }
+
+  async _copyText(str) {
+    try {
+      await navigator.clipboard.writeText(str);
+      this.callbacks.onToast?.(t('toastCopied'), 'ok');
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = str;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      this.callbacks.onToast?.(t('toastCopied'), 'ok');
+    }
+  }
+
+  _onContextMenu(e) {
+    const rowEl = e.target.closest('.tree-row[data-kind="tag"]');
+    if (!rowEl) return;
+    e.preventDefault();
+    this._closeContextMenu();
+
+    const id = rowEl.dataset.rowId;
+    this.store.selectNode(id);
+    const info = this.store.findNodeInfo(id);
+    if (!info || info.isSeqItem) return;
+    const node = info.node;
+
+    const menu = document.createElement('div');
+    menu.className = 'ctx-menu';
+    const canEdit = !node.isSequence && !node.isBinary && node.status !== 'deleted';
+    const canRevert = node.status === 'modified' || node.status === 'added';
+    const isDeleted = node.status === 'deleted';
+    const canDelete = node.tag !== '00020010';
+
+    menu.innerHTML = `
+      <button class="ctx-item" data-ctx="copy-tag">${icons.copy(13)} ${escapeHtml(t('ctxCopyTag'))} <span class="muted mono">${node.formattedTag}</span></button>
+      ${!node.isSequence && !node.isBinary ? `<button class="ctx-item" data-ctx="copy-val">${icons.copy(13)} ${escapeHtml(t('ctxCopyValue'))}</button>` : ''}
+      <button class="ctx-item" data-ctx="copy-line">${icons.code(13)} ${escapeHtml(t('ctxCopyLine'))}</button>
+      <div class="ctx-sep"></div>
+      ${canEdit ? `<button class="ctx-item" data-ctx="edit">${escapeHtml(t('ctxEditInline'))}</button>` : ''}
+      ${canRevert ? `<button class="ctx-item" data-ctx="revert">${icons.rotateCcw(13)} ${escapeHtml(t('ctxRevert'))}</button>` : ''}
+      ${canDelete ? `<button class="ctx-item ${isDeleted ? '' : 'ctx-danger'}" data-ctx="delete">${isDeleted ? icons.rotateCcw(13) : icons.trash(13)} ${escapeHtml(isDeleted ? t('ctxRestore') : t('ctxDelete'))}</button>` : ''}
+    `;
+
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    const x = Math.min(e.clientX, window.innerWidth - rect.width - 8);
+    const y = Math.min(e.clientY, window.innerHeight - rect.height - 8);
+    menu.style.left = `${Math.max(8, x)}px`;
+    menu.style.top = `${Math.max(8, y)}px`;
+
+    menu.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const btn = ev.target.closest('[data-ctx]');
+      if (!btn) return;
+      const act = btn.dataset.ctx;
+      this._closeContextMenu();
+
+      if (act === 'copy-tag') {
+        this._copyText(node.formattedTag);
+      } else if (act === 'copy-val') {
+        this._copyText(node.value || '');
+      } else if (act === 'copy-line') {
+        const vm = computeVm(node);
+        const val = node.isBinary || node.isSequence ? node.value || `(${node.vr})` : `[${node.value || ''}]`;
+        this._copyText(`${node.formattedTag.toLowerCase()} ${node.vr} ${val} # ${vm} ${node.keyword}`);
+      } else if (act === 'edit') {
+        this.startInlineEdit(node.id);
+      } else if (act === 'revert') {
+        this.store.revertNode(node.id);
+      } else if (act === 'delete') {
+        this.store.toggleDeleteNode(node.id);
+      }
+    });
+
+    this._ctxMenu = menu;
   }
 
   _matchesQuery(node, q, qHex) {

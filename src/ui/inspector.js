@@ -8,6 +8,7 @@
 import { getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
 import { hasNonAscii, isUtf8Charset } from '../dicom/charset.js';
 import { computeVm, formatByteSize } from '../dicom/parser.js';
+import { generateDicomUid } from '../dicom/uid.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLocalizedVrText } from '../i18n.js';
 
@@ -360,6 +361,12 @@ export class InspectorPanel {
           <button class="btn btn-sm" data-action="fill-now">${escapeHtml(t('inspFillNow', { time: getNowDicomTime() }))}</button>
         </div>
       `;
+    } else if (node.vr === 'UI' && !isDeleted && node.tag !== '00020010' && node.tag !== '00020002' && node.tag !== '00080016') {
+      helperHtml = `
+        <div class="quick-helpers">
+          <button class="btn btn-sm" data-action="gen-uid">${icons.sparkles(13)} ${escapeHtml(t('inspGenUid'))}</button>
+        </div>
+      `;
     }
 
     return `
@@ -513,6 +520,9 @@ export class InspectorPanel {
         break;
       case 'fill-now':
         this.store.updateNodeValue(info.node.id, getNowDicomTime());
+        break;
+      case 'gen-uid':
+        this.store.updateNodeValue(info.node.id, generateDicomUid());
         break;
       case 'set-utf8':
         this.store.ensureUtf8Charset();

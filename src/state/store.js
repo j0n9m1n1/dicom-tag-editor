@@ -9,6 +9,7 @@
 import { validateVrValue, BINARY_VRS } from '../dicom/vrSpec.js';
 import { formatTag, tagHex, lookupTag } from '../dicom/dictionary.js';
 import { genNodeId, parseDicomBuffer } from '../dicom/parser.js';
+import { generateDicomUid } from '../dicom/uid.js';
 import { getLang, setLang as setI18nLang } from '../i18n.js';
 
 export const ANONYMIZE_PRESET_TAGS = [
@@ -722,14 +723,68 @@ export class AppStore {
 
   /**
    * Internal helper: build an undoable anonymization command for any given doc.
+   * Supports PHI replacement, Private tag stripping, and consistent Study/Series/SOP UID regeneration.
    */
-  _buildAnonymizeCommandForDoc(doc, rules, markDeidentified) {
+  _buildAnonymizeCommandForDoc(doc, rules, opts = {}) {
+    const {
+      markDeidentified = true,
+      stripPrivate = false,
+      regenerateUids = false,
+      sharedUidMap = new Map(),
+    } = opts;
+
     const ruleMap = new Map(rules.map((r) => [r.tag, r.replacement]));
     const snapshots = [];
+    const privateDeletes = [];
+
+    const mapUid = (origUid, forceUnique = false) => {
+      if (!forceUnique && origUid && sharedUidMap.has(origUid)) {
+        return sharedUidMap.get(origUid);
+      }
+      const next = generateDicomUid();
+      if (!forceUnique && origUid) sharedUidMap.set(origUid, next);
+      return next;
+    };
+
+    // Determine consistent new SOPInstanceUID for this file so (0008,0018) and (0002,0003) stay synced
+    let newSopUid = null;
+    if (regenerateUids) {
+      newSopUid = generateDicomUid();
+    }
 
     const walk = (nodes) => {
       for (const n of nodes || []) {
         if (n.status === 'deleted') continue;
+
+        if (stripPrivate && n.isPrivate) {
+          privateDeletes.push({ node: n, prevStatus: n.status });
+          continue;
+        }
+
+        if (regenerateUids && !n.isSequence && !n.isBinary) {
+          if (n.tag === '0020000D' || n.tag === '0020000E') {
+            const nextVal = mapUid(n.value, false);
+            snapshots.push({
+              node: n,
+              prevValue: n.value,
+              prevStatus: n.status,
+              nextValue: nextVal,
+              nextStatus: n.status === 'added' ? 'added' : 'modified',
+            });
+            continue;
+          }
+          if (n.tag === '00080018' || n.tag === '00020003') {
+            snapshots.push({
+              node: n,
+              prevValue: n.value,
+              prevStatus: n.status,
+              nextValue: newSopUid,
+              nextStatus: n.status === 'added' ? 'added' : 'modified',
+            });
+            continue;
+          }
+        }
+
         if (ruleMap.has(n.tag) && !n.isSequence && !n.isBinary) {
           const nextVal = ruleMap.get(n.tag);
           if (n.value !== nextVal) {
@@ -747,6 +802,7 @@ export class AppStore {
         }
       }
     };
+    walk(doc.metaNodes);
     walk(doc.datasetNodes);
 
     let addedDeidNode = null;
@@ -791,7 +847,7 @@ export class AppStore {
       }
     }
 
-    const changeCount = snapshots.length + (addedDeidNode ? 1 : 0);
+    const changeCount = snapshots.length + privateDeletes.length + (addedDeidNode ? 1 : 0);
     if (changeCount === 0) return null;
 
     return {
@@ -805,6 +861,9 @@ export class AppStore {
             s.node.status = s.nextStatus;
             s.node.validation = validateVrValue(s.node.vr, s.nextValue);
           }
+          for (const d of privateDeletes) {
+            d.node.status = 'deleted';
+          }
           if (addedDeidNode) {
             doc.datasetNodes.push(addedDeidNode);
             doc.datasetNodes.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
@@ -816,6 +875,9 @@ export class AppStore {
             s.node.status = s.prevStatus;
             s.node.validation = validateVrValue(s.node.vr, s.prevValue);
           }
+          for (const d of privateDeletes) {
+            d.node.status = d.prevStatus;
+          }
           if (addedDeidNode) {
             const idx = doc.datasetNodes.indexOf(addedDeidNode);
             if (idx >= 0) doc.datasetNodes.splice(idx, 1);
@@ -825,26 +887,27 @@ export class AppStore {
     };
   }
 
-  applyAnonymization(rules, markDeidentified = true) {
+  applyAnonymization(rules, opts = {}) {
     if (!this.doc) return 0;
-    const built = this._buildAnonymizeCommandForDoc(this.doc, rules, markDeidentified);
+    const built = this._buildAnonymizeCommandForDoc(this.doc, rules, opts);
     if (!built) return 0;
     this._executeCommand(built.cmd);
     return built.changeCount;
   }
 
   /**
-   * Apply anonymization across ALL open files (parsing lazy entries automatically).
+   * Apply anonymization across ALL open files (preserving Study/Series UID grouping across slices).
    */
-  async applyAnonymizationAllFiles(rules, markDeidentified = true) {
+  async applyAnonymizationAllFiles(rules, opts = {}) {
     this._saveActiveSnapshot();
     let affectedFiles = 0;
     let totalChanges = 0;
+    const sharedUidMap = new Map();
 
     for (const entry of this.files) {
       try {
         const doc = await this.ensureEntryParsed(entry);
-        const built = this._buildAnonymizeCommandForDoc(doc, rules, markDeidentified);
+        const built = this._buildAnonymizeCommandForDoc(doc, rules, { ...opts, sharedUidMap });
         if (!built) continue;
         built.cmd.redo();
         entry.undoStack.push(built.cmd);

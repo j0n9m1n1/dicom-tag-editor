@@ -14,7 +14,7 @@ import { TreeView } from './ui/treeView.js';
 import { InspectorPanel } from './ui/inspector.js';
 import { PixelPanel } from './ui/pixelPanel.js';
 import { ModalManager } from './ui/modals.js';
-import { icons } from './ui/icons.js';
+import { icons, escapeHtml } from './ui/icons.js';
 import { t, getLang } from './i18n.js';
 
 const store = new AppStore();
@@ -35,6 +35,7 @@ const btnRedo = document.getElementById('btn-redo');
 const btnAddTag = document.getElementById('btn-add-tag');
 const btnAnonymize = document.getElementById('btn-anonymize');
 const btnDiff = document.getElementById('btn-diff');
+const btnCompare = document.getElementById('btn-compare');
 const btnRaw = document.getElementById('btn-raw');
 const btnSaveDirect = document.getElementById('btn-save-direct');
 const btnSaveAs = document.getElementById('btn-save-as');
@@ -56,6 +57,7 @@ const btnCollapseAll = document.getElementById('btn-collapse-all');
 const statusCounts = document.getElementById('status-counts');
 
 const fileListPane = document.getElementById('filelist-pane');
+const summaryStrip = document.getElementById('summary-strip');
 const treeBody = document.getElementById('tree-body');
 const inspectorContainer = document.getElementById('inspector-container');
 const pixelContainer = document.getElementById('pixel-container');
@@ -102,6 +104,8 @@ function applyLanguage() {
   btnAnonymize.title = t('btnAnonymizeTitle');
   btnDiff.innerHTML = `${icons.diff(15)}<span>${t('btnDiff')}</span>`;
   btnDiff.title = t('btnDiffTitle');
+  btnCompare.innerHTML = `${icons.layers(15)}<span>${t('btnCompare')}</span>`;
+  btnCompare.title = t('btnCompareTitle');
   btnRaw.innerHTML = `${icons.code(15)}<span>${t('btnRaw')}</span>`;
   btnRaw.title = t('btnRawTitle');
   btnSaveDirect.innerHTML = `${icons.save(15)}<span>${t('btnSaveDirect')}</span>`;
@@ -140,7 +144,9 @@ function applyLanguage() {
 }
 
 // Instantiate UI controllers
-const treeView = new TreeView(treeBody, store);
+const treeView = new TreeView(treeBody, store, {
+  onToast: showToast,
+});
 
 const modals = new ModalManager(modalRoot, store, {
   onSaveAs: () => saveDocumentAs(),
@@ -157,6 +163,7 @@ const modals = new ModalManager(modalRoot, store, {
 
 const fileListPanel = new FileListPanel(fileListPane, store, {
   onAddFiles: () => openFileDialog({ append: true }),
+  onCompare: () => modals.openCompare(),
   onBatchEdit: () => modals.openBatchEdit(),
   onSaveZip: () => saveAllAsZip(),
   onSwitchError: (err) => showToast(t('toastParseErr', { msg: err.message }), 'error'),
@@ -204,6 +211,8 @@ function updateToolbarAndHeader() {
   btnAddTag.disabled = !hasDoc;
   btnAnonymize.disabled = !hasDoc;
   btnDiff.disabled = !hasDoc;
+  btnCompare.classList.toggle('hidden', fileCount < 2);
+  btnCompare.disabled = fileCount < 2;
   btnRaw.disabled = !hasDoc;
   btnSaveAs.disabled = !hasDoc;
 
@@ -213,13 +222,55 @@ function updateToolbarAndHeader() {
 
   btnTogglePixel.classList.toggle('btn-primary', store.showPixelPanel && hasDoc);
 
-  if (!hasDoc) return;
+  if (!hasDoc) {
+    summaryStrip.classList.add('hidden');
+    summaryStrip.innerHTML = '';
+    return;
+  }
 
   const doc = store.doc;
   fileNameLabel.textContent = doc.fileName;
   fileNameLabel.title = doc.fileName;
   tsBadge.textContent = doc.transferSyntaxInfo?.name || doc.transferSyntaxUid;
   tsBadge.title = `Transfer Syntax UID: ${doc.transferSyntaxUid}`;
+
+  // Update top key metadata summary strip
+  const getVal = (hex) => {
+    const node = doc.datasetNodes.find((n) => n.tag === hex && n.status !== 'deleted');
+    return node && !node.isBinary && !node.isSequence ? (node.value || '').trim() : '';
+  };
+  const summaryItems = [];
+  const modality = getVal('00080060');
+  const pName = getVal('00100010');
+  const pId = getVal('00100020');
+  const studyDate = getVal('00080020');
+  const rows = getVal('00280010');
+  const cols = getVal('00280011');
+  const bits = getVal('00280100');
+  const frames = getVal('00280008');
+  const studyDesc = getVal('00081030');
+
+  if (modality) summaryItems.push(`<span class="sum-chip sum-mod">${escapeHtml(modality)}</span>`);
+  if (pName) summaryItems.push(`<span class="sum-item"><em>Patient</em> <strong>${escapeHtml(pName)}</strong></span>`);
+  if (pId) summaryItems.push(`<span class="sum-item"><em>ID</em> <code>${escapeHtml(pId)}</code></span>`);
+  if (studyDate) {
+    const fmtDate = /^\d{8}$/.test(studyDate)
+      ? `${studyDate.slice(0, 4)}-${studyDate.slice(4, 6)}-${studyDate.slice(6, 8)}`
+      : studyDate;
+    summaryItems.push(`<span class="sum-item"><em>Date</em> <code>${escapeHtml(fmtDate)}</code></span>`);
+  }
+  if (rows && cols) {
+    const dim = `${cols}×${rows}${bits ? ` · ${bits}b` : ''}${frames && Number(frames) > 1 ? ` · ${frames}f` : ''}`;
+    summaryItems.push(`<span class="sum-item"><em>Image</em> <code>${escapeHtml(dim)}</code></span>`);
+  }
+  if (studyDesc) summaryItems.push(`<span class="sum-item sum-desc" title="${escapeHtml(studyDesc)}">${escapeHtml(studyDesc)}</span>`);
+
+  if (summaryItems.length > 0) {
+    summaryStrip.innerHTML = summaryItems.join('<span class="sum-dot">·</span>');
+    summaryStrip.classList.remove('hidden');
+  } else {
+    summaryStrip.classList.add('hidden');
+  }
 
   const stats = store.getStatsAndDiff();
   const totalChanges = stats.modified + stats.added + stats.deleted;
@@ -598,6 +649,7 @@ btnRedo.addEventListener('click', () => store.redo());
 btnAddTag.addEventListener('click', () => modals.openAddTag(null));
 btnAnonymize.addEventListener('click', () => modals.openAnonymize());
 btnDiff.addEventListener('click', () => modals.openDiff());
+btnCompare.addEventListener('click', () => modals.openCompare());
 btnRaw.addEventListener('click', () => modals.openRawView());
 btnSaveDirect.addEventListener('click', saveDocumentDirect);
 btnSaveAs.addEventListener('click', saveDocumentAs);

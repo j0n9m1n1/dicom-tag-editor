@@ -1,7 +1,8 @@
 /**
  * Collapsible Pixel Preview Dock Panel.
- * Supports interactive mouse-drag Window/Level, sliders, Invert, Auto W/L,
- * multi-frame navigation, and live sync when 0028 tags are edited.
+ * Supports interactive mouse/touch drag Window/Level, CT W/L presets,
+ * cursor (X, Y) + pixel/HU value HUD, wheel Zoom & Shift+drag Pan,
+ * Invert, Auto W/L, multi-frame navigation, and live sync when 0028 tags change.
  */
 
 import {
@@ -11,6 +12,13 @@ import {
 } from '../dicom/pixelRenderer.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
+
+const CT_PRESETS = [
+  { key: 'pixelPresetBrain', wc: 40, ww: 80 },
+  { key: 'pixelPresetSoft', wc: 40, ww: 400 },
+  { key: 'pixelPresetLung', wc: -600, ww: 1500 },
+  { key: 'pixelPresetBone', wc: 300, ww: 1500 },
+];
 
 export class PixelPanel {
   /**
@@ -27,7 +35,10 @@ export class PixelPanel {
     this._wc = 40;
     this._ww = 400;
     this._invert = false;
-    this._dragging = false;
+    this._zoom = 1;
+    this._panX = 0;
+    this._panY = 0;
+    this._dragMode = null; // 'wl' | 'pan'
     this._dragStart = null;
     this._renderToken = 0;
   }
@@ -61,6 +72,9 @@ export class PixelPanel {
     const meta = extractPixelMeta(this.store.doc);
     this._meta = meta;
     this._frameIndex = Math.min(this._frameIndex, Math.max(0, (meta?.numberOfFrames || 1) - 1));
+    this._zoom = 1;
+    this._panX = 0;
+    this._panY = 0;
 
     await this._loadAndDrawFrame(true);
   }
@@ -105,22 +119,32 @@ export class PixelPanel {
 
     this._renderUi(meta, decoded);
     this._redrawCanvas();
+    this._applyCanvasTransform();
   }
 
   _renderUi(meta, decoded) {
     const isScalar = decoded.kind === 'scalar';
-    const minVal = isScalar ? Math.floor(decoded.min) : 0;
-    const maxVal = isScalar ? Math.ceil(decoded.max) : 255;
-    const maxW = isScalar ? Math.max(10, Math.ceil((decoded.max - decoded.min) * 2)) : 512;
+    const minVal = isScalar ? Math.min(-1024, Math.floor(decoded.min)) : 0;
+    const maxVal = isScalar ? Math.max(1500, Math.ceil(decoded.max)) : 255;
+    const maxW = isScalar ? Math.max(2000, Math.ceil((decoded.max - decoded.min) * 2)) : 512;
+
+    const presetBtns = isScalar
+      ? `<div class="pixel-presets">
+          ${CT_PRESETS.map(
+            (p) => `<button class="btn btn-xs" data-wl-preset="${p.wc},${p.ww}" title="WC ${p.wc} / WW ${p.ww}">${escapeHtml(t(p.key))}</button>`
+          ).join('')}
+        </div>`
+      : '';
 
     this.container.innerHTML = `
       <div class="pixel-header">
         <span class="pixel-title">${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
         <span class="pixel-meta-pill">${meta.cols}×${meta.rows} · ${meta.bitsStored}/${meta.bitsAllocated}b · ${escapeHtml(meta.photometric)}</span>
       </div>
-      <div class="pixel-canvas-wrap" title="${escapeHtml(t('pixelCanvasHint'))}">
+      <div class="pixel-canvas-wrap" id="pixel-canvas-wrap" title="${escapeHtml(t('pixelCanvasHintV3'))}">
         <canvas id="pixel-canvas"></canvas>
         ${isScalar ? `<div class="pixel-hud" id="pixel-hud">WC: ${Math.round(this._wc)} / WW: ${Math.round(this._ww)}</div>` : ''}
+        <div class="pixel-hud pixel-hud-tr hidden" id="pixel-probe"></div>
       </div>
       <div class="pixel-controls">
         ${isScalar ? `
@@ -142,10 +166,16 @@ export class PixelPanel {
             <span class="wl-num" id="pixel-frame-num">${this._frameIndex + 1}/${meta.numberOfFrames}</span>
           </label>
         ` : ''}
+        ${presetBtns}
         <div class="pixel-btn-row">
           <button class="btn btn-xs ${this._invert ? 'btn-primary' : ''}" id="btn-pixel-invert">${icons.contrast(13)} ${escapeHtml(t('pixelInvert'))}</button>
           ${isScalar ? `<button class="btn btn-xs" id="btn-pixel-auto">${escapeHtml(t('pixelAutoWl'))}</button>` : ''}
           ${isScalar && meta.windowCenter !== null ? `<button class="btn btn-xs" id="btn-pixel-tag-wl">${escapeHtml(t('pixelTagWl'))}</button>` : ''}
+          <span class="pixel-zoom-group">
+            <button class="btn btn-xs" id="btn-zoom-out" title="Zoom Out">-</button>
+            <button class="btn btn-xs" id="btn-zoom-reset" title="Reset Zoom">${escapeHtml(t('pixelZoomReset'))}</button>
+            <button class="btn btn-xs" id="btn-zoom-in" title="Zoom In">+</button>
+          </span>
         </div>
       </div>
     `;
@@ -153,14 +183,25 @@ export class PixelPanel {
     this._bindControls(meta, decoded);
   }
 
-  _bindControls(meta, decoded) {
+  _applyCanvasTransform() {
     const canvas = this.container.querySelector('#pixel-canvas');
+    if (!canvas) return;
+    canvas.style.transform = `translate(${this._panX}px, ${this._panY}px) scale(${this._zoom})`;
+  }
+
+  _bindControls(meta, decoded) {
+    const wrap = this.container.querySelector('#pixel-canvas-wrap');
+    const canvas = this.container.querySelector('#pixel-canvas');
+    const probeEl = this.container.querySelector('#pixel-probe');
     const wcSlider = this.container.querySelector('#wl-wc');
     const wwSlider = this.container.querySelector('#wl-ww');
     const frameSlider = this.container.querySelector('#pixel-frame');
     const invertBtn = this.container.querySelector('#btn-pixel-invert');
     const autoBtn = this.container.querySelector('#btn-pixel-auto');
     const tagWlBtn = this.container.querySelector('#btn-pixel-tag-wl');
+    const zoomInBtn = this.container.querySelector('#btn-zoom-in');
+    const zoomOutBtn = this.container.querySelector('#btn-zoom-out');
+    const zoomResetBtn = this.container.querySelector('#btn-zoom-reset');
 
     if (wcSlider) {
       wcSlider.addEventListener('input', () => {
@@ -184,6 +225,17 @@ export class PixelPanel {
         await this._loadAndDrawFrame(false);
       });
     }
+
+    this.container.querySelectorAll('[data-wl-preset]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const [wc, ww] = btn.dataset.wlPreset.split(',').map(Number);
+        this._wc = wc;
+        this._ww = ww;
+        this._updateWlReadout();
+        this._redrawCanvas();
+      });
+    });
+
     if (invertBtn) {
       invertBtn.addEventListener('click', () => {
         this._invert = !this._invert;
@@ -208,55 +260,127 @@ export class PixelPanel {
       });
     }
 
-    // Interactive mouse drag W/L adjustment on canvas
-    if (canvas && decoded.kind === 'scalar') {
+    const setZoom = (next) => {
+      this._zoom = Math.max(1, Math.min(5, Number(next.toFixed(2))));
+      if (this._zoom === 1) {
+        this._panX = 0;
+        this._panY = 0;
+      }
+      this._applyCanvasTransform();
+    };
+    if (zoomInBtn) zoomInBtn.addEventListener('click', () => setZoom(this._zoom + 0.5));
+    if (zoomOutBtn) zoomOutBtn.addEventListener('click', () => setZoom(this._zoom - 0.5));
+    if (zoomResetBtn) {
+      zoomResetBtn.addEventListener('click', () => {
+        this._zoom = 1;
+        this._panX = 0;
+        this._panY = 0;
+        this._applyCanvasTransform();
+      });
+    }
+
+    if (wrap && canvas) {
+      // Wheel zoom
+      wrap.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.25 : -0.25;
+        setZoom(this._zoom + delta);
+      }, { passive: false });
+
+      // Cursor (X, Y) + Pixel/HU probe HUD
+      canvas.addEventListener('mousemove', (e) => {
+        if (!probeEl || this._dragMode) return;
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        const x = Math.floor(((e.clientX - rect.left) / rect.width) * decoded.width);
+        const y = Math.floor(((e.clientY - rect.top) / rect.height) * decoded.height);
+        if (x < 0 || y < 0 || x >= decoded.width || y >= decoded.height) {
+          probeEl.classList.add('hidden');
+          return;
+        }
+        const idx = y * decoded.width + x;
+        let valText = '';
+        if (decoded.kind === 'scalar') {
+          const v = decoded.values[idx];
+          const unit = meta.rescaleIntercept !== 0 || meta.rescaleSlope !== 1 ? ' HU' : '';
+          valText = ` · ${Number.isInteger(v) ? v : v.toFixed(1)}${unit}`;
+        } else if (decoded.kind === 'rgb') {
+          const p = idx * 4;
+          valText = ` · RGB(${decoded.rgba[p]},${decoded.rgba[p + 1]},${decoded.rgba[p + 2]})`;
+        }
+        probeEl.textContent = `(${x}, ${y})${valText}`;
+        probeEl.classList.remove('hidden');
+      });
+
+      canvas.addEventListener('mouseleave', () => {
+        if (probeEl) probeEl.classList.add('hidden');
+      });
+
+      // Mouse drag: Shift+Drag = Pan, Normal Drag = W/L
       const onMove = (e) => {
-        if (!this._dragging || !this._dragStart) return;
+        if (!this._dragMode || !this._dragStart) return;
         const dx = e.clientX - this._dragStart.x;
         const dy = e.clientY - this._dragStart.y;
-        const scale = Math.max(1, (decoded.max - decoded.min) / 250);
-        this._ww = Math.max(1, Math.round(this._dragStart.ww + dx * scale));
-        this._wc = Math.round(this._dragStart.wc + dy * scale);
-        this._updateWlReadout();
-        this._redrawCanvas();
+        if (this._dragMode === 'pan') {
+          this._panX = this._dragStart.panX + dx;
+          this._panY = this._dragStart.panY + dy;
+          this._applyCanvasTransform();
+        } else if (this._dragMode === 'wl' && decoded.kind === 'scalar') {
+          const scale = Math.max(1, (decoded.max - decoded.min) / 250);
+          this._ww = Math.max(1, Math.round(this._dragStart.ww + dx * scale));
+          this._wc = Math.round(this._dragStart.wc + dy * scale);
+          this._updateWlReadout();
+          this._redrawCanvas();
+        }
       };
       const onUp = () => {
-        this._dragging = false;
+        this._dragMode = null;
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
       };
-      canvas.addEventListener('mousedown', (e) => {
-        this._dragging = true;
-        this._dragStart = { x: e.clientX, y: e.clientY, wc: this._wc, ww: this._ww };
+
+      wrap.addEventListener('mousedown', (e) => {
+        if (e.shiftKey || e.button === 1) {
+          e.preventDefault();
+          this._dragMode = 'pan';
+          this._dragStart = { x: e.clientX, y: e.clientY, panX: this._panX, panY: this._panY };
+        } else if (decoded.kind === 'scalar') {
+          this._dragMode = 'wl';
+          this._dragStart = { x: e.clientX, y: e.clientY, wc: this._wc, ww: this._ww };
+        } else {
+          return;
+        }
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
       });
 
       // Touch drag W/L adjustment for mobile devices
-      canvas.addEventListener('touchstart', (e) => {
-        if (e.touches.length !== 1) return;
-        e.preventDefault();
-        const pt = e.touches[0];
-        this._dragging = true;
-        this._dragStart = { x: pt.clientX, y: pt.clientY, wc: this._wc, ww: this._ww };
-      }, { passive: false });
+      if (decoded.kind === 'scalar') {
+        canvas.addEventListener('touchstart', (e) => {
+          if (e.touches.length !== 1) return;
+          e.preventDefault();
+          const pt = e.touches[0];
+          this._dragMode = 'wl';
+          this._dragStart = { x: pt.clientX, y: pt.clientY, wc: this._wc, ww: this._ww };
+        }, { passive: false });
 
-      canvas.addEventListener('touchmove', (e) => {
-        if (!this._dragging || !this._dragStart || e.touches.length !== 1) return;
-        e.preventDefault();
-        const pt = e.touches[0];
-        const dx = pt.clientX - this._dragStart.x;
-        const dy = pt.clientY - this._dragStart.y;
-        const scale = Math.max(1, (decoded.max - decoded.min) / 220);
-        this._ww = Math.max(1, Math.round(this._dragStart.ww + dx * scale));
-        this._wc = Math.round(this._dragStart.wc + dy * scale);
-        this._updateWlReadout();
-        this._redrawCanvas();
-      }, { passive: false });
+        canvas.addEventListener('touchmove', (e) => {
+          if (this._dragMode !== 'wl' || !this._dragStart || e.touches.length !== 1) return;
+          e.preventDefault();
+          const pt = e.touches[0];
+          const dx = pt.clientX - this._dragStart.x;
+          const dy = pt.clientY - this._dragStart.y;
+          const scale = Math.max(1, (decoded.max - decoded.min) / 220);
+          this._ww = Math.max(1, Math.round(this._dragStart.ww + dx * scale));
+          this._wc = Math.round(this._dragStart.wc + dy * scale);
+          this._updateWlReadout();
+          this._redrawCanvas();
+        }, { passive: false });
 
-      canvas.addEventListener('touchend', () => {
-        this._dragging = false;
-      });
+        canvas.addEventListener('touchend', () => {
+          this._dragMode = null;
+        });
+      }
     }
   }
 

@@ -7,7 +7,7 @@
   <meta name="description" content="Free browser-based DICOM tag editor and metadata viewer running 100% locally with zero upload. Inspect and edit nested SQ sequences, validate DICOM VR rules, anonymize PHI tags, preview pixel data with Window/Level, and save byte-preserving .dcm files. 서버 전송 없는 무료 웹 DICOM 태그 편집기." />
   <meta name="keywords" content="DICOM tag editor, DICOM metadata viewer, online DICOM editor, DICOM anonymizer, DICOM VR validator, local DICOM viewer, browser DICOM tool, DICOM 태그 편집기, DICOM 뷰어, DICOM 익명화" />
   <meta name="robots" content="index, follow" />
-  <meta name="theme-color" content="#0d1117" />
+  <meta name="theme-color" content="#0b0b0d" />
   <link rel="canonical" href="https://dcm.tyty.uk/" />
 
   <!-- Open Graph / Social Preview -->
@@ -58,7 +58,7 @@
   }
   </script>
 
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Cpath d='M8 10h6a6 6 0 0 1 0 12H8V10Zm3 3v6h3a3 3 0 0 0 0-6h-3Z' fill='%23fff'/%3E%3Ccircle cx='23' cy='21' r='2.5' fill='%2338bdf8'/%3E%3C/svg%3E" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2318181b' stroke='%2352525b' stroke-width='1.5'/%3E%3Cpath d='M8 10h6a6 6 0 0 1 0 12H8V10Zm3 3v6h3a3 3 0 0 0 0-6h-3Z' fill='%23f4f4f5'/%3E%3Ccircle cx='23' cy='21' r='2.3' fill='%23a1a1aa'/%3E%3C/svg%3E" />
   <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -96,6 +96,7 @@
         <button class="btn btn-sm" id="btn-add-tag" disabled title="새 DICOM 태그 추가"></button>
         <button class="btn btn-sm" id="btn-anonymize" disabled title="개인정보 일괄 익명화 프리셋"></button>
         <button class="btn btn-sm" id="btn-diff" disabled title="변경 내역 비교 (Diff)"></button>
+        <button class="btn btn-sm hidden" id="btn-compare" disabled title="열린 두 DICOM 파일의 태그 비교"></button>
         <button class="btn btn-sm" id="btn-raw" disabled title="Raw 텍스트(dcmdump) / JSON 보기"></button>
         <div class="toolbar-sep"></div>
         <button class="btn btn-sm hidden" id="btn-save-direct" disabled title="열려있는 원본 파일에 덮어쓰기 (Ctrl+S)"></button>
@@ -145,8 +146,9 @@
       <!-- Left Multi-File Sidebar -->
       <aside class="filelist-pane desktop-hidden" id="filelist-pane"></aside>
 
-      <!-- Center Pane: Filter bar + Tag Tree Table -->
+      <!-- Center Pane: Summary strip + Filter bar + Tag Tree Table -->
       <section class="tree-pane">
+        <div class="summary-strip hidden" id="summary-strip"></div>
         <div class="filter-bar">
           <div class="search-box">
             <span class="search-icon" id="search-icon-slot"></span>
