@@ -141,7 +141,10 @@ test('truncated declared values and missing item delimiters reject the entire fi
   const truncated = hex('20 00 13 00 49 53 04 00 31 20');
   await assert.rejects(parse(Buffer.concat([fileMeta(), truncated])), /Truncated DICOM value at \(0020,0013\)/);
   const missingItemDelimiter = hex('08 00 15 11 53 51 00 00 ff ff ff ff fe ff 00 e0 ff ff ff ff fe ff dd e0 00 00 00 00');
-  await assert.rejects(parse(Buffer.concat([fileMeta(), missingItemDelimiter])), /Unexpected DICOM item/);
+  await assert.rejects(parse(Buffer.concat([fileMeta(), missingItemDelimiter])), {
+    code: 'UNEXPECTED_ITEM',
+    message: /Unexpected DICOM delimiter/,
+  });
 });
 
 test('saving a snapshot never cleans newer edits or the newly active file', async () => {
