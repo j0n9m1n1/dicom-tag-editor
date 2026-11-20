@@ -129,6 +129,7 @@ export class AppStore {
     this.showFileList = false;
     this.mobileTab = 'tree'; // 'files' | 'tree' | 'inspector' | 'pixel'
     this.theme = localStorage.getItem('dcm_editor_theme') || 'dark';
+    this.uiStyle = localStorage.getItem('dcm_editor_ui') === 'raw' ? 'raw' : 'modern';
     this.lang = getLang();
     this.undoStack = [];
     this.redoStack = [];
@@ -153,6 +154,13 @@ export class AppStore {
     this.theme = theme;
     localStorage.setItem('dcm_editor_theme', theme);
     this.emit('theme');
+  }
+
+  setUiStyle(style) {
+    const next = style === 'raw' ? 'raw' : 'modern';
+    this.uiStyle = next;
+    localStorage.setItem('dcm_editor_ui', next);
+    this.emit('uiStyle');
   }
 
   setLang(lang) {

@@ -239,6 +239,10 @@ function applyTheme() {
   document.documentElement.setAttribute('data-theme', store.theme);
 }
 
+function applyUiStyle() {
+  document.documentElement.setAttribute('data-ui', store.uiStyle);
+}
+
 function updateToolbarAndHeader() {
   const hasDoc = Boolean(store.doc);
   const fileCount = store.files.length;
@@ -353,6 +357,10 @@ function updateToolbarAndHeader() {
 store.subscribe((reason) => {
   if (reason === 'theme') {
     applyTheme();
+    return;
+  }
+  if (reason === 'uiStyle') {
+    applyUiStyle();
     return;
   }
   if (reason === 'selection') {
@@ -932,6 +940,7 @@ treeTableHeader.addEventListener('dblclick', (e) => {
 
 // Initial render
 applyTheme();
+applyUiStyle();
 applyLanguage();
 updateToolbarAndHeader();
 fileListPanel.render();

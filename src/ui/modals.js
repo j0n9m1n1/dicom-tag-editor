@@ -900,6 +900,7 @@ export class ModalManager {
   openSettings() {
     const lang = getLang();
     const theme = this.store.theme;
+    const uiStyle = this.store.uiStyle;
     const pwa = this.callbacks.getPwaState?.() || { canInstall: false, isStandalone: false };
 
     let pwaBodyHtml = '';
@@ -934,6 +935,14 @@ export class ModalManager {
             <div class="seg-group">
               <button type="button" class="seg-btn ${theme === 'dark' ? 'active' : ''}" data-set-theme="dark">${icons.moon(14)} ${escapeHtml(t('settingsThemeDark'))}</button>
               <button type="button" class="seg-btn ${theme === 'light' ? 'active' : ''}" data-set-theme="light">${icons.sun(14)} ${escapeHtml(t('settingsThemeLight'))}</button>
+            </div>
+          </div>
+
+          <div class="setting-row">
+            <label class="setting-label">${escapeHtml(t('settingsUiLabel'))}</label>
+            <div class="seg-group">
+              <button type="button" class="seg-btn ${uiStyle === 'modern' ? 'active' : ''}" data-set-ui="modern">${icons.layers(14)} ${escapeHtml(t('settingsUiModern'))}</button>
+              <button type="button" class="seg-btn ${uiStyle === 'raw' ? 'active' : ''}" data-set-ui="raw">${icons.code(14)} ${escapeHtml(t('settingsUiRaw'))}</button>
             </div>
           </div>
 
@@ -992,6 +1001,16 @@ export class ModalManager {
         const nextTheme = btn.dataset.setTheme;
         if (nextTheme !== this.store.theme) {
           this.store.setTheme(nextTheme);
+        }
+        this.openSettings();
+      });
+    });
+
+    this.root.querySelectorAll('[data-set-ui]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextUi = btn.dataset.setUi;
+        if (nextUi !== this.store.uiStyle) {
+          this.store.setUiStyle(nextUi);
         }
         this.openSettings();
       });
