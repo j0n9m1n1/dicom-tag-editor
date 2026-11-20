@@ -7,6 +7,7 @@
 
 import { ALL_VR_CODES, getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
 import { parseTagString, searchDictionary, lookupTag, tagHex } from '../dicom/dictionary.js';
+import { formatByteSize } from '../dicom/parser.js';
 import { formatDcmDump, formatDicomJson } from '../dicom/dcmdump.js';
 import { ANONYMIZE_PRESET_TAGS, getReadOnlyTagMessage } from '../state/store.js';
 import { icons, escapeHtml } from './icons.js';
@@ -994,6 +995,184 @@ export class ModalManager {
         }
         this.openSettings();
       });
+    });
+  }
+
+  /**
+   * Open Detailed File Open / Parse Error Diagnosis Modal.
+   * @param {Array<{ fileName?: string, size?: number, error?: any }>} failures
+   */
+  openFileError(failures) {
+    const list = Array.isArray(failures) ? failures.filter(Boolean) : [failures].filter(Boolean);
+    if (list.length === 0) return;
+
+    const ERROR_GUIDE_MAP = {
+      TOO_SMALL: ['errCauseTooSmall', 'errHintTooSmall'],
+      NON_DICOM_FORMAT: ['errCauseNonDicom', 'errHintNonDicom'],
+      TRUNCATED_VALUE: ['errCauseTruncated', 'errHintTruncated'],
+      TRUNCATED_HEADER: ['errCauseTruncatedHeader', 'errHintTruncated'],
+      INVALID_SQ_ITEM: ['errCauseInvalidSq', 'errHintCorrupt'],
+      MISSING_SQ_DELIM: ['errCauseMissingDelim', 'errHintCorrupt'],
+      MISSING_ITEM_DELIM: ['errCauseMissingDelim', 'errHintCorrupt'],
+      UNEXPECTED_ITEM: ['errCauseUnexpectedItem', 'errHintCorrupt'],
+      INVALID_ENCAP_PIXEL: ['errCauseInvalidPixel', 'errHintCorrupt'],
+      UNSUPPORTED_UNDEF_LEN: ['errCauseUndefLen', 'errHintCorrupt'],
+      DEFLATE_FAILED: ['errCauseDeflate', 'errHintDeflate'],
+      NO_TAGS: ['errCauseNoTags', 'errHintNonDicom'],
+      UNKNOWN: ['errCauseUnknown', 'errHintCorrupt'],
+    };
+
+    const formatOffset = (off) =>
+      `0x${off.toString(16).toUpperCase().padStart(8, '0')} (${off.toLocaleString()} B)`;
+
+    const reportLines = [];
+    const cardsHtml = list
+      .map((item) => {
+        const err = item.error || {};
+        const d = err.details || {};
+        const code = err.code && ERROR_GUIDE_MAP[err.code] ? err.code : 'UNKNOWN';
+        const [causeKey, hintKey] = ERROR_GUIDE_MAP[code];
+        const fileName = item.fileName || d.fileName || 'unknown';
+        const fileSize = Number.isFinite(d.fileSize) ? d.fileSize : (item.size ?? null);
+        const causeText = t(causeKey, { fmt: d.detectedFormat || 'Unknown' });
+        const hintText = t(hintKey);
+
+        const rows = [];
+        if (Number.isFinite(fileSize)) {
+          rows.push([
+            t('errLblFileSize'),
+            `${formatByteSize(fileSize)} (${fileSize.toLocaleString()} bytes)`,
+            true,
+          ]);
+        }
+        if (typeof d.hasPart10Header === 'boolean') {
+          rows.push([
+            t('errLblPart10'),
+            d.hasPart10Header ? t('errValPart10Yes') : t('errValPart10No'),
+            false,
+          ]);
+        }
+        if (d.detectedFormat) {
+          rows.push([t('errLblDetectedFmt'), d.detectedFormat, true]);
+        }
+        if (d.transferSyntaxUid) {
+          const tsLabel = d.transferSyntaxName
+            ? `${d.transferSyntaxName} (${d.transferSyntaxUid})`
+            : d.transferSyntaxUid;
+          rows.push([t('errLblTransferSyntax'), tsLabel, true]);
+        }
+        if (d.tag) {
+          rows.push([t('errLblTag'), d.tag, true]);
+        }
+        if (Number.isFinite(d.offset)) {
+          rows.push([t('errLblLocation'), formatOffset(d.offset), true]);
+        }
+        if (Number.isFinite(d.expectedLength) && Number.isFinite(d.availableBytes)) {
+          rows.push([
+            t('errLblLengthMismatch'),
+            t('errValLengthMismatch', {
+              expected: d.expectedLength.toLocaleString(),
+              avail: d.availableBytes.toLocaleString(),
+            }),
+            true,
+          ]);
+        }
+        const rawMsg = d.rawMessage || err.message || String(err);
+        if (rawMsg) {
+          rows.push([t('errLblRawMsg'), rawMsg, true]);
+        }
+
+        let hexLines = [];
+        if (d.headerPreview?.headHex) {
+          hexLines.push(`0x0000: ${d.headerPreview.headHex.padEnd(47, ' ')}  |${d.headerPreview.headAscii}|`);
+          if (d.headerPreview.offset128Hex) {
+            hexLines.push(`0x0080: ${d.headerPreview.offset128Hex.padEnd(47, ' ')}  |${d.headerPreview.offset128Ascii}|`);
+          }
+        }
+
+        // Build plain-text diagnostics block for clipboard copy
+        reportLines.push(`=== ${fileName} ===`);
+        reportLines.push(`Code: ${code}`);
+        reportLines.push(`Cause: ${causeText}`);
+        for (const [k, v] of rows) reportLines.push(`${k}: ${v}`);
+        if (hexLines.length > 0) {
+          reportLines.push('Header Hex:');
+          reportLines.push(...hexLines);
+        }
+        reportLines.push('');
+
+        return `
+          <div class="err-diag-card">
+            <div class="err-diag-file">
+              <span class="err-diag-filename" title="${escapeHtml(fileName)}">${escapeHtml(fileName)}</span>
+              ${Number.isFinite(fileSize) ? `<span class="muted small mono">${escapeHtml(formatByteSize(fileSize))}</span>` : ''}
+            </div>
+            <div class="err-diag-banner">
+              <div class="err-diag-cause">${escapeHtml(causeText)}</div>
+              <div class="err-diag-hint">${escapeHtml(hintText)}</div>
+            </div>
+            <div class="err-diag-grid">
+              ${rows
+                .map(
+                  ([k, v, isMono]) => `
+                <div class="err-diag-k">${escapeHtml(k)}</div>
+                <div class="err-diag-v ${isMono ? 'mono' : ''}">${escapeHtml(v)}</div>
+              `
+                )
+                .join('')}
+            </div>
+            ${
+              hexLines.length > 0
+                ? `
+              <div class="err-diag-hex-wrap">
+                <div class="err-diag-hex-title">${escapeHtml(t('errLblHexPreview'))}</div>
+                <pre class="err-diag-hex-pre">${escapeHtml(hexLines.join('\n'))}</pre>
+              </div>
+            `
+                : ''
+            }
+          </div>
+        `;
+      })
+      .join('');
+
+    const subtitle =
+      list.length === 1
+        ? t('modalErrSubtitleSingle')
+        : t('modalErrSubtitleMulti', { count: list.length });
+
+    this.root.innerHTML = `
+      <div class="modal-card modal-lg" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <div class="modal-err-header">
+            <span class="modal-err-icon">${icons.alertCircle(18)}</span>
+            <div>
+              <h3>${escapeHtml(t('modalErrTitle'))}</h3>
+              <div class="muted small">${escapeHtml(subtitle)}</div>
+            </div>
+          </div>
+          <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
+        </div>
+        <div class="modal-body modal-scroll">
+          ${cardsHtml}
+        </div>
+        <div class="modal-footer modal-footer-between">
+          <button type="button" class="btn btn-sm" id="btn-copy-err-diag">${icons.copy(14)} ${escapeHtml(t('modalErrCopyBtn'))}</button>
+          <button type="button" class="btn btn-primary" data-modal-close>${escapeHtml(t('modalClose'))}</button>
+        </div>
+      </div>
+    `;
+
+    this.root.classList.remove('hidden');
+
+    const reportText = reportLines.join('\n').trim();
+    this.root.querySelector('#btn-copy-err-diag')?.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(reportText);
+        this.callbacks.onToast?.(t('toastCopied'), 'ok');
+      } catch {
+        // ignore clipboard failure
+      }
     });
   }
 }

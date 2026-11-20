@@ -1806,6 +1806,106 @@ code {
   line-height: 1.48;
   color: var(--text-muted);
 }
+
+/* File Open Error Diagnosis Modal */
+.modal-err-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.modal-err-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--st-err-bg);
+  color: var(--st-err-color);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.err-diag-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.err-diag-card:last-child {
+  margin-bottom: 0;
+}
+.err-diag-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.err-diag-filename {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.err-diag-banner {
+  padding: 10px 12px;
+  background: var(--st-err-bg);
+  border-bottom: 1px solid var(--border);
+}
+.err-diag-cause {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--st-err-color);
+  line-height: 1.45;
+}
+.err-diag-hint {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.err-diag-grid {
+  display: grid;
+  grid-template-columns: 145px minmax(0, 1fr);
+  gap: 6px 12px;
+  padding: 10px 12px;
+  font-size: 11.5px;
+}
+.err-diag-k {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.err-diag-v {
+  color: var(--text-primary);
+  word-break: break-word;
+}
+.err-diag-hex-wrap {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px 10px;
+  background: var(--bg-input);
+}
+.err-diag-hex-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.err-diag-hex-pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}
 kbd {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -2636,5 +2736,12 @@ kbd {
   }
   .form-row-2 {
     grid-template-columns: 1fr;
+  }
+  .err-diag-grid {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .err-diag-v {
+    margin-bottom: 6px;
   }
 }

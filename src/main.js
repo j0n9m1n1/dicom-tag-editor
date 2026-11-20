@@ -221,7 +221,8 @@ const fileListPanel = new FileListPanel(fileListPane, store, {
   onCompare: () => modals.openCompare(),
   onBatchEdit: () => modals.openBatchEdit(),
   onSaveZip: () => saveAllAsZip(),
-  onSwitchError: (err) => showToast(t('toastParseErr', { msg: err.message }), 'error'),
+  onSwitchError: (err, entry) =>
+    modals.openFileError([{ fileName: entry?.name, size: entry?.size, error: err }]),
 });
 
 const inspector = new InspectorPanel(inspectorContainer, store, {
@@ -401,9 +402,16 @@ async function loadSelectedFileItems(items, { append = true } = {}) {
         'ok'
       );
     }
+    if (res.failedEntries?.length > 0) {
+      modals.openFileError(res.failedEntries);
+    }
   } catch (err) {
     console.error(err);
-    showToast(t('toastParseErr', { msg: err.message }), 'error');
+    const failures =
+      Array.isArray(err.failures) && err.failures.length > 0
+        ? err.failures
+        : [{ fileName: items[0]?.name, size: items[0]?.size, error: err }];
+    modals.openFileError(failures);
   }
 }
 

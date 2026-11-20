@@ -255,6 +255,8 @@ export class AppStore {
       const doc = await parseDicomBuffer(buf, entry.name);
       entry.doc = doc;
       entry.error = null;
+      entry.errorCode = null;
+      entry.errorDetails = null;
       entry.arrayBuffer = null; // free duplicate raw buffer once parsed
       if (!entry.selectedId) {
         entry.selectedId = doc.datasetNodes[0]?.id || doc.metaNodes[0]?.id || null;
@@ -265,6 +267,8 @@ export class AppStore {
       return doc;
     } catch (err) {
       entry.error = err.message || 'Parse error';
+      entry.errorCode = err.code || null;
+      entry.errorDetails = err.details || null;
       throw err;
     }
   }
@@ -375,6 +379,7 @@ export class AppStore {
     // Parse and activate the first newly added valid file
     let activated = null;
     let firstError = null;
+    const failedEntries = [];
     for (const entry of newEntries) {
       try {
         await this.ensureEntryParsed(entry);
@@ -382,6 +387,7 @@ export class AppStore {
         break;
       } catch (err) {
         if (!firstError) firstError = err;
+        failedEntries.push({ fileName: entry.name, size: entry.size, error: err });
       }
     }
 
@@ -391,9 +397,14 @@ export class AppStore {
         this._bindEntryToActive(null);
         this.emit('document');
       } else {
+        const failedSet = new Set(newEntries);
+        this.files = this.files.filter((f) => !failedSet.has(f));
+        if (this.files.length <= 1) this.showFileList = false;
         this.emit('files');
       }
-      throw firstError || new Error('Failed to parse DICOM file(s).');
+      const finalErr = firstError || new Error('Failed to parse DICOM file(s).');
+      finalErr.failures = failedEntries;
+      throw finalErr;
     }
 
     this._bindEntryToActive(activated);
@@ -408,6 +419,7 @@ export class AppStore {
       wasAppended: hadExisting,
       totalCount: this.files.length,
       activeEntry: activated,
+      failedEntries,
     };
   }
 

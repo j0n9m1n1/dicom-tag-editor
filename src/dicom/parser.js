@@ -31,6 +31,102 @@ export function resetNodeIdCounter() {
 
 const VALID_VR_SET = new Set(Object.keys(VR_SPECS));
 
+export class DicomParseError extends Error {
+  /**
+   * @param {string} code
+   * @param {string} message
+   * @param {Record<string, any>} [details]
+   */
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = 'DicomParseError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function toAsciiPreview(slice) {
+  let out = '';
+  for (let i = 0; i < slice.length; i++) {
+    const b = slice[i];
+    out += b >= 0x20 && b <= 0x7e ? String.fromCharCode(b) : '.';
+  }
+  return out;
+}
+
+function toHexLine(slice) {
+  return Array.from(slice, (b) => b.toString(16).toUpperCase().padStart(2, '0')).join(' ');
+}
+
+function buildHeaderPreview(bytes) {
+  const head = bytes.subarray(0, Math.min(16, bytes.length));
+  const preview = {
+    headHex: toHexLine(head),
+    headAscii: toAsciiPreview(head),
+    offset128Hex: null,
+    offset128Ascii: null,
+  };
+  if (bytes.length >= 132) {
+    const mid = bytes.subarray(128, Math.min(136, bytes.length));
+    preview.offset128Hex = toHexLine(mid);
+    preview.offset128Ascii = toAsciiPreview(mid);
+  }
+  return preview;
+}
+
+function detectNonDicomSignature(bytes) {
+  const n = bytes.length;
+  const startsWith = (...sig) => n >= sig.length && sig.every((b, i) => bytes[i] === b);
+
+  if (startsWith(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'PNG Image (89 50 4E 47)';
+  if (startsWith(0xff, 0xd8, 0xff)) return 'JPEG Image (FF D8 FF)';
+  if (startsWith(0x47, 0x49, 0x46, 0x38)) return 'GIF Image (GIF8)';
+  if (startsWith(0x25, 0x50, 0x44, 0x46, 0x2d)) return 'PDF Document (%PDF-)';
+  if (startsWith(0x50, 0x4b, 0x03, 0x04) || startsWith(0x50, 0x4b, 0x05, 0x06)) return 'ZIP / Office Archive (PK)';
+  if (startsWith(0x1f, 0x8b)) return 'GZIP Archive (.gz / .nii.gz)';
+  if (startsWith(0x52, 0x61, 0x72, 0x21)) return 'RAR Archive (Rar!)';
+  if (startsWith(0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c)) return '7-Zip Archive (7z)';
+  if (startsWith(0x49, 0x49, 0x2a, 0x00) || startsWith(0x4d, 0x4d, 0x00, 0x2a)) return 'TIFF Image';
+  if (n >= 12 && startsWith(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) {
+    return 'WebP Image (RIFF/WEBP)';
+  }
+  if (startsWith(0x42, 0x4d)) return 'BMP Image (BM)';
+  if (startsWith(0x4d, 0x5a)) return 'Windows Executable (MZ)';
+  // NIfTI-1 magic at offset 344 ("n+1\0" or "ni1\0")
+  if (
+    n >= 348 &&
+    bytes[344] === 0x6e &&
+    (bytes[345] === 0x2b || bytes[345] === 0x69) &&
+    bytes[346] === 0x31 &&
+    bytes[347] === 0x00
+  ) {
+    return 'NIfTI-1 Medical Volume (.nii)';
+  }
+
+  // Check for HTML / XML / JSON / plain UTF-8 text
+  const sampleLen = Math.min(n, 96);
+  if (sampleLen > 0) {
+    let start = 0;
+    if (startsWith(0xef, 0xbb, 0xbf)) start = 3; // UTF-8 BOM
+    let printable = 0;
+    for (let i = start; i < sampleLen; i++) {
+      const b = bytes[i];
+      if (b === 0x09 || b === 0x0a || b === 0x0d || (b >= 0x20 && b <= 0x7e) || b >= 0xc2) {
+        printable++;
+      }
+    }
+    const checked = sampleLen - start;
+    if (checked > 0 && printable / checked >= 0.95) {
+      const textStart = toAsciiPreview(bytes.subarray(start, Math.min(n, start + 32))).trimStart();
+      if (/^<!doctype\s+html|^<html/i.test(textStart)) return 'HTML Document';
+      if (/^<\?xml|^<[a-z]/i.test(textStart)) return 'XML / Markup Text';
+      if (/^[\[{]/.test(textStart)) return 'JSON / Text Data';
+      return 'Plain Text File';
+    }
+  }
+  return null;
+}
+
 function isKnownVr(twoChars) {
   return VALID_VR_SET.has(twoChars);
 }
@@ -40,9 +136,13 @@ function isKnownVr(twoChars) {
  * @param {Uint8Array} compressed
  * @returns {Promise<Uint8Array>}
  */
-async function inflateRawBytes(compressed) {
+async function inflateRawBytes(compressed, offset = 0) {
   if (typeof DecompressionStream === 'undefined') {
-    throw new Error('이 브라우저는 Deflated Transfer Syntax 압축 해제를 지원하지 않습니다.');
+    throw new DicomParseError(
+      'DEFLATE_FAILED',
+      'This browser does not support DecompressionStream for Deflated Transfer Syntax.',
+      { offset }
+    );
   }
   const inflate = async (input) => {
     const stream = new Blob([input]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
@@ -53,9 +153,21 @@ async function inflateRawBytes(compressed) {
   } catch (err) {
     // PS3.5 A.5 pads an odd-length Deflate stream with one trailing NUL.
     if (compressed.length % 2 === 0 && compressed.at(-1) === 0) {
-      return inflate(compressed.subarray(0, -1));
+      try {
+        return await inflate(compressed.subarray(0, -1));
+      } catch (err2) {
+        throw new DicomParseError(
+          'DEFLATE_FAILED',
+          `Deflated dataset decompression failed: ${err2.message || err2}`,
+          { offset }
+        );
+      }
     }
-    throw err;
+    throw new DicomParseError(
+      'DEFLATE_FAILED',
+      `Deflated dataset decompression failed: ${err.message || err}`,
+      { offset }
+    );
   }
 }
 
@@ -143,7 +255,14 @@ function detectRawExplicitVr(bytes, startOffset) {
 
 function checkedValueEnd(start, length, limit, tag) {
   const end = start + length;
-  if (end > limit) throw new Error(`Truncated DICOM value at ${tag}.`);
+  if (end > limit) {
+    throw new DicomParseError('TRUNCATED_VALUE', `Truncated DICOM value at ${tag}.`, {
+      tag,
+      offset: start,
+      expectedLength: length,
+      availableBytes: Math.max(0, limit - start),
+    });
+  }
   return end;
 }
 
@@ -156,6 +275,7 @@ function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleE
   let basicOffsetTable = null;
 
   while (pos + 8 <= endOffset) {
+    const itemStart = pos;
     const g = view.getUint16(pos, littleEndian);
     const e = view.getUint16(pos + 2, littleEndian);
     const len = view.getUint32(pos + 4, littleEndian);
@@ -164,7 +284,13 @@ function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleE
     if (g === 0xfffe && e === 0xe0dd && len === 0 && basicOffsetTable !== null) {
       return { nextOffset: pos, rawBytes: bytes.slice(startOffset, pos), fragments, basicOffsetTable };
     }
-    if (g !== 0xfffe || e !== 0xe000) throw new Error('Invalid encapsulated Pixel Data item.');
+    if (g !== 0xfffe || e !== 0xe000) {
+      throw new DicomParseError(
+        'INVALID_ENCAP_PIXEL',
+        `Invalid encapsulated Pixel Data item ${formatTag(g, e)} (expected (FFFE,E000)).`,
+        { tag: '(7FE0,0010)', offset: itemStart }
+      );
+    }
     const fragEnd = checkedValueEnd(pos, len, endOffset, '(7FE0,0010)');
     const fragBytes = bytes.slice(pos, fragEnd);
     if (basicOffsetTable === null) {
@@ -174,7 +300,11 @@ function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleE
     }
     pos = fragEnd;
   }
-  throw new Error('Missing Sequence Delimitation Item for encapsulated Pixel Data.');
+  throw new DicomParseError(
+    'MISSING_SQ_DELIM',
+    'Missing Sequence Delimitation Item (FFFE,E0DD) for encapsulated Pixel Data.',
+    { tag: '(7FE0,0010)', offset: pos }
+  );
 }
 
 /**
@@ -208,7 +338,11 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       if (expectItemDelimiter && element === 0xe00d && view.getUint32(pos + 4, littleEndian) === 0) {
         return { nodes, nextOffset: pos + 8 };
       }
-      throw new Error(`Unexpected DICOM item ${formatTag(group, element)}.`);
+      throw new DicomParseError(
+        'UNEXPECTED_ITEM',
+        `Unexpected DICOM delimiter ${formatTag(group, element)}.`,
+        { tag: formatTag(group, element), offset: tagStart }
+      );
     }
 
     pos += 4;
@@ -223,7 +357,13 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
         pos += 2;
         if (VR_32BIT_LENGTH.has(vr)) {
           pos += 2; // 2 reserved bytes
-          if (pos + 4 > endOffset) throw new Error(`Truncated DICOM header at ${formatTag(group, element)}.`);
+          if (pos + 4 > endOffset) {
+            throw new DicomParseError(
+              'TRUNCATED_HEADER',
+              `Truncated DICOM header at ${formatTag(group, element)}.`,
+              { tag: formatTag(group, element), offset: tagStart, availableBytes: Math.max(0, endOffset - tagStart) }
+            );
+          }
           length = view.getUint32(pos, littleEndian);
           pos += 4;
         } else {
@@ -276,6 +416,7 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       let delimited = false;
 
       while (sqPos + 8 <= sqEnd) {
+        const itemStart = sqPos;
         const itemG = view.getUint16(sqPos, itemLittleEndian);
         const itemE = view.getUint16(sqPos + 2, itemLittleEndian);
         const itemLen = view.getUint32(sqPos + 4, itemLittleEndian);
@@ -285,7 +426,13 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
           delimited = true;
           break;
         }
-        if (itemG !== 0xfffe || itemE !== 0xe000) throw new Error(`Invalid DICOM sequence item at ${label}.`);
+        if (itemG !== 0xfffe || itemE !== 0xe000) {
+          throw new DicomParseError(
+            'INVALID_SQ_ITEM',
+            `Invalid DICOM sequence item ${formatTag(itemG, itemE)} inside ${label} (expected (FFFE,E000)).`,
+            { tag: label, offset: itemStart }
+          );
+        }
         const itemUndef = itemLen === 0xffffffff;
         const itemLimit = itemUndef ? sqEnd : checkedValueEnd(sqPos, itemLen, sqEnd, label);
         const itemResult = parseDatasetRange(bytes, view, sqPos, itemLimit, {
@@ -298,8 +445,20 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
         sqPos = itemResult.nextOffset;
       }
 
-      if (undefinedLength && !delimited) throw new Error(`Missing Sequence Delimitation Item at ${label}.`);
-      if (!undefinedLength && sqPos !== sqEnd) throw new Error(`Truncated DICOM sequence at ${label}.`);
+      if (undefinedLength && !delimited) {
+        throw new DicomParseError(
+          'MISSING_SQ_DELIM',
+          `Missing Sequence Delimitation Item (FFFE,E0DD) at ${label}.`,
+          { tag: label, offset: sqPos }
+        );
+      }
+      if (!undefinedLength && sqPos !== sqEnd) {
+        throw new DicomParseError(
+          'TRUNCATED_VALUE',
+          `Truncated DICOM sequence at ${label}.`,
+          { tag: label, offset: sqPos, availableBytes: Math.max(0, sqEnd - sqPos) }
+        );
+      }
       nodes.push({
         id: genNodeId(),
         group,
@@ -364,7 +523,13 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     }
 
     const label = formatTag(group, element);
-    if (undefinedLength) throw new Error(`Unsupported undefined DICOM value length at ${label}.`);
+    if (undefinedLength) {
+      throw new DicomParseError(
+        'UNSUPPORTED_UNDEF_LEN',
+        `Unsupported undefined DICOM value length (0xFFFFFFFF) at ${label} (VR: ${vr}).`,
+        { tag: label, offset: tagStart }
+      );
+    }
     const valEnd = checkedValueEnd(pos, length, endOffset, label);
     const rawBytes = bytes.slice(pos, valEnd);
     pos = valEnd;
@@ -434,8 +599,20 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     }
   }
 
-  if (expectItemDelimiter) throw new Error('Missing DICOM Item Delimitation Item.');
-  if (!stopAfterGroup0002 && pos !== endOffset) throw new Error('Truncated DICOM element header.');
+  if (expectItemDelimiter) {
+    throw new DicomParseError(
+      'MISSING_ITEM_DELIM',
+      'Missing DICOM Item Delimitation Item (FFFE,E00D).',
+      { offset: pos }
+    );
+  }
+  if (!stopAfterGroup0002 && pos !== endOffset) {
+    throw new DicomParseError(
+      'TRUNCATED_HEADER',
+      `Truncated DICOM element header (${endOffset - pos} trailing byte(s) remaining).`,
+      { offset: pos, availableBytes: endOffset - pos }
+    );
+  }
   return { nodes, nextOffset: pos };
 }
 
@@ -447,18 +624,12 @@ export function formatByteSize(bytes) {
 
 /**
  * Parse a complete DICOM ArrayBuffer into a structured editable document.
+ * Throws a DicomParseError with rich diagnostics on failure.
  * @param {ArrayBuffer} arrayBuffer
  * @param {string} fileName
  */
 export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
   const bytes = new Uint8Array(arrayBuffer);
-  if (bytes.length < 16) {
-    throw new Error('파일이 너무 작아 유효한 DICOM 파일이 아닙니다.');
-  }
-
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-
-  // Detect Part 10 Preamble + "DICM"
   const hasPart10Header =
     bytes.length >= 132 &&
     bytes[128] === 0x44 && // D
@@ -466,73 +637,115 @@ export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
     bytes[130] === 0x43 && // C
     bytes[131] === 0x4d;   // M
 
-  let preamble = hasPart10Header ? bytes.slice(0, 128) : new Uint8Array(128);
   let metaNodes = [];
-  let mainOffset = 0;
+  let transferSyntaxUid = '';
+  let tsInfo = null;
 
-  if (hasPart10Header) {
-    // Parse File Meta Information (0002,xxxx) — always Explicit VR Little Endian
-    const metaResult = parseDatasetRange(bytes, view, 132, bytes.length, {
-      explicit: true,
-      littleEndian: true,
-      isMetaSection: true,
-      stopAfterGroup0002: true,
+  const enrichAndThrow = (err) => {
+    const detectedFormat = hasPart10Header ? null : detectNonDicomSignature(bytes);
+    const baseCode = err instanceof DicomParseError ? err.code : 'UNKNOWN';
+    const baseDetails = err instanceof DicomParseError && err.details ? err.details : {};
+    const finalCode =
+      !hasPart10Header && detectedFormat && baseCode !== 'TOO_SMALL'
+        ? 'NON_DICOM_FORMAT'
+        : baseCode;
+
+    throw new DicomParseError(finalCode, err?.message || 'Failed to parse DICOM file.', {
+      ...baseDetails,
+      fileName,
+      fileSize: bytes.length,
+      hasPart10Header,
+      detectedFormat,
+      transferSyntaxUid: transferSyntaxUid || null,
+      transferSyntaxName: tsInfo?.name || null,
+      parsedMetaCount: metaNodes.length,
+      headerPreview: buildHeaderPreview(bytes),
+      rawMessage: err?.message || String(err),
+    });
+  };
+
+  try {
+    if (bytes.length < 16) {
+      throw new DicomParseError(
+        'TOO_SMALL',
+        `File is too small (${bytes.length} byte(s)) to be a valid DICOM file.`,
+        { offset: 0, availableBytes: bytes.length }
+      );
+    }
+
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    let preamble = hasPart10Header ? bytes.slice(0, 128) : new Uint8Array(128);
+    let mainOffset = 0;
+
+    if (hasPart10Header) {
+      // Parse File Meta Information (0002,xxxx) — always Explicit VR Little Endian
+      const metaResult = parseDatasetRange(bytes, view, 132, bytes.length, {
+        explicit: true,
+        littleEndian: true,
+        isMetaSection: true,
+        stopAfterGroup0002: true,
+        inheritedCharset: '',
+      });
+      metaNodes = metaResult.nodes;
+      mainOffset = metaResult.nextOffset;
+    }
+
+    // Determine Transfer Syntax
+    const tsNode = metaNodes.find((n) => n.tag === '00020010');
+    transferSyntaxUid = tsNode ? tsNode.value.trim() : '';
+
+    if (hasPart10Header && transferSyntaxUid) {
+      tsInfo = getTransferSyntaxInfo(transferSyntaxUid);
+    } else {
+      const rawExplicit = detectRawExplicitVr(bytes, mainOffset);
+      transferSyntaxUid = rawExplicit ? '1.2.840.10008.1.2.1' : '1.2.840.10008.1.2';
+      tsInfo = getTransferSyntaxInfo(transferSyntaxUid);
+    }
+
+    // Handle Deflated Explicit VR Little Endian
+    let datasetBytes = bytes;
+    let datasetView = view;
+    let datasetStart = mainOffset;
+    let datasetEnd = bytes.length;
+
+    if (tsInfo.deflated) {
+      const inflated = await inflateRawBytes(bytes.subarray(mainOffset), mainOffset);
+      datasetBytes = inflated;
+      datasetView = new DataView(inflated.buffer, inflated.byteOffset, inflated.byteLength);
+      datasetStart = 0;
+      datasetEnd = inflated.length;
+    }
+
+    const mainResult = parseDatasetRange(datasetBytes, datasetView, datasetStart, datasetEnd, {
+      explicit: tsInfo.explicit,
+      littleEndian: tsInfo.littleEndian,
+      isMetaSection: false,
+      stopAfterGroup0002: false,
       inheritedCharset: '',
     });
-    metaNodes = metaResult.nodes;
-    mainOffset = metaResult.nextOffset;
+
+    if (metaNodes.length === 0 && mainResult.nodes.length === 0) {
+      throw new DicomParseError(
+        'NO_TAGS',
+        'No readable DICOM data elements were found in this file.',
+        { offset: mainOffset }
+      );
+    }
+
+    return {
+      fileName,
+      fileSize: bytes.length,
+      hasPart10Header,
+      preamble,
+      transferSyntaxUid,
+      transferSyntaxInfo: tsInfo,
+      explicit: tsInfo.explicit,
+      littleEndian: tsInfo.littleEndian,
+      wasDeflated: Boolean(tsInfo.deflated),
+      metaNodes,
+      datasetNodes: mainResult.nodes,
+    };
+  } catch (err) {
+    enrichAndThrow(err);
   }
-
-  // Determine Transfer Syntax
-  const tsNode = metaNodes.find((n) => n.tag === '00020010');
-  let transferSyntaxUid = tsNode ? tsNode.value.trim() : '';
-  let tsInfo;
-
-  if (hasPart10Header && transferSyntaxUid) {
-    tsInfo = getTransferSyntaxInfo(transferSyntaxUid);
-  } else {
-    const rawExplicit = detectRawExplicitVr(bytes, mainOffset);
-    transferSyntaxUid = rawExplicit ? '1.2.840.10008.1.2.1' : '1.2.840.10008.1.2';
-    tsInfo = getTransferSyntaxInfo(transferSyntaxUid);
-  }
-
-  // Handle Deflated Explicit VR Little Endian
-  let datasetBytes = bytes;
-  let datasetView = view;
-  let datasetStart = mainOffset;
-  let datasetEnd = bytes.length;
-
-  if (tsInfo.deflated) {
-    const inflated = await inflateRawBytes(bytes.subarray(mainOffset));
-    datasetBytes = inflated;
-    datasetView = new DataView(inflated.buffer, inflated.byteOffset, inflated.byteLength);
-    datasetStart = 0;
-    datasetEnd = inflated.length;
-  }
-
-  const mainResult = parseDatasetRange(datasetBytes, datasetView, datasetStart, datasetEnd, {
-    explicit: tsInfo.explicit,
-    littleEndian: tsInfo.littleEndian,
-    isMetaSection: false,
-    stopAfterGroup0002: false,
-    inheritedCharset: '',
-  });
-
-  if (metaNodes.length === 0 && mainResult.nodes.length === 0) {
-    throw new Error('DICOM 태그를 찾을 수 없습니다. 올바른 .dcm 파일인지 확인해 주세요.');
-  }
-
-  return {
-    fileName,
-    fileSize: bytes.length,
-    hasPart10Header,
-    preamble,
-    transferSyntaxUid,
-    transferSyntaxInfo: tsInfo,
-    explicit: tsInfo.explicit,
-    littleEndian: tsInfo.littleEndian,
-    wasDeflated: Boolean(tsInfo.deflated),
-    metaNodes,
-    datasetNodes: mainResult.nodes,
-  };
 }

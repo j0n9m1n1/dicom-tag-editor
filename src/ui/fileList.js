@@ -109,13 +109,14 @@ export class FileListPanel {
     const row = e.target.closest('.file-row');
     if (!row) return;
     const fileId = row.dataset.fileId;
+    const entry = this.store.files.find((f) => f.id === fileId) || null;
     try {
       await this.store.switchToFile(fileId);
       if (window.innerWidth <= 820) {
         this.store.setMobileTab('tree');
       }
     } catch (err) {
-      this.callbacks.onSwitchError?.(err);
+      this.callbacks.onSwitchError?.(err, entry);
       this.render();
     }
   }
