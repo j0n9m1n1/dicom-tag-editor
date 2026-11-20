@@ -360,6 +360,13 @@ const MESSAGES = {
     inspPnSuffix: '접미/학위 (Suffix)',
     inspQuickPresetLabel: '빠른 선택:',
     inspKnownUidLabel: '표준 UID 명칭:',
+
+    // PWA Desktop App
+    settingsAppLabel: '데스크톱 / 오프라인 앱 (PWA)',
+    settingsInstallBtn: '데스크톱 앱으로 설치 (오프라인 · .dcm 연결)',
+    settingsInstalledBadge: '설치된 앱으로 실행 중 · 오프라인 지원 활성',
+    settingsInstallHint: 'Chrome · Edge 주소창 우측 설치 아이콘(⊕) 또는 브라우저 메뉴에서 데스크톱 앱으로 설치할 수 있습니다.',
+    toastAppInstalled: '데스크톱 앱으로 설치되었습니다!',
   },
 
   en: {
@@ -716,6 +723,13 @@ const MESSAGES = {
     inspPnSuffix: 'Suffix',
     inspQuickPresetLabel: 'Presets:',
     inspKnownUidLabel: 'Standard UID:',
+
+    // PWA Desktop App
+    settingsAppLabel: 'Desktop / Offline App (PWA)',
+    settingsInstallBtn: 'Install Desktop App (Offline & .dcm Handler)',
+    settingsInstalledBadge: 'Running as installed app · Offline ready',
+    settingsInstallHint: 'Use the install icon in your Chrome / Edge address bar or browser menu to install as a desktop app.',
+    toastAppInstalled: 'Installed as a desktop app!',
   },
 };
 

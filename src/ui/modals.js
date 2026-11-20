@@ -899,6 +899,16 @@ export class ModalManager {
   openSettings() {
     const lang = getLang();
     const theme = this.store.theme;
+    const pwa = this.callbacks.getPwaState?.() || { canInstall: false, isStandalone: false };
+
+    let pwaBodyHtml = '';
+    if (pwa.isStandalone) {
+      pwaBodyHtml = `<div class="setting-pwa-badge">${icons.checkCircle(14)}<span>${escapeHtml(t('settingsInstalledBadge'))}</span></div>`;
+    } else if (pwa.canInstall) {
+      pwaBodyHtml = `<button type="button" class="btn btn-primary setting-pwa-btn" id="btn-install-pwa">${icons.download(15)}<span>${escapeHtml(t('settingsInstallBtn'))}</span></button>`;
+    } else {
+      pwaBodyHtml = `<div class="setting-pwa-hint">${escapeHtml(t('settingsInstallHint'))}</div>`;
+    }
 
     this.root.innerHTML = `
       <div class="modal-card modal-sm" role="dialog" aria-modal="true">
@@ -924,6 +934,11 @@ export class ModalManager {
               <button type="button" class="seg-btn ${theme === 'dark' ? 'active' : ''}" data-set-theme="dark">${icons.moon(14)} ${escapeHtml(t('settingsThemeDark'))}</button>
               <button type="button" class="seg-btn ${theme === 'light' ? 'active' : ''}" data-set-theme="light">${icons.sun(14)} ${escapeHtml(t('settingsThemeLight'))}</button>
             </div>
+          </div>
+
+          <div class="setting-row">
+            <label class="setting-label">${escapeHtml(t('settingsAppLabel'))}</label>
+            ${pwaBodyHtml}
           </div>
 
           <div class="setting-row setting-shortcuts">
@@ -953,6 +968,12 @@ export class ModalManager {
     `;
 
     this.root.classList.remove('hidden');
+
+    this.root.querySelector('#btn-install-pwa')?.addEventListener('click', async () => {
+      const accepted = await this.callbacks.onInstallPwa?.();
+      if (accepted) this.close();
+      else this.openSettings();
+    });
 
     this.root.querySelectorAll('[data-set-lang]').forEach((btn) => {
       btn.addEventListener('click', () => {

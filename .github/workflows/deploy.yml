@@ -27,8 +27,8 @@ jobs:
       - name: Prepare static artifact with cache busting
         run: |
           mkdir -p _site
-          cp index.html robots.txt sitemap.xml og-image.png _site/
-          cp -r src _site/
+          cp index.html manifest.webmanifest sw.js robots.txt sitemap.xml og-image.png _site/
+          cp -r src icons _site/
           if [ -f CNAME ]; then cp CNAME _site/; fi
           VER="${GITHUB_SHA::8}"
           python3 - "$VER" <<'EOF'
@@ -43,6 +43,11 @@ jobs:
               txt = js.read_text(encoding="utf-8")
               txt = re.sub(r"""(from\s+['"])(\.[^'"]+\.js)(['"])""", rf"\1\2?v={ver}\3", txt)
               js.write_text(txt, encoding="utf-8")
+          sw = pathlib.Path("_site/sw.js")
+          sw_txt = sw.read_text(encoding="utf-8")
+          sw_txt = sw_txt.replace("const CACHE_VERSION = 'dev';", f"const CACHE_VERSION = '{ver}';")
+          sw_txt = re.sub(r"""'(\./src/[^']+\.(?:js|css))'""", rf"'\1?v={ver}'", sw_txt)
+          sw.write_text(sw_txt, encoding="utf-8")
           print(f"Applied cache-busting query ?v={ver}")
           EOF
 

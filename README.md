@@ -36,6 +36,9 @@ All parsing, editing, validation, multi-file comparison, anonymization, pixel re
 - **Bilingual UI, Neutral Dark Theme & Mobile Optimization**
   - Instant **English (`EN`) / Korean (`KO`)** and **Neutral Charcoal Dark / Light** theme switching via the Settings (`⚙`) dialog
   - Dedicated mobile bottom tab navigation (`Files` / `Tags` / `Inspect` / `Pixel`) and 2-row card layout on narrow screens
+- **Installable Desktop / Offline App (PWA)**
+  - Install as a standalone desktop app from Chrome / Edge (address bar icon or **Settings `⚙`**) with offline Service Worker caching
+  - Registers OS **`.dcm` / `.dicom` file handler** (`launchQueue`) so you can open DICOM files directly from File Explorer with direct `Ctrl+S` overwrite support
 
 ---
 

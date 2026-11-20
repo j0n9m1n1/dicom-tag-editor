@@ -67,6 +67,40 @@ document.getElementById('status-gh-link').innerHTML = `${icons.github(13)}<span>
 
 let _fileInputAppendMode = false;
 let saveInProgress = false;
+let deferredInstallPrompt = null;
+
+function isStandaloneApp() {
+  return Boolean(
+    window.matchMedia?.('(display-mode: standalone)').matches ||
+    window.navigator.standalone === true
+  );
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  showToast(t('toastAppInstalled'), 'ok');
+});
+
+async function triggerPwaInstall() {
+  if (!deferredInstallPrompt) return false;
+  const promptEvent = deferredInstallPrompt;
+  promptEvent.prompt();
+  try {
+    const choice = await promptEvent.userChoice;
+    if (choice?.outcome === 'accepted') {
+      deferredInstallPrompt = null;
+      return true;
+    }
+  } catch {
+    // ignore cancelled prompt error
+  }
+  return false;
+}
 
 function showToast(message, type = 'info') {
   const el = document.createElement('div');
@@ -150,6 +184,11 @@ const modals = new ModalManager(modalRoot, store, {
     treeView.scrollToNode(id);
   },
   onToast: showToast,
+  getPwaState: () => ({
+    canInstall: Boolean(deferredInstallPrompt),
+    isStandalone: isStandaloneApp(),
+  }),
+  onInstallPwa: () => triggerPwaInstall(),
 });
 
 const fileListPanel = new FileListPanel(fileListPane, store, {
@@ -859,3 +898,38 @@ updateToolbarAndHeader();
 fileListPanel.render();
 inspector.render();
 pixelPanel.sync(true);
+
+// ============================================================================
+// PWA: Service Worker Registration & OS File Handler (launchQueue)
+// ============================================================================
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch((err) => {
+      console.warn('Service worker registration failed:', err);
+    });
+  });
+}
+
+if ('launchQueue' in window && typeof window.launchQueue.setConsumer === 'function') {
+  window.launchQueue.setConsumer(async (launchParams) => {
+    if (!launchParams?.files?.length) return;
+    const items = [];
+    for (const handle of launchParams.files) {
+      if (handle.kind !== 'file') continue;
+      try {
+        const file = await handle.getFile();
+        items.push({
+          name: file.name,
+          size: file.size,
+          sourceFile: file,
+          fileHandle: handle,
+        });
+      } catch (err) {
+        console.warn('Failed to read launched file handle:', err);
+      }
+    }
+    if (items.length > 0) {
+      await loadSelectedFileItems(items, { append: true });
+    }
+  });
+}
