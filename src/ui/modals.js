@@ -231,13 +231,25 @@ export class ModalManager {
                     : node.status === 'added'
                       ? `<span class="status-pill st-added">${escapeHtml(t('modalDiffStAdd'))}</span>`
                       : `<span class="status-pill st-deleted">${escapeHtml(t('modalDiffStDel'))}</span>`;
+                const oldText =
+                  node.status === 'added'
+                    ? '—'
+                    : node.isSequence
+                      ? `${this.store.getOriginalSequenceItemCount(node)} item(s)`
+                      : node.originalValue || '(empty)';
+                const newText =
+                  node.status === 'deleted'
+                    ? t('modalDiffWillDelete')
+                    : node.isSequence
+                      ? `${(node.items || []).length} item(s)`
+                      : node.value || '(empty)';
                 return `
                 <tr>
                   <td>${badge}</td>
                   <td><button class="btn-link mono" data-jump="${node.id}">${escapeHtml(path)}</button></td>
                   <td>${escapeHtml(node.keyword)} <span class="muted">(${node.vr})</span></td>
-                  <td class="mono diff-cell-old">${escapeHtml(node.status === 'added' ? '—' : node.originalValue || '(empty)')}</td>
-                  <td class="mono diff-cell-new">${escapeHtml(node.status === 'deleted' ? t('modalDiffWillDelete') : node.value || '(empty)')}</td>
+                  <td class="mono diff-cell-old">${escapeHtml(oldText)}</td>
+                  <td class="mono diff-cell-new">${escapeHtml(newText)}</td>
                   <td>${getReadOnlyTagMessage(node.tag) ? '' : `<button class="btn btn-xs" data-diff-revert="${node.id}" title="${escapeHtml(t('modalDiffRevertTitle'))}">${icons.rotateCcw(13)}</button>`}</td>
                 </tr>
               `;

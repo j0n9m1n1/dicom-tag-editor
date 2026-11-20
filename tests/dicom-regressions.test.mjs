@@ -342,3 +342,26 @@ test('batchEditAcrossFiles set mode restores pending-delete tags without duplica
   store.undo();
   assert.equal(matching[0].status, 'deleted');
 });
+
+test('addTag restores a pending-delete tag with matching VR and markSaved clears dangling selection', async () => {
+  const doc = await parseDicomBuffer(await generateSampleDicomBuffer());
+  const store = new AppStore();
+  store.loadDocument(doc);
+  const nameNode = patientName(doc);
+  store.selectNode(nameNode.id);
+  store.toggleDeleteNode(nameNode.id);
+  assert.equal(nameNode.status, 'deleted');
+
+  const res = store.addTag({ group: 0x0010, element: 0x0010, vr: 'PN', value: 'ADDED^BACK' });
+  assert.equal(res.duplicate, false);
+  assert.equal(res.node, nameNode);
+  assert.equal(doc.datasetNodes.filter((n) => n.tag === '00100010').length, 1);
+  assert.equal(nameNode.value, 'ADDED^BACK');
+  assert.equal(nameNode.status, 'modified');
+
+  store.undo();
+  assert.equal(nameNode.status, 'deleted');
+  assert.equal(store.markSaved(doc, store.getDocumentRevision(doc)), true);
+  assert.notEqual(store.selectedId, nameNode.id);
+  assert.equal(store.selectedId, doc.datasetNodes[0].id);
+});

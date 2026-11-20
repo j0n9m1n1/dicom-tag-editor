@@ -167,9 +167,9 @@ export class PixelPanel {
 
   _renderUi(meta, decoded) {
     const isScalar = decoded.kind === 'scalar';
-    const minVal = isScalar ? Math.min(-1024, Math.floor(decoded.min)) : 0;
-    const maxVal = isScalar ? Math.max(1500, Math.ceil(decoded.max)) : 255;
-    const maxW = isScalar ? Math.max(2000, Math.ceil((decoded.max - decoded.min) * 2)) : 512;
+    const minVal = isScalar ? Math.min(-1024, Math.floor(decoded.min), Math.floor(this._wc)) : 0;
+    const maxVal = isScalar ? Math.max(1500, Math.ceil(decoded.max), Math.ceil(this._wc)) : 255;
+    const maxW = isScalar ? Math.max(2000, Math.ceil((decoded.max - decoded.min) * 2), Math.ceil(this._ww)) : 512;
 
     const presetBtns = isScalar
       ? `<div class="pixel-presets">

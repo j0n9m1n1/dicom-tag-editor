@@ -826,6 +826,7 @@ btnCollapseAll.addEventListener('click', () => store.collapseAll());
 window.addEventListener('keydown', (e) => {
   const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
+  if (!modalRoot.classList.contains('hidden')) return;
   const key = e.key.toLowerCase();
 
   if (key === 'o') {

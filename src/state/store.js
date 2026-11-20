@@ -788,6 +788,12 @@ export class AppStore {
     }
 
     const prevStatus = node.status;
+    if (
+      prevStatus === 'deleted' &&
+      info.parentList.some((n) => n !== node && n.tag === node.tag && n.status !== 'deleted')
+    ) {
+      return;
+    }
     const nextStatus =
       prevStatus === 'deleted'
         ? node.value === node.originalValue && this._sequenceStatus(node) === 'unchanged'
@@ -820,6 +826,31 @@ export class AppStore {
       this.selectedId = existing.id;
       this.emit('selection');
       return { duplicate: true, node: existing };
+    }
+
+    const deletedExisting = list.find(
+      (n) => n.tag === hex && n.status === 'deleted' && !n.isSequence && !n.isBinary && n.vr === vr
+    );
+    if (deletedExisting) {
+      const prevValue = deletedExisting.value;
+      const nextVal = value ?? '';
+      const nextStatus = nextVal === deletedExisting.originalValue ? 'unchanged' : 'modified';
+      this._executeCommand({
+        label: `Restore & Edit ${deletedExisting.formattedTag}`,
+        affectsPixel: this._isPixelDisplayTag(hex),
+        redo: () => {
+          deletedExisting.value = nextVal;
+          deletedExisting.status = nextStatus;
+          deletedExisting.validation = validateVrValue(deletedExisting.vr, nextVal);
+          this.selectedId = deletedExisting.id;
+        },
+        undo: () => {
+          deletedExisting.value = prevValue;
+          deletedExisting.status = 'deleted';
+          deletedExisting.validation = validateVrValue(deletedExisting.vr, prevValue);
+        },
+      });
+      return { duplicate: false, node: deletedExisting };
     }
 
     const isSeq = vr === 'SQ';
@@ -880,6 +911,11 @@ export class AppStore {
     return node.items.length === baseline.length && node.items.every((item, index) => item === baseline[index])
       ? 'unchanged'
       : 'modified';
+  }
+
+  getOriginalSequenceItemCount(node) {
+    const baseline = this._sequenceBaselines.get(node);
+    return baseline ? baseline.length : (node.items || []).length;
   }
 
   addSequenceItem(seqNodeId) {
@@ -1369,27 +1405,50 @@ export class AppStore {
     doc.needsResave = false;
     const uid = getSopInstanceUid(doc);
     if (doc.hasPart10Header && uid) this._syncMediaStorageSopInstanceUid(doc, uid);
-    const clean = (list) => {
+    const clean = (list, inheritedCharset = '') => {
+      const csNode = list.find((item) => item.tag === '00080005' && item.status !== 'deleted');
+      const charset = csNode ? csNode.value : inheritedCharset;
       for (let i = list.length - 1; i >= 0; i--) {
         const n = list[i];
         if (n.status === 'deleted') {
           list.splice(i, 1);
           continue;
         }
-        // Clear stale original rawBytes on modified/added non-binary tags so subsequent saves encode the new value
-        if (n.status !== 'unchanged' && !n.isBinary && !n.isSequence) {
+        // Clear stale original rawBytes on modified/added/re-encoded non-binary tags so subsequent saves & Hex stay accurate
+        const charsetChanged = n.rawCharset !== undefined && n.rawCharset !== charset;
+        if ((n.status !== 'unchanged' || charsetChanged) && !n.isBinary && !n.isSequence) {
           n.rawBytes = null;
+          if (n.rawCharset !== undefined) n.rawCharset = charset;
         }
         n.originalValue = n.value;
         n.status = 'unchanged';
         if (n.isSequence && n.items) {
           this._sequenceBaselines.delete(n);
-          for (const item of n.items) clean(item.children);
+          for (const item of n.items) clean(item.children, charset);
         }
       }
     };
-    clean(doc.metaNodes);
-    clean(doc.datasetNodes);
+    clean(doc.metaNodes, '');
+    clean(doc.datasetNodes, '');
+
+    const hasNodeId = (nodes, targetId) => {
+      if (!targetId) return false;
+      for (const n of nodes || []) {
+        if (n.id === targetId) return true;
+        if (n.isSequence && n.items) {
+          for (const item of n.items) {
+            if (item.id === targetId || hasNodeId(item.children, targetId)) return true;
+          }
+        }
+      }
+      return false;
+    };
+    const activeSel = doc === this.doc ? this.selectedId : entry.selectedId;
+    if (activeSel && !hasNodeId(doc.metaNodes, activeSel) && !hasNodeId(doc.datasetNodes, activeSel)) {
+      const fallback = doc.datasetNodes[0]?.id || doc.metaNodes[0]?.id || null;
+      entry.selectedId = fallback;
+      if (doc === this.doc) this.selectedId = fallback;
+    }
 
     entry.undoStack = [];
     entry.redoStack = [];
