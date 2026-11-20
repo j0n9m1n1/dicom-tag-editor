@@ -38,6 +38,8 @@ const btnSettings = document.getElementById('btn-settings');
 
 const btnWelcomeOpen = document.getElementById('btn-welcome-open');
 const btnWelcomeSample = document.getElementById('btn-welcome-sample');
+const welcomePwaBar = document.getElementById('welcome-pwa-bar');
+const btnWelcomeInstall = document.getElementById('btn-welcome-install');
 const fileInput = document.getElementById('file-input');
 
 const searchInput = document.getElementById('search-input');
@@ -60,14 +62,16 @@ const modalRoot = document.getElementById('modal-root');
 const dragOverlay = document.getElementById('drag-overlay');
 const toastContainer = document.getElementById('toast-container');
 
-// Populate search icon and GitHub links once
+// Populate search icon, welcome PWA icon, and GitHub links once
 document.getElementById('search-icon-slot').innerHTML = icons.search(14);
+document.getElementById('welcome-pwa-icon').innerHTML = icons.download(14);
 document.getElementById('welcome-gh-link').innerHTML = `${icons.github(14)}<span>GitHub</span>`;
 document.getElementById('status-gh-link').innerHTML = `${icons.github(13)}<span>GitHub</span>`;
 
 let _fileInputAppendMode = false;
 let saveInProgress = false;
 let deferredInstallPrompt = null;
+let pwaJustInstalled = false;
 
 function isStandaloneApp() {
   return Boolean(
@@ -76,13 +80,29 @@ function isStandaloneApp() {
   );
 }
 
+function updatePwaWelcomeBar() {
+  if (!welcomePwaBar || !btnWelcomeInstall) return;
+  if (isStandaloneApp() || pwaJustInstalled) {
+    welcomePwaBar.classList.add('hidden');
+    return;
+  }
+  welcomePwaBar.classList.remove('hidden');
+  btnWelcomeInstall.textContent = deferredInstallPrompt
+    ? t('welcomePwaBtn')
+    : t('welcomePwaGuideBtn');
+  btnWelcomeInstall.title = t('settingsFileAssocNote');
+}
+
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredInstallPrompt = e;
+  updatePwaWelcomeBar();
 });
 
 window.addEventListener('appinstalled', () => {
   deferredInstallPrompt = null;
+  pwaJustInstalled = true;
+  updatePwaWelcomeBar();
   showToast(t('toastAppInstalled'), 'ok');
 });
 
@@ -94,6 +114,8 @@ async function triggerPwaInstall() {
     const choice = await promptEvent.userChoice;
     if (choice?.outcome === 'accepted') {
       deferredInstallPrompt = null;
+      pwaJustInstalled = true;
+      updatePwaWelcomeBar();
       return true;
     }
   } catch {
@@ -161,6 +183,8 @@ function applyLanguage() {
     const val = t(key);
     if (val !== key) el.title = val;
   });
+
+  updatePwaWelcomeBar();
 }
 
 // Instantiate UI controllers
@@ -729,6 +753,13 @@ window.addEventListener('beforeunload', (e) => {
 btnOpen.addEventListener('click', () => openFileDialog());
 btnWelcomeOpen.addEventListener('click', () => openFileDialog());
 btnWelcomeSample.addEventListener('click', loadSampleDicom);
+btnWelcomeInstall.addEventListener('click', async () => {
+  if (deferredInstallPrompt) {
+    await triggerPwaInstall();
+  } else {
+    modals.openSettings();
+  }
+});
 btnFiles.addEventListener('click', () => store.toggleFileList());
 
 btnUndo.addEventListener('click', () => store.undo());

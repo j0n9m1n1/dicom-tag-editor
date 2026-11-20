@@ -362,10 +362,14 @@ const MESSAGES = {
     inspKnownUidLabel: '표준 UID 명칭:',
 
     // PWA Desktop App
+    welcomePwaText: '데스크톱 앱으로 설치하면 오프라인 실행 및 탐색기 .dcm 파일 연결을 지원합니다.',
+    welcomePwaBtn: '앱으로 설치',
+    welcomePwaGuideBtn: '설치 안내',
     settingsAppLabel: '데스크톱 / 오프라인 앱 (PWA)',
     settingsInstallBtn: '데스크톱 앱으로 설치 (오프라인 · .dcm 연결)',
     settingsInstalledBadge: '설치된 앱으로 실행 중 · 오프라인 지원 활성',
     settingsInstallHint: 'Chrome · Edge 주소창 우측 설치 아이콘(⊕) 또는 브라우저 메뉴에서 데스크톱 앱으로 설치할 수 있습니다.',
+    settingsFileAssocNote: '설치 후 탐색기에서 .dcm 파일 우클릭 → 연결 프로그램 → DICOM Tag Editor("항상")로 지정하면 더블클릭으로 바로 열 수 있습니다.',
     toastAppInstalled: '데스크톱 앱으로 설치되었습니다!',
   },
 
@@ -725,10 +729,14 @@ const MESSAGES = {
     inspKnownUidLabel: 'Standard UID:',
 
     // PWA Desktop App
+    welcomePwaText: 'Install as a desktop app for offline use and .dcm file association in Explorer.',
+    welcomePwaBtn: 'Install App',
+    welcomePwaGuideBtn: 'How to Install',
     settingsAppLabel: 'Desktop / Offline App (PWA)',
     settingsInstallBtn: 'Install Desktop App (Offline & .dcm Handler)',
     settingsInstalledBadge: 'Running as installed app · Offline ready',
     settingsInstallHint: 'Use the install icon in your Chrome / Edge address bar or browser menu to install as a desktop app.',
+    settingsFileAssocNote: 'After installing, right-click any .dcm file → Open with → DICOM Tag Editor ("Always") to launch directly on double-click.',
     toastAppInstalled: 'Installed as a desktop app!',
   },
 };

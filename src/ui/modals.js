@@ -939,6 +939,7 @@ export class ModalManager {
           <div class="setting-row">
             <label class="setting-label">${escapeHtml(t('settingsAppLabel'))}</label>
             ${pwaBodyHtml}
+            <div class="setting-pwa-note">${escapeHtml(t('settingsFileAssocNote'))}</div>
           </div>
 
           <div class="setting-row setting-shortcuts">
