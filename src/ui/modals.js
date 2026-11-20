@@ -993,6 +993,7 @@ export class ModalManager {
           this.store.setLang(nextLang);
         }
         this.openSettings();
+        this.root.querySelector(`[data-set-lang="${nextLang}"]`)?.focus();
       });
     });
 
@@ -1002,7 +1003,9 @@ export class ModalManager {
         if (nextTheme !== this.store.theme) {
           this.store.setTheme(nextTheme);
         }
-        this.openSettings();
+        this.root.querySelectorAll('[data-set-theme]').forEach((b) =>
+          b.classList.toggle('active', b.dataset.setTheme === this.store.theme)
+        );
       });
     });
 
@@ -1012,7 +1015,9 @@ export class ModalManager {
         if (nextUi !== this.store.uiStyle) {
           this.store.setUiStyle(nextUi);
         }
-        this.openSettings();
+        this.root.querySelectorAll('[data-set-ui]').forEach((b) =>
+          b.classList.toggle('active', b.dataset.setUi === this.store.uiStyle)
+        );
       });
     });
   }

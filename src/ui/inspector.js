@@ -610,7 +610,11 @@ export class InspectorPanel {
     if (!el) return;
     const spec = getVrSpec(node.vr);
     const charset = this.store.getSpecificCharacterSet();
-    const needsUtf8Warn = usesSpecificCharacterSet(node.vr) && hasNonAscii(node.value) && !isUtf8Charset(charset);
+    const needsUtf8Warn =
+      !node.isMeta &&
+      usesSpecificCharacterSet(node.vr) &&
+      hasNonAscii(node.value) &&
+      !isUtf8Charset(charset);
     el.innerHTML = this._renderLiveMetricsHtml(node, spec, needsUtf8Warn);
   }
 
@@ -635,15 +639,20 @@ export class InspectorPanel {
     }
 
     if (e.target.matches('[data-pn-input]')) {
+      const existingParts = String(info.node.value || '').split('\\');
+      const existingParsed = parsePnComponents(existingParts[0]);
       const alpha = ['0', '1', '2', '3', '4'].map(
         (idx) => this.container.querySelector(`[data-pn-input="a${idx}"]`)?.value || ''
       );
       const ideo = [
         this.container.querySelector('[data-pn-input="i0"]')?.value || '',
         this.container.querySelector('[data-pn-input="i1"]')?.value || '',
-        '', '', '',
+        existingParsed.ideo[2],
+        existingParsed.ideo[3],
+        existingParsed.ideo[4],
       ];
-      const composed = composePnComponents(alpha, ideo);
+      existingParts[0] = composePnComponents(alpha, ideo, existingParsed.phonetic);
+      const composed = existingParts.join('\\');
       const rawInp = this.container.querySelector('[data-inspector-input]');
       if (rawInp) rawInp.value = composed;
       this.store.updateNodeValue(info.node.id, composed);

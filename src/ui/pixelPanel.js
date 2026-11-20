@@ -51,6 +51,17 @@ export class PixelPanel {
     });
   }
 
+  _releaseDecoded() {
+    if (this._decoded?.kind === 'bitmap') {
+      try {
+        this._decoded.bitmap.close?.();
+      } catch {
+        // ignore already-closed bitmap
+      }
+    }
+    this._decoded = null;
+  }
+
   _headerHtml(meta, isCollapsed) {
     const isMobile = window.innerWidth <= 820;
     const chev = isMobile ? '' : (isCollapsed ? icons.chevronRight(14) : icons.chevronDown(14));
@@ -87,7 +98,7 @@ export class PixelPanel {
 
     if (!this.store.doc) {
       this._lastPixelVersion = -1;
-      this._decoded = null;
+      this._releaseDecoded();
       this.container.innerHTML = `
         ${this._headerHtml(null, false)}
         <div class="pixel-empty">${escapeHtml(t('pixelEmptyNoDoc'))}</div>
@@ -115,7 +126,7 @@ export class PixelPanel {
     const meta = this._meta;
 
     if (!meta) {
-      this._decoded = null;
+      this._releaseDecoded();
       this.container.innerHTML = `
         ${this._headerHtml(null, false)}
         <div class="pixel-empty">${escapeHtml(t('pixelEmptyNoTag'))}</div>
@@ -124,7 +135,13 @@ export class PixelPanel {
     }
 
     const decoded = await decodePixelFrame(meta, this._frameIndex);
-    if (token !== this._renderToken) return;
+    if (token !== this._renderToken) {
+      if (decoded?.kind === 'bitmap') {
+        try { decoded.bitmap.close?.(); } catch {}
+      }
+      return;
+    }
+    this._releaseDecoded();
     this._decoded = decoded;
 
     if (decoded.kind === 'unsupported') {

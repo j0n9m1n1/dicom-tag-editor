@@ -3,7 +3,7 @@
  * recursive search/filter preservation, status/VR color coding, and keyboard navigation.
  */
 
-import { getVrSpec } from '../dicom/vrSpec.js';
+import { getVrSpec, NUMERIC_VRS } from '../dicom/vrSpec.js';
 import { computeVm } from '../dicom/parser.js';
 import { canEditNodeValue, getReadOnlyTagMessage } from '../state/store.js';
 import { icons, escapeHtml } from './icons.js';
@@ -367,7 +367,11 @@ export class TreeView {
         ? `${(n.items || []).length} itm`
         : n.isBinary
           ? n.rawLength
-          : new TextEncoder().encode(n.value || '').length;
+          : n.status === 'unchanged' && n.rawBytes
+            ? n.rawBytes.length
+            : spec.fixedLength && (NUMERIC_VRS.has(n.vr) || n.vr === 'AT')
+              ? vm * spec.fixedLength
+              : new TextEncoder().encode(n.value || '').length;
 
       let valueHtml;
       if (this.inlineEditId === n.id && canEditNodeValue(n)) {

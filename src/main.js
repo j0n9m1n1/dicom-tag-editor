@@ -235,12 +235,25 @@ const pixelPanel = new PixelPanel(pixelContainer, store);
 // ============================================================================
 // Render Synchronization
 // ============================================================================
+function syncThemeColorMeta() {
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (!meta) return;
+  const isRaw = store.uiStyle === 'raw';
+  const isLight = store.theme === 'light';
+  const color = isRaw
+    ? (isLight ? '#ffffff' : '#000000')
+    : (isLight ? '#f4f4f5' : '#0b0b0d');
+  meta.setAttribute('content', color);
+}
+
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', store.theme);
+  syncThemeColorMeta();
 }
 
 function applyUiStyle() {
   document.documentElement.setAttribute('data-ui', store.uiStyle);
+  syncThemeColorMeta();
 }
 
 function updateToolbarAndHeader() {

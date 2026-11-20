@@ -87,13 +87,20 @@ export function extractPixelMeta(doc) {
  */
 function decodeRleFrame(fragment, rows, cols, samplesPerPixel, bitsAllocated) {
   if (!fragment || fragment.length < 64) {
-    throw new Error('유효하지 않은 RLE 헤더입니다.');
+    throw new Error('Invalid RLE header.');
   }
   const view = new DataView(fragment.buffer, fragment.byteOffset, fragment.byteLength);
   const numSegments = view.getUint32(0, true);
+  if (numSegments < 1 || numSegments > 15) {
+    throw new Error('Invalid RLE segment count.');
+  }
   const offsets = [];
-  for (let i = 0; i < Math.min(numSegments, 15); i++) {
-    offsets.push(view.getUint32(4 + i * 4, true));
+  for (let i = 0; i < numSegments; i++) {
+    const off = view.getUint32(4 + i * 4, true);
+    if (off < 64 || off > fragment.length) {
+      throw new Error('Invalid RLE segment offset.');
+    }
+    offsets.push(off);
   }
 
   const pixelCount = rows * cols;
@@ -192,8 +199,16 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
     // RLE Lossless
     if (meta.codec === 'rle') {
       const frag = frags[Math.min(frameIndex, frags.length - 1)];
-      const raw = decodeRleFrame(frag, meta.rows, meta.cols, meta.samplesPerPixel, meta.bitsAllocated);
-      return decodeUncompressedBytes(raw, { ...meta, littleEndian: true, planarConfig: 0 }, 0);
+      try {
+        const raw = decodeRleFrame(frag, meta.rows, meta.cols, meta.samplesPerPixel, meta.bitsAllocated);
+        return decodeUncompressedBytes(raw, { ...meta, littleEndian: true, planarConfig: 0 }, 0);
+      } catch {
+        return {
+          kind: 'unsupported',
+          reason: t('pixelErrRle', { ts: meta.transferSyntaxName }),
+          codec: meta.codec,
+        };
+      }
     }
 
     // Other codecs (JPEG2000, JPEG-LS, JPEG Lossless, HTJ2K)

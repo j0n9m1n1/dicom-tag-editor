@@ -5,6 +5,7 @@ import { parseDicomBuffer } from '../src/dicom/parser.js';
 import { decodePixelFrame, extractPixelMeta } from '../src/dicom/pixelRenderer.js';
 import { generateSampleDicomBuffer } from '../src/dicom/sampleGenerator.js';
 import { writeDicomDocument } from '../src/dicom/writer.js';
+import { validateVrValue } from '../src/dicom/vrSpec.js';
 import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges } from '../src/state/store.js';
 
 globalThis.localStorage = { getItem: () => null, setItem() {} };
@@ -294,4 +295,47 @@ test('YBR_FULL and packed multi-frame YBR_FULL_422 preview the expected RGB colo
   assert.deepEqual([...(await decodePixelFrame(packed, 0)).rgba], [...gray, ...gray]);
   assert.deepEqual([...(await decodePixelFrame(packed, 1)).rgba], [...red, ...red]);
   assert.equal((await decodePixelFrame(packed, 2)).kind, 'unsupported');
+});
+
+test('corrupt RLE frames return unsupported instead of throwing', async () => {
+  const frame = await decodePixelFrame({
+    rows: 2,
+    cols: 2,
+    samplesPerPixel: 1,
+    photometric: 'MONOCHROME2',
+    bitsAllocated: 8,
+    compressed: true,
+    codec: 'rle',
+    transferSyntaxName: 'RLE Lossless',
+    pixelNode: { fragments: [new Uint8Array([1, 2, 3])] },
+  });
+  assert.equal(frame.kind, 'unsupported');
+  assert.equal(frame.codec, 'rle');
+});
+
+test('SV and UV validate 64-bit integer bounds', () => {
+  assert.equal(validateVrValue('SV', '-9223372036854775808').valid, true);
+  assert.equal(validateVrValue('SV', '9223372036854775807').valid, true);
+  assert.equal(validateVrValue('SV', '9223372036854775808').valid, false);
+  assert.equal(validateVrValue('UV', '18446744073709551615').valid, true);
+  assert.equal(validateVrValue('UV', '18446744073709551616').valid, false);
+});
+
+test('batchEditAcrossFiles set mode restores pending-delete tags without duplicating them', async () => {
+  const doc = await parseDicomBuffer(await generateSampleDicomBuffer());
+  const store = new AppStore();
+  store.loadDocument(doc);
+  const nameNode = patientName(doc);
+  store.toggleDeleteNode(nameNode.id);
+  assert.equal(nameNode.status, 'deleted');
+
+  const res = await store.batchEditAcrossFiles({ group: 0x0010, element: 0x0010, vr: 'PN', value: 'BATCH^NAME', mode: 'set' });
+  assert.equal(res.affectedFiles, 1);
+  const matching = doc.datasetNodes.filter((n) => n.tag === '00100010');
+  assert.equal(matching.length, 1);
+  assert.equal(matching[0].status, 'modified');
+  assert.equal(matching[0].value, 'BATCH^NAME');
+
+  store.undo();
+  assert.equal(matching[0].status, 'deleted');
 });

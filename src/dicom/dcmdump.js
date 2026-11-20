@@ -3,6 +3,7 @@
  */
 
 import { computeVm } from './parser.js';
+import { getVrSpec, NUMERIC_VRS } from './vrSpec.js';
 
 function padRight(str, len) {
   return str.length >= len ? str : str + ' '.repeat(len - str.length);
@@ -57,7 +58,13 @@ function dumpNodes(nodes, depth, lines, includeDeleted) {
       byteLen = 0;
       valRepr = '(no value available)';
     } else {
-      byteLen = encoder.encode(n.value).length;
+      const spec = getVrSpec(n.vr);
+      byteLen =
+        n.status === 'unchanged' && n.rawBytes
+          ? n.rawBytes.length
+          : spec.fixedLength && (NUMERIC_VRS.has(n.vr) || n.vr === 'AT')
+            ? vm * spec.fixedLength
+            : encoder.encode(n.value).length;
       const singleLine = String(n.value).replace(/\r?\n/g, '\\n');
       valRepr = `[${singleLine}]`;
     }

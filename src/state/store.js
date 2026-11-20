@@ -139,6 +139,7 @@ export class AppStore {
     this._sequenceBaselines = new WeakMap();
     this._pendingParses = new WeakMap();
     this.anonymizing = false;
+    this._batchEditing = false;
   }
 
   subscribe(fn) {
@@ -1148,6 +1149,7 @@ export class AppStore {
         built.cmd.redo();
         this._noteEdit(entry.doc);
         entry.undoStack.push(built.cmd);
+        if (entry.undoStack.length > 200) entry.undoStack.shift();
         entry.redoStack = [];
         affectedFiles++;
         totalChanges += built.changeCount;
@@ -1168,127 +1170,138 @@ export class AppStore {
   async batchEditAcrossFiles({ group, element, vr, value, mode }) {
     const hex = tagHex(group, element);
     if (getReadOnlyTagMessage(hex)) return { affectedFiles: 0, locked: true };
+    if (this._batchEditing || this.anonymizing) return { affectedFiles: 0 };
     this._saveActiveSnapshot();
+    this._batchEditing = true;
     const dict = lookupTag(group, element);
     const isMeta = group === 0x0002;
     let affectedFiles = 0;
     let activePixelChanged = false;
 
-    for (const entry of this.files) {
-      try {
-        const doc = await this.ensureEntryParsed(entry);
-        const list = isMeta ? doc.metaNodes : doc.datasetNodes;
-        const existing = list.find((n) => n.tag === hex && n.status !== 'deleted');
-        let cmd = null;
+    try {
+      for (const entry of this.files.slice()) {
+        try {
+          const doc = await this.ensureEntryParsed(entry);
+          if (!this.files.includes(entry)) continue;
+          const list = isMeta ? doc.metaNodes : doc.datasetNodes;
+          const existing = list.find((n) => n.tag === hex && n.status !== 'deleted');
+          const deletedExisting = !existing && mode === 'set'
+            ? list.find((n) => n.tag === hex && n.status === 'deleted' && !n.isSequence && !n.isBinary)
+            : null;
+          let cmd = null;
 
-        if (mode === 'delete') {
-          if (existing) {
-            if (existing.status === 'added') {
+          if (mode === 'delete') {
+            if (existing) {
+              if (existing.status === 'added') {
+                cmd = {
+                  label: `Batch remove ${existing.formattedTag}`,
+                  affectsPixel: this._isPixelDisplayTag(hex),
+                  redo: () => {
+                    const idx = list.indexOf(existing);
+                    if (idx >= 0) list.splice(idx, 1);
+                  },
+                  undo: () => {
+                    list.push(existing);
+                    list.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+                  },
+                };
+              } else {
+                const prevStatus = existing.status;
+                cmd = {
+                  label: `Batch delete ${existing.formattedTag}`,
+                  affectsPixel: this._isPixelDisplayTag(hex),
+                  redo: () => { existing.status = 'deleted'; },
+                  undo: () => { existing.status = prevStatus; },
+                };
+              }
+            }
+          } else if ((existing && !existing.isSequence && !existing.isBinary) || deletedExisting) {
+            const target = existing || deletedExisting;
+            if (deletedExisting || target.value !== value) {
+              const prevValue = target.value;
+              const prevStatus = target.status;
+              const nextStatus =
+                prevStatus === 'added'
+                  ? 'added'
+                  : value === target.originalValue
+                    ? 'unchanged'
+                    : 'modified';
               cmd = {
-                label: `Batch remove ${existing.formattedTag}`,
+                label: `Batch edit ${target.formattedTag}`,
                 affectsPixel: this._isPixelDisplayTag(hex),
                 redo: () => {
-                  const idx = list.indexOf(existing);
-                  if (idx >= 0) list.splice(idx, 1);
+                  target.value = value;
+                  target.status = nextStatus;
+                  target.validation = validateVrValue(target.vr, value);
                 },
                 undo: () => {
-                  list.push(existing);
-                  list.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+                  target.value = prevValue;
+                  target.status = prevStatus;
+                  target.validation = validateVrValue(target.vr, prevValue);
                 },
               };
-            } else {
-              const prevStatus = existing.status;
-              cmd = {
-                label: `Batch delete ${existing.formattedTag}`,
-                affectsPixel: this._isPixelDisplayTag(hex),
-                redo: () => { existing.status = 'deleted'; },
-                undo: () => { existing.status = prevStatus; },
-              };
             }
-          }
-        } else if (existing && !existing.isSequence && !existing.isBinary) {
-          if (existing.value !== value) {
-            const prevValue = existing.value;
-            const prevStatus = existing.status;
-            const nextStatus =
-              prevStatus === 'added'
-                ? 'added'
-                : value === existing.originalValue
-                  ? 'unchanged'
-                  : 'modified';
+          } else if (!existing && mode === 'set' && !BINARY_VRS.has(vr) && vr !== 'SQ') {
+            const newNode = {
+              id: genNodeId(),
+              group,
+              element,
+              tag: hex,
+              formattedTag: formatTag(group, element),
+              keyword: dict.keyword,
+              name: dict.name,
+              vr,
+              vrSource: 'explicit',
+              vmSpec: dict.vm,
+              isMeta,
+              isPrivate: (group & 1) === 1,
+              isSequence: false,
+              isBinary: false,
+              encapsulated: false,
+              undefinedLength: false,
+              rawLength: 0,
+              rawBytes: null,
+              originalValue: '',
+              value: value ?? '',
+              status: 'added',
+              validation: validateVrValue(vr, value ?? ''),
+            };
             cmd = {
-              label: `Batch edit ${existing.formattedTag}`,
+              label: `Batch add ${newNode.formattedTag}`,
               affectsPixel: this._isPixelDisplayTag(hex),
               redo: () => {
-                existing.value = value;
-                existing.status = nextStatus;
-                existing.validation = validateVrValue(existing.vr, value);
+                list.push(newNode);
+                list.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
               },
               undo: () => {
-                existing.value = prevValue;
-                existing.status = prevStatus;
-                existing.validation = validateVrValue(existing.vr, prevValue);
+                const idx = list.indexOf(newNode);
+                if (idx >= 0) list.splice(idx, 1);
               },
             };
           }
-        } else if (!existing && mode === 'set' && !BINARY_VRS.has(vr) && vr !== 'SQ') {
-          const newNode = {
-            id: genNodeId(),
-            group,
-            element,
-            tag: hex,
-            formattedTag: formatTag(group, element),
-            keyword: dict.keyword,
-            name: dict.name,
-            vr,
-            vrSource: 'explicit',
-            vmSpec: dict.vm,
-            isMeta,
-            isPrivate: (group & 1) === 1,
-            isSequence: false,
-            isBinary: false,
-            encapsulated: false,
-            undefinedLength: false,
-            rawLength: 0,
-            rawBytes: null,
-            originalValue: '',
-            value: value ?? '',
-            status: 'added',
-            validation: validateVrValue(vr, value ?? ''),
-          };
-          cmd = {
-            label: `Batch add ${newNode.formattedTag}`,
-            affectsPixel: this._isPixelDisplayTag(hex),
-            redo: () => {
-              list.push(newNode);
-              list.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
-            },
-            undo: () => {
-              const idx = list.indexOf(newNode);
-              if (idx >= 0) list.splice(idx, 1);
-            },
-          };
-        }
 
-        if (cmd) {
-          cmd.redo();
-          this._noteEdit(doc);
-          entry.undoStack.push(cmd);
-          entry.redoStack = [];
-          affectedFiles++;
-          if (entry.id === this.activeFileId && cmd.affectsPixel) {
-            activePixelChanged = true;
+          if (cmd) {
+            cmd.redo();
+            this._noteEdit(doc);
+            entry.undoStack.push(cmd);
+            if (entry.undoStack.length > 200) entry.undoStack.shift();
+            entry.redoStack = [];
+            affectedFiles++;
+            if (entry.id === this.activeFileId && cmd.affectsPixel) {
+              activePixelChanged = true;
+            }
           }
+        } catch {
+          // skip unparseable entries
         }
-      } catch {
-        // skip unparseable entries
       }
+    } finally {
+      this._batchEditing = false;
+      const active = this.getActiveEntry();
+      if (active) this._bindEntryToActive(active);
+      if (activePixelChanged) this.pixelVersion++;
+      this.emit('edit');
     }
-
-    const active = this.getActiveEntry();
-    if (active) this._bindEntryToActive(active);
-    if (activePixelChanged) this.pixelVersion++;
-    this.emit('edit');
     return { affectedFiles };
   }
 

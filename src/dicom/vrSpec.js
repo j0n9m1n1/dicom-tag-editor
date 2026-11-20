@@ -445,6 +445,13 @@ export function validateVrValue(vr, value) {
           pushError(`${prefix}${t('valInt64Only')}`);
         } else if (vr === 'UV' && trimmed.startsWith('-')) {
           pushError(`${prefix}${t('valUvNeg')}`);
+        } else {
+          const n = BigInt(trimmed);
+          const min = vr === 'SV' ? -9223372036854775808n : 0n;
+          const max = vr === 'SV' ? 9223372036854775807n : 18446744073709551615n;
+          if (n < min || n > max) {
+            pushError(`${prefix}${t('valIntRange', { vr, min: min.toString(), max: max.toString() })}`);
+          }
         }
         break;
       }
