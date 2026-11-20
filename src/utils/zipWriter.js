@@ -48,7 +48,11 @@ export function buildZipArchive(entries) {
   // Deduplicate filenames safely
   const usedNames = new Set();
   const uniqueName = (rawName) => {
-    const clean = (rawName || 'file.dcm').replace(/^[/\\]+/, '');
+    const segments = String(rawName || 'file.dcm')
+      .replace(/\\/g, '/')
+      .split('/')
+      .filter((seg) => seg && seg !== '.' && seg !== '..');
+    const clean = segments.length > 0 ? segments.join('/') : 'file.dcm';
     if (!usedNames.has(clean)) {
       usedNames.add(clean);
       return clean;

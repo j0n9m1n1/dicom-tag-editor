@@ -89,7 +89,24 @@ export function countDocChanges(doc) {
   return count || Number(Boolean(doc.needsResave));
 }
 
+function safeStorageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // ignore restricted storage environments
+  }
+}
+
 export function getReadOnlyTagMessage(tag) {
+  if (tag === '00020000') return 'fileMetaGroupLengthReadOnly';
   if (tag === '00020010') return 'transferSyntaxReadOnly';
   if (tag === '00020003') return 'mediaStorageSopReadOnly';
   return null;
@@ -128,8 +145,8 @@ export class AppStore {
     this._userPrefPixelOpen = true;
     this.showFileList = false;
     this.mobileTab = 'tree'; // 'files' | 'tree' | 'inspector' | 'pixel'
-    this.theme = localStorage.getItem('dcm_editor_theme') || 'dark';
-    this.uiStyle = localStorage.getItem('dcm_editor_ui') === 'raw' ? 'raw' : 'modern';
+    this.theme = safeStorageGet('dcm_editor_theme') || 'dark';
+    this.uiStyle = safeStorageGet('dcm_editor_ui') === 'raw' ? 'raw' : 'modern';
     this.lang = getLang();
     this.undoStack = [];
     this.redoStack = [];
@@ -153,14 +170,14 @@ export class AppStore {
 
   setTheme(theme) {
     this.theme = theme;
-    localStorage.setItem('dcm_editor_theme', theme);
+    safeStorageSet('dcm_editor_theme', theme);
     this.emit('theme');
   }
 
   setUiStyle(style) {
     const next = style === 'raw' ? 'raw' : 'modern';
     this.uiStyle = next;
-    localStorage.setItem('dcm_editor_ui', next);
+    safeStorageSet('dcm_editor_ui', next);
     this.emit('uiStyle');
   }
 

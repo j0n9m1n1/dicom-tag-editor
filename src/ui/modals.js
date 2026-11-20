@@ -247,7 +247,7 @@ export class ModalManager {
                 <tr>
                   <td>${badge}</td>
                   <td><button class="btn-link mono" data-jump="${node.id}">${escapeHtml(path)}</button></td>
-                  <td>${escapeHtml(node.keyword)} <span class="muted">(${node.vr})</span></td>
+                  <td>${escapeHtml(node.keyword)} <span class="muted">(${escapeHtml(node.vr)})</span></td>
                   <td class="mono diff-cell-old">${escapeHtml(oldText)}</td>
                   <td class="mono diff-cell-new">${escapeHtml(newText)}</td>
                   <td>${getReadOnlyTagMessage(node.tag) ? '' : `<button class="btn btn-xs" data-diff-revert="${node.id}" title="${escapeHtml(t('modalDiffRevertTitle'))}">${icons.rotateCcw(13)}</button>`}</td>
@@ -294,8 +294,11 @@ export class ModalManager {
 
     this.root.querySelectorAll('[data-diff-revert]').forEach((btn) => {
       btn.addEventListener('click', () => {
+        const prevScroll = this.root.querySelector('.modal-scroll')?.scrollTop || 0;
         this.store.revertNode(btn.dataset.diffRevert);
         this.openDiff(); // refresh table
+        const scrollEl = this.root.querySelector('.modal-scroll');
+        if (scrollEl) scrollEl.scrollTop = prevScroll;
       });
     });
 

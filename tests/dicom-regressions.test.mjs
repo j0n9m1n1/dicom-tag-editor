@@ -6,6 +6,8 @@ import { decodePixelFrame, extractPixelMeta } from '../src/dicom/pixelRenderer.j
 import { generateSampleDicomBuffer } from '../src/dicom/sampleGenerator.js';
 import { writeDicomDocument } from '../src/dicom/writer.js';
 import { validateVrValue } from '../src/dicom/vrSpec.js';
+import { formatDicomJson } from '../src/dicom/dcmdump.js';
+import { buildZipArchive } from '../src/utils/zipWriter.js';
 import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges } from '../src/state/store.js';
 
 globalThis.localStorage = { getItem: () => null, setItem() {} };
@@ -364,4 +366,26 @@ test('addTag restores a pending-delete tag with matching VR and markSaved clears
   assert.equal(store.markSaved(doc, store.getDocumentRevision(doc)), true);
   assert.notEqual(store.selectedId, nameNode.id);
   assert.equal(store.selectedId, doc.datasetNodes[0].id);
+});
+
+test('formatDicomJson keeps backslashes intact for single-value text VRs and 00020000 is read-only', async () => {
+  const doc = await parseDicomBuffer(await generateSampleDicomBuffer());
+  const metaLen = doc.metaNodes.find((n) => n.tag === '00020000');
+  assert.equal(canEditNodeValue(metaLen), false);
+
+  const comment = doc.datasetNodes.find((n) => n.tag === '00104000');
+  comment.value = 'C:\\scans\\brain\\note';
+  const parsedJson = JSON.parse(formatDicomJson(doc));
+  assert.deepEqual(parsedJson.dataset['00104000'].Value, ['C:\\scans\\brain\\note']);
+  assert.deepEqual(parsedJson.dataset['00080008'].Value, ['ORIGINAL', 'PRIMARY', 'AXIAL']);
+});
+
+test('buildZipArchive normalizes Windows slashes and strips path traversal segments', () => {
+  const zipBytes = buildZipArchive([
+    { name: '..\\..\\study\\..\\slice_1.dcm', data: new Uint8Array([1, 2, 3]) },
+  ]);
+  const text = new TextDecoder('utf-8').decode(zipBytes);
+  assert.ok(text.includes('study/slice_1.dcm'));
+  assert.equal(text.includes('..'), false);
+  assert.equal(text.includes('\\'), false);
 });

@@ -49,6 +49,15 @@ export class PixelPanel {
         }
       }
     });
+
+    this.container.addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('[data-pixel-toggle]')) {
+        if (window.innerWidth > 820) {
+          e.preventDefault();
+          this.store.togglePixelPanel();
+        }
+      }
+    });
   }
 
   _releaseDecoded() {

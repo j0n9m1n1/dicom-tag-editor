@@ -115,7 +115,8 @@ function nodesToJsonObj(nodes, includeDeleted) {
       entry.byteLength = n.rawLength;
       if (n.encapsulated) entry.fragments = (n.fragments || []).length;
     } else {
-      entry.Value = n.value === '' ? [] : n.value.split('\\');
+      const spec = getVrSpec(n.vr);
+      entry.Value = n.value === '' ? [] : spec.allowMultiValue ? n.value.split('\\') : [n.value];
     }
     out[n.tag] = entry;
   }
