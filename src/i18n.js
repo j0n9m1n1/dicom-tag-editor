@@ -36,14 +36,6 @@ const MESSAGES = {
     welcomeDesc: '모든 파싱·편집·저장은 <strong>내 브라우저 안에서 100% 로컬로 처리</strong>되며,<br/>외부 서버로 의료 영상이나 환자 정보가 전송되지 않습니다.',
     welcomeBtnOpen: 'DICOM 파일 열기 (.dcm)',
     welcomeBtnSample: '샘플 CT DICOM으로 바로 체험',
-    feat1Title: '계층형 트리 & SQ',
-    feat1Desc: '중첩 Sequence와 0002 Meta Header를 직관적으로 탐색·편집',
-    feat2Title: 'VR 표준 스펙 & 검증',
-    feat2Desc: 'VR별 허용 형식, 최대 길이, 바이트 패딩을 실시간 안내',
-    feat3Title: '원본 바이트 무손실 보존',
-    feat3Desc: '수정하지 않은 태그와 PixelData를 그대로 유지하며 저장',
-    feat4Title: 'Pixel 프리뷰 & W/L',
-    feat4Desc: '비압축·RLE·JPEG Baseline 영상 및 Window/Level 실시간 확인',
 
     // Filter & Tree
     searchPlaceholder: '태그(0010,0010), Keyword, VR, 값 검색... (Ctrl+F)',
@@ -440,14 +432,6 @@ const MESSAGES = {
     welcomeDesc: 'All parsing, editing, and saving run <strong>100% locally in your browser</strong>.<br/>No medical images or patient data ever leave your machine.',
     welcomeBtnOpen: 'Open DICOM File (.dcm)',
     welcomeBtnSample: 'Try with Sample CT DICOM',
-    feat1Title: 'Hierarchical Tree & SQ',
-    feat1Desc: 'Browse and edit nested Sequences and Group 0002 File Meta intuitively',
-    feat2Title: 'VR Spec & Live Validation',
-    feat2Desc: 'Real-time VR format hints, max length limits, and padding rules',
-    feat3Title: 'Byte-Preserving Round-Trip',
-    feat3Desc: 'Unmodified tags and PixelData are preserved bit-for-bit on save',
-    feat4Title: 'Pixel Preview & W/L',
-    feat4Desc: 'Uncompressed, RLE, and JPEG Baseline preview with interactive W/L',
 
     // Filter & Tree
     searchPlaceholder: 'Search tag (0010,0010), keyword, VR, value... (Ctrl+F)',

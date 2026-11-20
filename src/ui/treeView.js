@@ -534,6 +534,14 @@ export class TreeView {
     }
   }
 
+  _getPageStep() {
+    const viewportHeight = this.container.clientHeight;
+    if (!viewportHeight) return 10;
+    const rowEl = this._getRowElement(this.store.selectedId) || this.container.querySelector('.tree-row');
+    const rowHeight = rowEl?.getBoundingClientRect().height || 28;
+    return Math.max(1, Math.floor(viewportHeight / rowHeight) - 1);
+  }
+
   _onKeyDown(e) {
     if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey ||
         e.target.closest('button, input, textarea, select, [contenteditable]')) return;
@@ -552,6 +560,19 @@ export class TreeView {
         targetId = this.visibleRows[nextIndex].id;
         break;
       }
+      case 'PageDown':
+      case 'PageUp': {
+        const delta = this._getPageStep() * (e.key === 'PageDown' ? 1 : -1);
+        const nextIndex = Math.max(0, Math.min(this.visibleRows.length - 1, index + delta));
+        targetId = this.visibleRows[nextIndex].id;
+        break;
+      }
+      case 'Home':
+        targetId = this.visibleRows[0].id;
+        break;
+      case 'End':
+        targetId = this.visibleRows[this.visibleRows.length - 1].id;
+        break;
       case 'ArrowRight': {
         if (current.hasChildren && !current.isExpanded) {
           e.preventDefault();
