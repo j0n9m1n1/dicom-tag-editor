@@ -732,10 +732,37 @@ test('AppStore handles compare exit transitions, async switch races, and corrupt
   const docY = await parseDicomBuffer(bytes, 'y.dcm');
   staleFailStore.loadDocument(docY);
   resolveCorruptX();
-  await assert.rejects(pendingCorrupt);
+  await assert.rejects(pendingCorrupt, (err) => err?.stale === true);
   assert.equal(staleFailStore.doc, docY);
   assert.equal(staleFailStore.files.length, 1);
   assert.equal(staleFailStore.files[0].doc, docY);
+
+  // Stale appended valid load that remains in workspace emits 'files' so tabs/list stay synced
+  const staleEmitStore = new AppStore();
+  await staleEmitStore.loadFileItems([
+    { name: 'base.dcm', arrayBuffer: bytes.slice(0) },
+    { name: 'other_base.dcm', arrayBuffer: bytes.slice(0) },
+  ]);
+  const [, otherBaseId] = staleEmitStore.files.map((f) => f.id);
+  let resolveAppended;
+  const slowAppended = {
+    size: bytes.byteLength,
+    arrayBuffer: () => new Promise((r) => { resolveAppended = () => r(bytes.slice(0)); }),
+  };
+  const emittedReasons = [];
+  staleEmitStore.subscribe((reason) => emittedReasons.push(reason));
+  const pendingAppend = staleEmitStore.loadFileItems(
+    [{ name: 'late_valid.dcm', size: bytes.byteLength, sourceFile: slowAppended }],
+    { append: true }
+  );
+  await staleEmitStore.switchToFile(otherBaseId);
+  emittedReasons.length = 0;
+  resolveAppended();
+  const lateRes = await pendingAppend;
+  assert.equal(lateRes.stale, true);
+  assert.equal(staleEmitStore.files.length, 3);
+  assert.equal(staleEmitStore.activeFileId, otherBaseId);
+  assert.ok(emittedReasons.includes('files'));
 
   // Stale slow duplicate check must NOT switch away from a newer active file
   const staleDupStore = new AppStore();

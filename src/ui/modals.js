@@ -165,9 +165,9 @@ export class ModalManager {
         const info = lookupTag(parsed.group, parsed.element);
         if (info.keyword !== 'UnknownTag' && info.vr && ALL_VR_CODES.includes(info.vr)) {
           vrSel.value = info.vr;
-          updateVrHint();
         }
       }
+      updateVrHint();
     });
 
     vrSel.addEventListener('change', updateVrHint);
@@ -660,9 +660,9 @@ export class ModalManager {
         const info = lookupTag(parsed.group, parsed.element);
         if (info.keyword !== 'UnknownTag' && editableVrs.includes(info.vr)) {
           vrSel.value = info.vr;
-          updateState();
         }
       }
+      updateState();
     });
 
     modeSel.addEventListener('change', updateState);

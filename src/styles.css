@@ -738,11 +738,22 @@ code {
 .file-tab.tab-dragging {
   opacity: 0.45;
 }
-.file-tab.tab-drop-before {
-  box-shadow: inset 2px 0 0 var(--accent);
+.file-tab.tab-drop-before::before,
+.file-tab.tab-drop-after::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 2;
 }
-.file-tab.tab-drop-after {
-  box-shadow: inset -2px 0 0 var(--accent);
+.file-tab.tab-drop-before::before {
+  left: 0;
+}
+.file-tab.tab-drop-after::after {
+  right: 0;
 }
 
 .file-tab-dot {
@@ -2808,7 +2819,7 @@ kbd {
 .compare-side {
   display: flex;
   flex-direction: column;
-  min-width: 220px;
+  min-width: 240px;
   min-height: 0;
   overflow: hidden;
   background: var(--bg-canvas);
@@ -2885,7 +2896,7 @@ kbd {
 .compare-col-header,
 .cmp-row {
   display: grid;
-  grid-template-columns: 112px minmax(96px, 0.9fr) 44px minmax(110px, 1.3fr);
+  grid-template-columns: minmax(90px, 112px) minmax(48px, 0.9fr) 40px minmax(52px, 1.3fr);
   align-items: center;
   gap: 0;
 }
@@ -3667,6 +3678,10 @@ kbd {
   border-top-color: var(--raw-sel-fg);
   border-right-color: var(--border-strong);
 }
+:root[data-ui="raw"] .file-tab.active.tab-drop-before::before,
+:root[data-ui="raw"] .file-tab.active.tab-drop-after::after {
+  background: var(--raw-sel-fg);
+}
 
 :root[data-ui="raw"] .file-tab.active .file-tab-close {
   color: var(--raw-sel-fg);
@@ -3935,6 +3950,11 @@ kbd {
 
   .compare-resizer {
     display: none;
+  }
+
+  .compare-col-header,
+  .cmp-row {
+    grid-template-columns: 94px minmax(52px, 0.85fr) 38px minmax(68px, 1.3fr);
   }
 
   /* Mobile 2-row card layout for tree rows */

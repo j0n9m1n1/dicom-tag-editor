@@ -81,6 +81,7 @@ export class FileTabsBar {
     this._closeContextMenu();
     this._clearDragState();
 
+    const prevScrollLeft = this.container.querySelector('#file-tabs-scroll')?.scrollLeft || 0;
     const files = this.store.files || [];
     const hasFiles = files.length > 0 && Boolean(this.store.doc);
     this.container.classList.toggle('hidden', !hasFiles);
@@ -161,6 +162,12 @@ export class FileTabsBar {
         </button>
       </div>
     `;
+
+    // Preserve horizontal scroll position across edits/filters before scrolling newly active tab into view
+    const scrollEl = this.container.querySelector('#file-tabs-scroll');
+    if (scrollEl) {
+      scrollEl.scrollLeft = prevScrollLeft;
+    }
 
     // Scroll newly activated file tab into view
     const activeKey = inCompare ? '__compare__' : this.store.activeFileId;

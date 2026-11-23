@@ -465,6 +465,7 @@ async function loadSelectedFileItems(items, { append = true } = {}) {
       modals.openFileError(res.failedEntries);
     }
   } catch (err) {
+    if (err?.stale) return;
     console.error(err);
     const failures =
       Array.isArray(err.failures) && err.failures.length > 0

@@ -38,6 +38,7 @@ export class FileListPanel {
   }
 
   render() {
+    const prevScrollTop = this.container.querySelector('.filelist-scroll')?.scrollTop || 0;
     const files = this.store.files || [];
     const show = this.store.showFileList && files.length > 0;
     this.container.classList.toggle('desktop-hidden', !show);
@@ -91,6 +92,10 @@ export class FileListPanel {
       </div>
       <div class="filelist-scroll">${itemsHtml}</div>
     `;
+    const scrollEl = this.container.querySelector('.filelist-scroll');
+    if (scrollEl) {
+      scrollEl.scrollTop = prevScrollTop;
+    }
   }
 
   async _onClick(e) {

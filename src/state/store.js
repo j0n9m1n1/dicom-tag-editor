@@ -442,6 +442,9 @@ export class AppStore {
         return { loadedCount: 0, addedCount: 0, totalCount: this.files.length, stale: true };
       }
       await this.switchToFile(firstExistingMatch.id);
+      if (this.activeFileId !== firstExistingMatch.id) {
+        return { loadedCount: 0, addedCount: 0, totalCount: this.files.length, stale: true };
+      }
       return {
         loadedCount: 0,
         addedCount: 0,
@@ -524,6 +527,9 @@ export class AppStore {
       this.files.includes(activated);
 
     if ((isStale && !canRecoverSameWorkspace) || !this.files.includes(activated)) {
+      if (this.files.includes(activated)) {
+        this.emit('files');
+      }
       return {
         loadedCount: newEntries.length,
         addedCount: newEntries.length,
