@@ -175,26 +175,24 @@ export class CompareView {
   _buildShell() {
     this.container.innerHTML = `
       <div class="compare-topbar">
-        <div class="compare-topbar-left">
-          <div class="search-box compare-search-box">
-            <span class="search-icon">${icons.search(14)}</span>
-            <input type="text" id="cmp-search-input" autocomplete="off" />
-            <button type="button" class="search-clear hidden" id="btn-cmp-search-clear">×</button>
-          </div>
-          <label class="checkbox-row small compare-diff-toggle">
-            <input type="checkbox" id="cmp-diff-only" checked />
-            <span id="cmp-diff-only-lbl"></span>
-          </label>
-          <div class="compare-nav-group">
-            <button type="button" class="btn btn-xs" id="cmp-prev-diff" disabled>▲</button>
-            <span class="compare-nav-pos mono" id="cmp-nav-pos">0 / 0</span>
-            <button type="button" class="btn btn-xs" id="cmp-next-diff" disabled>▼</button>
-          </div>
+        <div class="search-box compare-search-box">
+          <span class="search-icon">${icons.search(14)}</span>
+          <input type="text" id="cmp-search-input" autocomplete="off" />
+          <button type="button" class="search-clear hidden" id="btn-cmp-search-clear">×</button>
         </div>
-        <div class="compare-topbar-right">
-          <span class="compare-summary-text muted small" id="cmp-summary"></span>
-          <button type="button" class="btn btn-sm" id="btn-cmp-close"></button>
+        <label class="checkbox-row small compare-diff-toggle">
+          <input type="checkbox" id="cmp-diff-only" checked />
+          <span id="cmp-diff-only-lbl"></span>
+        </label>
+        <div class="toolbar-sep compare-sep"></div>
+        <div class="compare-nav-group">
+          <button type="button" class="btn btn-xs" id="cmp-prev-diff" disabled>▲</button>
+          <span class="compare-nav-pos mono" id="cmp-nav-pos">0 / 0</span>
+          <button type="button" class="btn btn-xs" id="cmp-next-diff" disabled>▼</button>
         </div>
+        <div class="toolbar-sep compare-sep"></div>
+        <div class="compare-stats" id="cmp-summary"></div>
+        <button type="button" class="btn btn-sm compare-close-btn" id="btn-cmp-close"></button>
       </div>
 
       <div class="compare-split" id="compare-split" tabindex="0">
@@ -582,13 +580,19 @@ export class CompareView {
     const q = this.searchQuery.trim();
 
     if (summaryEl) {
-      summaryEl.textContent = t('modalCompareSummary', {
+      summaryEl.title = t('modalCompareSummary', {
         total,
         diffs: totalDiffs,
         changed,
         onlyA,
         onlyB,
       });
+      summaryEl.innerHTML = `
+        <span class="cmp-stat cmp-stat-total mono">${totalDiffs}/${total}</span>
+        <span class="cmp-stat cmp-stat-mod">${escapeHtml(t('modalCompareStChanged'))} ${changed}</span>
+        <span class="cmp-stat cmp-stat-a">A ${onlyA}</span>
+        <span class="cmp-stat cmp-stat-b">B ${onlyB}</span>
+      `;
     }
 
     this.rows = rows;
