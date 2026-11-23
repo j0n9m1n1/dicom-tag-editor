@@ -166,6 +166,16 @@ export class FileTabsBar {
     }
   }
 
+  async closeActiveTab() {
+    if (this.store.compareMode) {
+      this.store.exitCompareMode();
+      return;
+    }
+    if (this.store.activeFileId) {
+      await this._closeFileEntry(this.store.activeFileId);
+    }
+  }
+
   async _closeFileEntry(fileId) {
     const entry = this.store.files.find((f) => f.id === fileId);
     if (!entry) return;

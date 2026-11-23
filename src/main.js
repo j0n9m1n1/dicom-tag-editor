@@ -863,6 +863,19 @@ window.addEventListener('keydown', (e) => {
     store.exitCompareMode();
     return;
   }
+  if (
+    e.altKey &&
+    !e.ctrlKey &&
+    !e.metaKey &&
+    !e.shiftKey &&
+    (e.code === 'KeyW' || e.key.toLowerCase() === 'w')
+  ) {
+    if (store.compareMode || store.activeFileId) {
+      e.preventDefault();
+      fileTabs.closeActiveTab();
+    }
+    return;
+  }
   const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
   const key = e.key.toLowerCase();

@@ -757,6 +757,7 @@ export class ModalManager {
             <label class="setting-label">${escapeHtml(t('settingsShortcutsLabel'))}</label>
             <div class="shortcut-list">
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutOpen'))}</span><kbd>Ctrl + O</kbd></div>
+              <div class="shortcut-item"><span>${escapeHtml(t('shortcutCloseTab'))}</span><kbd>Alt + W</kbd></div>
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutSave'))}</span><kbd>Ctrl + S</kbd></div>
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutSearch'))}</span><kbd>Ctrl + F</kbd></div>
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutUndoRedo'))}</span><kbd>Ctrl + Z / Y</kbd></div>
