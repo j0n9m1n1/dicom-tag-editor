@@ -197,7 +197,7 @@ export class CompareView {
         </div>
       </div>
 
-      <div class="compare-split" id="compare-split">
+      <div class="compare-split" id="compare-split" tabindex="0">
         <div class="compare-side" data-side="a">
           <div class="compare-side-header">
             <span class="compare-side-badge badge-a">A</span>
@@ -300,10 +300,14 @@ export class CompareView {
         const row = e.target.closest('.cmp-row[data-row-idx]');
         if (!row) return;
         this._setActiveRow(Number(row.dataset.rowIdx), false);
+        splitEl.focus({ preventScroll: true });
       });
     };
     bindRowSync(bodyA);
     bindRowSync(bodyB);
+
+    // Keyboard navigation (ArrowUp/Down, PageUp/Down, Home/End)
+    splitEl.addEventListener('keydown', (e) => this._onKeyDown(e));
 
     // Center draggable splitter
     resizer.addEventListener('mousedown', (e) => {
@@ -383,7 +387,64 @@ export class CompareView {
     this.container.querySelectorAll(`.cmp-row[data-row-idx="${idx}"]`).forEach((el) => el.classList.add('cmp-hover'));
   }
 
-  _setActiveRow(idx, scrollIntoView = true) {
+  _getPageStep() {
+    const bodyA = this.container.querySelector('#cmp-body-a');
+    const viewportHeight = bodyA?.clientHeight || 0;
+    if (!viewportHeight) return 10;
+    const rowEl = bodyA.querySelector('.cmp-row');
+    const rowHeight = rowEl?.getBoundingClientRect().height || 28;
+    return Math.max(1, Math.floor(viewportHeight / rowHeight) - 1);
+  }
+
+  _onKeyDown(e) {
+    if (
+      e.defaultPrevented ||
+      e.altKey ||
+      e.ctrlKey ||
+      e.metaKey ||
+      e.shiftKey ||
+      e.target.closest('button, input, textarea, select, [contenteditable]')
+    ) {
+      return;
+    }
+    if (this.rows.length === 0) return;
+
+    const lastIdx = this.rows.length - 1;
+    const cur = this.activeRowIdx;
+    let nextIdx = -1;
+
+    switch (e.key) {
+      case 'ArrowDown':
+        nextIdx = cur < 0 ? 0 : Math.min(lastIdx, cur + 1);
+        break;
+      case 'ArrowUp':
+        nextIdx = cur < 0 ? lastIdx : Math.max(0, cur - 1);
+        break;
+      case 'PageDown': {
+        const base = cur < 0 ? 0 : cur;
+        nextIdx = Math.min(lastIdx, base + this._getPageStep());
+        break;
+      }
+      case 'PageUp': {
+        const base = cur < 0 ? lastIdx : cur;
+        nextIdx = Math.max(0, base - this._getPageStep());
+        break;
+      }
+      case 'Home':
+        nextIdx = 0;
+        break;
+      case 'End':
+        nextIdx = lastIdx;
+        break;
+      default:
+        return;
+    }
+
+    e.preventDefault();
+    this._setActiveRow(nextIdx, true, 'nearest');
+  }
+
+  _setActiveRow(idx, scrollIntoView = true, block = 'nearest') {
     this.activeRowIdx = idx;
     this.container.querySelectorAll('.cmp-row.cmp-active').forEach((el) => el.classList.remove('cmp-active'));
     if (idx >= 0) {
@@ -393,7 +454,7 @@ export class CompareView {
         const bodyA = this.container.querySelector('#cmp-body-a');
         const bodyB = this.container.querySelector('#cmp-body-b');
         if (rowA && bodyA && bodyB) {
-          rowA.scrollIntoView({ block: 'center', inline: 'nearest' });
+          rowA.scrollIntoView({ block, inline: 'nearest' });
           bodyB.scrollTop = bodyA.scrollTop;
         }
       }
@@ -420,7 +481,7 @@ export class CompareView {
       }
       nextDiffPos = found >= 0 ? found : this.diffIndices.length - 1;
     }
-    this._setActiveRow(this.diffIndices[nextDiffPos], true);
+    this._setActiveRow(this.diffIndices[nextDiffPos], true, 'center');
   }
 
   _updateNavStatus() {
@@ -611,5 +672,11 @@ export class CompareView {
     bodyA.scrollTop = 0;
     bodyB.scrollTop = 0;
     this._updateNavStatus();
+
+    const splitEl = this.container.querySelector('#compare-split');
+    const active = document.activeElement;
+    if (splitEl && (!active || !this.container.contains(active) || !active.closest('input, select'))) {
+      splitEl.focus({ preventScroll: true });
+    }
   }
 }
