@@ -11,7 +11,7 @@ import {
   renderFrameToCanvas,
 } from '../dicom/pixelRenderer.js';
 import { icons, escapeHtml } from './icons.js';
-import { t } from '../i18n.js';
+import { t, getLang } from '../i18n.js';
 
 const CT_PRESETS = [
   { key: 'pixelPresetBrain', wc: 40, ww: 80 },
@@ -29,6 +29,7 @@ export class PixelPanel {
     this.container = container;
     this.store = store;
     this._lastPixelVersion = -1;
+    this._lastLang = null;
     this._meta = null;
     this._decoded = null;
     this._frameIndex = 0;
@@ -107,6 +108,7 @@ export class PixelPanel {
 
     if (!this.store.doc) {
       this._lastPixelVersion = -1;
+      this._lastLang = null;
       this._releaseDecoded();
       this.container.innerHTML = `
         ${this._headerHtml(null, false)}
@@ -115,10 +117,18 @@ export class PixelPanel {
       return;
     }
 
-    if (!force && this._lastPixelVersion === this.store.pixelVersion && this._decoded && this.container.querySelector('#pixel-canvas, .pixel-unsupported, .pixel-empty')) {
+    const curLang = getLang();
+    if (
+      !force &&
+      this._lastPixelVersion === this.store.pixelVersion &&
+      this._lastLang === curLang &&
+      this._decoded &&
+      this.container.querySelector('#pixel-canvas, .pixel-unsupported, .pixel-empty')
+    ) {
       return;
     }
     this._lastPixelVersion = this.store.pixelVersion;
+    this._lastLang = curLang;
 
     const meta = extractPixelMeta(this.store.doc);
     this._meta = meta;

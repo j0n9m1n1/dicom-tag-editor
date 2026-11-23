@@ -109,6 +109,9 @@ export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = ''
     });
   };
 
+  const entryByKey = new Map();
+  const includedKeys = new Set();
+
   for (const k of allKeys) {
     const a = mapA.get(k) || null;
     const b = mapB.get(k) || null;
@@ -121,7 +124,7 @@ export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = ''
       kind = 'onlyB';
       onlyB++;
     } else if (a.isBinary && b.isBinary) {
-      if (!bytesEqual(a.rawBytes, b.rawBytes)) {
+      if (a.vr !== b.vr || !bytesEqual(a.rawBytes, b.rawBytes)) {
         kind = 'changed';
         changed++;
       }
@@ -130,9 +133,27 @@ export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = ''
       changed++;
     }
 
+    const rowObj = { kind, section, a, b };
+    entryByKey.set(k, rowObj);
+
     if (diffOnly && kind === 'equal') continue;
     if (!matchesSearch(a, b)) continue;
-    rows.push({ kind, section, a, b });
+
+    // Include ancestor SQ rows as structural context when nested children match under diffOnly/search
+    const parts = k.split('/');
+    for (let len = 2; len < parts.length; len += 2) {
+      const ancKey = parts.slice(0, len).join('/');
+      if (!includedKeys.has(ancKey) && entryByKey.has(ancKey)) {
+        const anc = entryByKey.get(ancKey);
+        includedKeys.add(ancKey);
+        rows.push(anc.kind === 'equal' ? { ...anc, isContext: true } : anc);
+      }
+    }
+
+    if (!includedKeys.has(k)) {
+      includedKeys.add(k);
+      rows.push(rowObj);
+    }
   }
 
   return {
@@ -169,6 +190,30 @@ export class CompareView {
     if (inp) {
       inp.focus();
       inp.select();
+    }
+  }
+
+  reset() {
+    this._renderToken++;
+    this.diffOnly = true;
+    this.searchQuery = '';
+    this.rows = [];
+    this.diffIndices = [];
+    this.activeRowIdx = -1;
+    if (this._shellBuilt) {
+      const searchInp = this.container.querySelector('#cmp-search-input');
+      const clearBtn = this.container.querySelector('#btn-cmp-search-clear');
+      const diffCb = this.container.querySelector('#cmp-diff-only');
+      const bodyA = this.container.querySelector('#cmp-body-a');
+      const bodyB = this.container.querySelector('#cmp-body-b');
+      const summaryEl = this.container.querySelector('#cmp-summary');
+      if (searchInp) searchInp.value = '';
+      if (clearBtn) clearBtn.classList.add('hidden');
+      if (diffCb) diffCb.checked = true;
+      if (bodyA) bodyA.innerHTML = '';
+      if (bodyB) bodyB.innerHTML = '';
+      if (summaryEl) summaryEl.innerHTML = '';
+      this._updateNavStatus();
     }
   }
 
@@ -304,8 +349,8 @@ export class CompareView {
     bindRowSync(bodyA);
     bindRowSync(bodyB);
 
-    // Keyboard navigation (ArrowUp/Down, PageUp/Down, Home/End)
-    splitEl.addEventListener('keydown', (e) => this._onKeyDown(e));
+    // Keyboard navigation (ArrowUp/Down, PageUp/Down, Home/End) across the whole Compare pane
+    this.container.addEventListener('keydown', (e) => this._onKeyDown(e));
 
     // Center draggable splitter
     resizer.addEventListener('mousedown', (e) => {
@@ -401,7 +446,7 @@ export class CompareView {
       e.ctrlKey ||
       e.metaKey ||
       e.shiftKey ||
-      e.target.closest('button, input, textarea, select, [contenteditable]')
+      e.target?.closest?.('input:not([type="checkbox"]):not([type="button"]), textarea, select, [contenteditable]')
     ) {
       return;
     }
@@ -561,7 +606,7 @@ export class CompareView {
       docA = await this.store.ensureEntryParsed(entryA);
       docB = await this.store.ensureEntryParsed(entryB);
     } catch (err) {
-      if (token !== this._renderToken) return;
+      if (token !== this._renderToken || !this.store.compareMode || this.store.files.length < 2) return;
       const errHtml = `<div class="compare-empty text-danger">${escapeHtml(err.message)}</div>`;
       bodyA.innerHTML = errHtml;
       bodyB.innerHTML = errHtml;
@@ -570,7 +615,7 @@ export class CompareView {
       this._updateNavStatus();
       return;
     }
-    if (token !== this._renderToken) return;
+    if (token !== this._renderToken || !this.store.compareMode || this.store.files.length < 2) return;
 
     const result = buildCompareRows(docA, docB, {
       diffOnly: this.diffOnly,
@@ -619,7 +664,7 @@ export class CompareView {
       </div>`;
     };
 
-    const renderCellRow = (item, kind, side, idx) => {
+    const renderCellRow = (item, kind, side, idx, isContext = false) => {
       if (!item) {
         return `<div class="cmp-row cmp-placeholder cmp-kind-${kind}" data-row-idx="${idx}">
           <div class="cmp-cell col-cmp-tag"></div>
@@ -640,7 +685,9 @@ export class CompareView {
             ? 'cmp-only-a'
             : kind === 'onlyB' && side === 'b'
               ? 'cmp-only-b'
-              : 'cmp-equal';
+              : isContext
+                ? 'cmp-equal cmp-context'
+                : 'cmp-equal';
       const label = item.keyword !== 'UnknownTag' ? item.keyword : item.name;
 
       return `<div class="cmp-row ${sideCls}" data-row-idx="${idx}">
@@ -660,15 +707,15 @@ export class CompareView {
     const htmlB = [];
     let lastSection = null;
     for (let i = 0; i < rows.length; i++) {
-      const { kind, section, a, b } = rows[i];
+      const { kind, section, a, b, isContext } = rows[i];
       if (section !== lastSection) {
         const secHtml = renderSectionHeader(section, sectionCounts[section]);
         htmlA.push(secHtml);
         htmlB.push(secHtml);
         lastSection = section;
       }
-      htmlA.push(renderCellRow(a, kind, 'a', i));
-      htmlB.push(renderCellRow(b, kind, 'b', i));
+      htmlA.push(renderCellRow(a, kind, 'a', i, isContext));
+      htmlB.push(renderCellRow(b, kind, 'b', i, isContext));
     }
 
     bodyA.innerHTML = htmlA.join('');

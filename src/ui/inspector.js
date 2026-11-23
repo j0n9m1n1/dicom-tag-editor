@@ -546,7 +546,7 @@ export class InspectorPanel {
     const byteLen = new TextEncoder().encode(val).length;
     const charLen = val.length;
     const vm = computeVm(node);
-    const v = node.validation || validateVrValue(node.vr, val);
+    const v = node.validation || validateVrValue(node.vr, val, node.tag);
 
     const limitInfo = spec.maxLength
       ? `${spec.lengthUnit === 'chars' ? charLen : byteLen} / ${spec.maxLength} ${spec.lengthUnit}`

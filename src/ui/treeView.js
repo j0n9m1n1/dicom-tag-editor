@@ -32,6 +32,9 @@ export class TreeView {
     this.container.addEventListener('keydown', (e) => this._onKeyDown(e));
     this.container.addEventListener('contextmenu', (e) => this._onContextMenu(e));
     window.addEventListener('click', () => this._closeContextMenu());
+    window.addEventListener('contextmenu', (e) => {
+      if (!(e.target instanceof Node) || !this.container.contains(e.target)) this._closeContextMenu();
+    }, true);
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') this._closeContextMenu();
     });
@@ -290,6 +293,9 @@ export class TreeView {
     }
     if (reason === 'document' || reason === 'filter' || reason === 'tree') {
       this.filterExpansion.clear();
+    }
+    if (reason === 'document') {
+      this.inlineEditId = null;
     }
     this._closeContextMenu();
     this.container.setAttribute('aria-label', t('treeLabel'));

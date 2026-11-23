@@ -109,6 +109,7 @@ export function getReadOnlyTagMessage(tag) {
   if (tag === '00020000') return 'fileMetaGroupLengthReadOnly';
   if (tag === '00020010') return 'transferSyntaxReadOnly';
   if (tag === '00020003') return 'mediaStorageSopReadOnly';
+  if (String(tag || '').toUpperCase().startsWith('FFFE')) return 'delimiterTagReadOnly';
   return null;
 }
 
@@ -156,6 +157,8 @@ export class AppStore {
     this.redoStack = [];
     this.listeners = new Set();
     this.pixelVersion = 0;
+    this.workspaceVersion = 0;
+    this._activeOpToken = 0;
     this._revisions = new WeakMap();
     this._sequenceBaselines = new WeakMap();
     this._pendingParses = new WeakMap();
@@ -191,7 +194,7 @@ export class AppStore {
     const revalidate = (nodes) => {
       for (const n of nodes || []) {
         if (!n.isBinary && !n.isSequence) {
-          n.validation = validateVrValue(n.vr, n.value);
+          n.validation = validateVrValue(n.vr, n.value, n.tag);
         }
         if (n.isSequence && n.items) {
           for (const item of n.items) revalidate(item.children);
@@ -342,6 +345,7 @@ export class AppStore {
    * Load a single pre-parsed document (e.g. sample DICOM). Replaces current list unless append=true.
    */
   loadDocument(doc, fileHandle = null, { append = false } = {}) {
+    this._activeOpToken++;
     this._saveActiveSnapshot();
     const entry = {
       id: nextFileId(),
@@ -365,8 +369,12 @@ export class AppStore {
       this.files = [entry];
       this.showFileList = false;
       this._userToggledFileList = false;
+      this.compareFileAId = null;
+      this.compareFileBId = null;
+      this.workspaceVersion++;
     }
 
+    this.compareMode = false;
     this._bindEntryToActive(entry);
     this.searchQuery = '';
     this.filterMode = 'all';
@@ -384,6 +392,8 @@ export class AppStore {
    */
   async loadFileItems(items, { append = true } = {}) {
     if (!items || items.length === 0) return { loadedCount: 0, addedCount: 0, totalCount: this.files.length };
+    const opToken = ++this._activeOpToken;
+    const startWorkspaceVersion = this.workspaceVersion;
     this._saveActiveSnapshot();
 
     const hadExisting = append && this.files.length > 0;
@@ -393,11 +403,14 @@ export class AppStore {
     for (const it of items) {
       const size = it.size ?? it.sourceFile?.size ?? it.arrayBuffer?.byteLength ?? 0;
       let duplicate = null;
-      for (const entry of hadExisting ? this.files : []) {
+      for (const entry of hadExisting ? this.files.slice() : []) {
         if (entry.name === it.name && entry.size === size && await isSameFile(entry, it)) {
           duplicate = entry;
           break;
         }
+      }
+      if (opToken !== this._activeOpToken || startWorkspaceVersion !== this.workspaceVersion) {
+        return { loadedCount: 0, addedCount: 0, totalCount: this.files.length, stale: true };
       }
       if (duplicate) {
         firstExistingMatch ??= duplicate;
@@ -419,8 +432,15 @@ export class AppStore {
       });
     }
 
+    if (opToken !== this._activeOpToken || startWorkspaceVersion !== this.workspaceVersion) {
+      return { loadedCount: 0, addedCount: 0, totalCount: this.files.length, stale: true };
+    }
+
     // All dropped/selected files were already open -> switch to the existing entry
     if (hadExisting && newEntries.length === 0 && firstExistingMatch) {
+      if (!this.files.includes(firstExistingMatch)) {
+        return { loadedCount: 0, addedCount: 0, totalCount: this.files.length, stale: true };
+      }
       await this.switchToFile(firstExistingMatch.id);
       return {
         loadedCount: 0,
@@ -434,7 +454,12 @@ export class AppStore {
       this.files.push(...newEntries);
     } else {
       this.files = newEntries;
+      this.compareMode = false;
+      this.compareFileAId = null;
+      this.compareFileBId = null;
+      this.workspaceVersion++;
     }
+    const loadWorkspaceVersion = this.workspaceVersion;
 
     if (!this._userToggledFileList && this.files.length > 1) {
       this.showFileList = true;
@@ -458,22 +483,59 @@ export class AppStore {
       }
     }
 
+    const isStale = opToken !== this._activeOpToken || loadWorkspaceVersion !== this.workspaceVersion;
+
     if (!activated) {
-      if (!hadExisting) {
-        this.files = [];
-        this._bindEntryToActive(null);
-        this.emit('document');
+      const failedSet = new Set(newEntries);
+      if (isStale) {
+        const hadFailedInCurrent = this.files.some((f) => failedSet.has(f));
+        if (hadFailedInCurrent) {
+          this.files = this.files.filter((f) => !failedSet.has(f));
+          if (this.files.length <= 1) {
+            this.showFileList = false;
+            this.compareMode = false;
+            this.compareFileAId = null;
+            this.compareFileBId = null;
+          }
+          this.emit('files');
+        }
+      } else if (!hadExisting) {
+        this._resetEmptyWorkspace();
       } else {
-        const failedSet = new Set(newEntries);
         this.files = this.files.filter((f) => !failedSet.has(f));
-        if (this.files.length <= 1) this.showFileList = false;
+        if (this.files.length <= 1) {
+          this.showFileList = false;
+          this.compareMode = false;
+          this.compareFileAId = null;
+          this.compareFileBId = null;
+        }
         this.emit('files');
       }
       const finalErr = firstError || new Error('Failed to parse DICOM file(s).');
       finalErr.failures = failedEntries;
+      if (isStale) finalErr.stale = true;
       throw finalErr;
     }
 
+    const canRecoverSameWorkspace =
+      loadWorkspaceVersion === this.workspaceVersion &&
+      !this.doc &&
+      !this.activeFileId &&
+      this.files.includes(activated);
+
+    if ((isStale && !canRecoverSameWorkspace) || !this.files.includes(activated)) {
+      return {
+        loadedCount: newEntries.length,
+        addedCount: newEntries.length,
+        wasAppended: hadExisting,
+        totalCount: this.files.length,
+        activeEntry: this.getActiveEntry(),
+        failedEntries,
+        stale: true,
+      };
+    }
+
+    this.compareMode = false;
     this._bindEntryToActive(activated);
     this.searchQuery = '';
     this.filterMode = 'all';
@@ -492,15 +554,43 @@ export class AppStore {
 
   /**
    * Switch active file in the multi-file list (lazy-parsing if needed).
+   * Cancels stale in-flight switches and exits Compare mode cleanly.
    */
   async switchToFile(fileId) {
-    if (this.activeFileId === fileId) return;
     const target = this.files.find((f) => f.id === fileId);
     if (!target) return;
 
+    const opToken = ++this._activeOpToken;
+    if (this.activeFileId === fileId) {
+      if (this.compareMode) {
+        this.compareMode = false;
+        this.emit('compare');
+      }
+      return;
+    }
+
     this._saveActiveSnapshot();
     await this.ensureEntryParsed(target);
+    if (opToken !== this._activeOpToken || !this.files.includes(target)) return;
+    this._saveActiveSnapshot();
+    this.compareMode = false;
     this._bindEntryToActive(target);
+    this.pixelVersion++;
+    this.emit('document');
+  }
+
+  _resetEmptyWorkspace() {
+    this.files = [];
+    this.showFileList = false;
+    this._userToggledFileList = false;
+    this.compareMode = false;
+    this.compareFileAId = null;
+    this.compareFileBId = null;
+    this.searchQuery = '';
+    this.filterMode = 'all';
+    this.mobileTab = 'tree';
+    this.workspaceVersion++;
+    this._bindEntryToActive(null);
     this.pixelVersion++;
     this.emit('document');
   }
@@ -530,26 +620,33 @@ export class AppStore {
     }
 
     if (this.files.length === 0) {
-      this._bindEntryToActive(null);
-      this.pixelVersion++;
-      this.emit('document');
+      this._activeOpToken++;
+      this._resetEmptyWorkspace();
       return;
     }
 
     if (wasActive) {
+      const opToken = ++this._activeOpToken;
       // Prefer a nearby file and continue past entries that cannot be parsed.
       const next = this.files.slice(idx).concat(this.files.slice(0, idx).reverse());
       let active = null;
       for (const entry of next) {
         try {
           await this.ensureEntryParsed(entry);
+          if (opToken !== this._activeOpToken) return;
           if (this.files.includes(entry)) {
             active = entry;
             break;
           }
         } catch {
+          if (opToken !== this._activeOpToken) return;
           continue;
         }
+      }
+      if (opToken !== this._activeOpToken) return;
+      if (!active) {
+        this._resetEmptyWorkspace();
+        return;
       }
       this._bindEntryToActive(active);
       this.pixelVersion++;
@@ -606,26 +703,33 @@ export class AppStore {
     }
 
     if (this.files.length === 0) {
-      this._bindEntryToActive(null);
-      this.pixelVersion++;
-      this.emit('document');
+      this._activeOpToken++;
+      this._resetEmptyWorkspace();
       return;
     }
 
     if (wasActive) {
+      const opToken = ++this._activeOpToken;
       const idx = Math.max(0, Math.min(firstRemovedIdx, this.files.length - 1));
       const next = this.files.slice(idx).concat(this.files.slice(0, idx).reverse());
       let active = null;
       for (const entry of next) {
         try {
           await this.ensureEntryParsed(entry);
+          if (opToken !== this._activeOpToken) return;
           if (this.files.includes(entry)) {
             active = entry;
             break;
           }
         } catch {
+          if (opToken !== this._activeOpToken) return;
           continue;
         }
+      }
+      if (opToken !== this._activeOpToken) return;
+      if (!active) {
+        this._resetEmptyWorkspace();
+        return;
       }
       this._bindEntryToActive(active);
       this.pixelVersion++;
@@ -651,18 +755,8 @@ export class AppStore {
    * Reset all loaded files and return to the initial welcome screen.
    */
   closeAll() {
-    this.files = [];
-    this._bindEntryToActive(null);
-    this.showFileList = false;
-    this._userToggledFileList = false;
-    this.compareMode = false;
-    this.compareFileAId = null;
-    this.compareFileBId = null;
-    this.searchQuery = '';
-    this.filterMode = 'all';
-    this.mobileTab = 'tree';
-    this.pixelVersion++;
-    this.emit('document');
+    this._activeOpToken++;
+    this._resetEmptyWorkspace();
   }
 
   selectNode(id) {
@@ -862,12 +956,12 @@ export class AppStore {
       redo: () => {
         node.value = newValue;
         node.status = nextStatus;
-        node.validation = validateVrValue(node.vr, newValue);
+        node.validation = validateVrValue(node.vr, newValue, node.tag);
       },
       undo: () => {
         node.value = prevValue;
         node.status = prevStatus;
-        node.validation = validateVrValue(node.vr, prevValue);
+        node.validation = validateVrValue(node.vr, prevValue, node.tag);
       },
     });
   }
@@ -911,7 +1005,7 @@ export class AppStore {
         node.status = 'unchanged';
         node.validation = node.isBinary || node.isSequence
           ? { valid: true, severity: 'ok', messages: [] }
-          : validateVrValue(node.vr, node.originalValue);
+          : validateVrValue(node.vr, node.originalValue, node.tag);
       },
       undo: () => {
         node.value = prevValue;
@@ -919,7 +1013,7 @@ export class AppStore {
         node.status = prevStatus;
         node.validation = node.isBinary || node.isSequence
           ? { valid: true, severity: 'ok', messages: [] }
-          : validateVrValue(node.vr, prevValue);
+          : validateVrValue(node.vr, prevValue, node.tag);
       },
     });
   }
@@ -989,13 +1083,13 @@ export class AppStore {
         redo: () => {
           deletedExisting.value = nextVal;
           deletedExisting.status = nextStatus;
-          deletedExisting.validation = validateVrValue(deletedExisting.vr, nextVal);
+          deletedExisting.validation = validateVrValue(deletedExisting.vr, nextVal, deletedExisting.tag);
           this.selectedId = deletedExisting.id;
         },
         undo: () => {
           deletedExisting.value = prevValue;
           deletedExisting.status = 'deleted';
-          deletedExisting.validation = validateVrValue(deletedExisting.vr, prevValue);
+          deletedExisting.validation = validateVrValue(deletedExisting.vr, prevValue, deletedExisting.tag);
         },
       });
       return { duplicate: false, node: deletedExisting };
@@ -1028,7 +1122,7 @@ export class AppStore {
       status: 'added',
       validation: isSeq || isBin
         ? { valid: true, severity: 'ok', messages: [] }
-        : validateVrValue(vr, value ?? ''),
+        : validateVrValue(vr, value ?? '', hex),
     };
 
     this._executeCommand({
@@ -1257,7 +1351,7 @@ export class AppStore {
           for (const s of snapshots) {
             s.node.value = s.nextValue;
             s.node.status = s.nextStatus;
-            s.node.validation = validateVrValue(s.node.vr, s.nextValue);
+            s.node.validation = validateVrValue(s.node.vr, s.nextValue, s.node.tag);
           }
           for (const d of privateDeletes) {
             d.node.status = 'deleted';
@@ -1271,7 +1365,7 @@ export class AppStore {
           for (const s of snapshots) {
             s.node.value = s.prevValue;
             s.node.status = s.prevStatus;
-            s.node.validation = validateVrValue(s.node.vr, s.prevValue);
+            s.node.validation = validateVrValue(s.node.vr, s.prevValue, s.node.tag);
           }
           for (const d of privateDeletes) {
             d.node.status = d.prevStatus;
@@ -1416,12 +1510,12 @@ export class AppStore {
                 redo: () => {
                   target.value = value;
                   target.status = nextStatus;
-                  target.validation = validateVrValue(target.vr, value);
+                  target.validation = validateVrValue(target.vr, value, target.tag);
                 },
                 undo: () => {
                   target.value = prevValue;
                   target.status = prevStatus;
-                  target.validation = validateVrValue(target.vr, prevValue);
+                  target.validation = validateVrValue(target.vr, prevValue, target.tag);
                 },
               };
             }
@@ -1448,7 +1542,7 @@ export class AppStore {
               originalValue: '',
               value: value ?? '',
               status: 'added',
-              validation: validateVrValue(vr, value ?? ''),
+              validation: validateVrValue(vr, value ?? '', hex),
             };
             cmd = {
               label: `Batch add ${newNode.formattedTag}`,

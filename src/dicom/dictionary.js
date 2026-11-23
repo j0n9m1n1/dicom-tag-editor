@@ -101,10 +101,81 @@ function keywordToDisplayName(keyword) {
     .trim();
 }
 
+/**
+ * Standard DICOM PS3.6 tags whose VR is "US or SS" depending on PixelRepresentation (0028,0103).
+ * Used to infer SS vs US in Implicit VR datasets while preserving Explicit VR as encoded.
+ */
+export const PIXEL_REP_SIGNED_TAGS = new Set([
+  '00189810', // ZeroVelocityPixelValue
+  '00280104', // SmallestValidPixelValue (Ret)
+  '00280105', // LargestValidPixelValue (Ret)
+  '00280106', // SmallestImagePixelValue
+  '00280107', // LargestImagePixelValue
+  '00280108', // SmallestPixelValueInSeries
+  '00280109', // LargestPixelValueInSeries
+  '00280110', // SmallestImagePixelValueInPlane
+  '00280111', // LargestImagePixelValueInPlane
+  '00280120', // PixelPaddingValue
+  '00280121', // PixelPaddingRangeLimit
+  '00281100', // GrayLookupTableDescriptor (Ret)
+  '00281101', // RedPaletteColorLookupTableDescriptor
+  '00281102', // GreenPaletteColorLookupTableDescriptor
+  '00281103', // BluePaletteColorLookupTableDescriptor
+  '00283002', // LUTDescriptor
+  '00409211', // RealWorldValueLastValueMapped
+  '00409216', // RealWorldValueFirstValueMapped
+  '00603004', // HistogramFirstBinValue
+  '00603006', // HistogramLastBinValue
+]);
+
+/**
+ * Standard NEMA PS3.6 repeating Overlay group (60xx, even groups) elements.
+ */
+const OVERLAY_ELEMENTS = {
+  0x0010: ['OverlayRows', 'US', '1'],
+  0x0011: ['OverlayColumns', 'US', '1'],
+  0x0012: ['OverlayPlanes', 'US', '1'],
+  0x0015: ['NumberOfFramesInOverlay', 'IS', '1'],
+  0x0022: ['OverlayDescription', 'LO', '1'],
+  0x0040: ['OverlayType', 'CS', '1'],
+  0x0045: ['OverlaySubtype', 'LO', '1'],
+  0x0050: ['OverlayOrigin', 'SS', '2'],
+  0x0051: ['ImageFrameOrigin', 'US', '1'],
+  0x0052: ['OverlayPlaneOrigin', 'US', '1'],
+  0x0100: ['OverlayBitsAllocated', 'US', '1'],
+  0x0102: ['OverlayBitPosition', 'US', '1'],
+  0x0110: ['OverlayFormat', 'CS', '1'],
+  0x0200: ['OverlayLocation', 'US', '1'],
+  0x1001: ['OverlayActivationLayer', 'CS', '1'],
+  0x1100: ['OverlayDescriptorGray', 'US', '1'],
+  0x1101: ['OverlayDescriptorRed', 'US', '1'],
+  0x1102: ['OverlayDescriptorGreen', 'US', '1'],
+  0x1103: ['OverlayDescriptorBlue', 'US', '1'],
+  0x1200: ['OverlaysGray', 'US', '1-n'],
+  0x1201: ['OverlaysRed', 'US', '1-n'],
+  0x1202: ['OverlaysGreen', 'US', '1-n'],
+  0x1203: ['OverlaysBlue', 'US', '1-n'],
+  0x1301: ['ROIArea', 'IS', '1'],
+  0x1302: ['ROIMean', 'DS', '1'],
+  0x1303: ['ROIStandardDeviation', 'DS', '1'],
+  0x1500: ['OverlayLabel', 'LO', '1'],
+  0x3000: ['OverlayData', 'OW', '1'],
+  0x4000: ['OverlayComments', 'LT', '1'],
+};
+
 /** @type {Map<string, { tag: string, formattedTag: string, keyword: string, name: string, vr: string, vm: string }>} */
 export const DICOM_DICTIONARY = new Map();
 
-for (const [hex, entry] of Object.entries(STANDARD_DICT)) {
+const allDictEntries = Object.entries(STANDARD_DICT).slice();
+for (const [elemKey, entry] of Object.entries(OVERLAY_ELEMENTS)) {
+  const hex = `6000${Number(elemKey).toString(16).toUpperCase().padStart(4, '0')}`;
+  if (!(hex in STANDARD_DICT)) {
+    allDictEntries.push([hex, entry]);
+  }
+}
+allDictEntries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+
+for (const [hex, entry] of allDictEntries) {
   const [keyword, vr, vm, explicitName] = entry;
   const formattedTag = `(${hex.slice(0, 4)},${hex.slice(4, 8)})`;
   DICOM_DICTIONARY.set(hex, {
@@ -194,21 +265,7 @@ export function lookupTag(group, element, privateCreators) {
 
   // Repeating overlay group 60xx
   if (group >= 0x6000 && group <= 0x60ff && (group & 1) === 0) {
-    const overlayMap = {
-      0x0010: ['OverlayRows', 'US', '1'],
-      0x0011: ['OverlayColumns', 'US', '1'],
-      0x0015: ['NumberOfFramesInOverlay', 'IS', '1'],
-      0x0022: ['OverlayDescription', 'LO', '1'],
-      0x0040: ['OverlayType', 'CS', '1'],
-      0x0045: ['OverlaySubtype', 'LO', '1'],
-      0x0050: ['OverlayOrigin', 'SS', '2'],
-      0x0051: ['ImageFrameOrigin', 'US', '1'],
-      0x0100: ['OverlayBitsAllocated', 'US', '1'],
-      0x0102: ['OverlayBitPosition', 'US', '1'],
-      0x1500: ['OverlayLabel', 'LO', '1'],
-      0x3000: ['OverlayData', 'OW', '1'],
-    };
-    const hit = overlayMap[element];
+    const hit = OVERLAY_ELEMENTS[element];
     if (hit) {
       return {
         tag: hex,
@@ -259,24 +316,75 @@ export function lookupTag(group, element, privateCreators) {
 }
 
 /**
- * Search standard dictionary entries for Add Tag autocomplete.
+ * Search standard dictionary entries for Add Tag / Batch Edit autocomplete.
+ * Excludes Group FFFE structural delimiter tags, supports optional pre-limit filtering,
+ * and ranks exact/group-prefix matches ahead of substring matches.
+ * @param {string} query
+ * @param {number} [limit]
+ * @param {(entry: { tag: string, formattedTag: string, keyword: string, name: string, vr: string, vm: string }) => boolean} [filterFn]
  */
-export function searchDictionary(query, limit = 25) {
+export function searchDictionary(query, limit = 25, filterFn = null) {
   const q = (query || '').trim().toLowerCase();
-  const isTagLike = /^[0-9a-f(),\s]+$/.test(q);
+  const isTagLike = q !== '' && /^[0-9a-f(),\s]+$/.test(q);
   const qHex = isTagLike ? q.replace(/[^0-9a-f]/g, '') : '';
-  const results = [];
+  const hasGroupSyntax = isTagLike && (q.startsWith('(') || q.includes(','));
+  const groupPrefix = hasGroupSyntax
+    ? q.replace(/^\(/, '').split(',')[0].replace(/[^0-9a-f]/g, '')
+    : '';
+  const elemPart = hasGroupSyntax && q.includes(',')
+    ? q.split(',').slice(1).join('').replace(/[^0-9a-f]/g, '')
+    : '';
+
+  const tier0 = []; // exact tag or exact keyword
+  const tier1 = []; // tag/group prefix or keyword/name prefix
+  const tier2 = []; // substring match
+
   for (const entry of DICOM_DICTIONARY.values()) {
-    if (
-      !q ||
-      (qHex !== '' && entry.tag.toLowerCase().includes(qHex)) ||
-      entry.formattedTag.toLowerCase().includes(q) ||
-      entry.keyword.toLowerCase().includes(q) ||
-      entry.name.toLowerCase().includes(q)
+    // Structural Item/Sequence delimiters (Group FFFE) are never valid addable dataset elements
+    if (entry.tag.startsWith('FFFE')) continue;
+    if (filterFn && !filterFn(entry)) continue;
+
+    if (!q) {
+      tier0.push(entry);
+      if (tier0.length >= limit) break;
+      continue;
+    }
+
+    const tagLower = entry.tag.toLowerCase();
+    const fmtLower = entry.formattedTag.toLowerCase();
+    const kwLower = entry.keyword.toLowerCase();
+    const nameLower = entry.name.toLowerCase();
+
+    if (hasGroupSyntax && groupPrefix) {
+      const groupMatches = tagLower.slice(0, 4).startsWith(groupPrefix);
+      const elemMatches = !elemPart || tagLower.slice(4, 8).startsWith(elemPart);
+      if (groupMatches && elemMatches) {
+        if (qHex.length === 8 && tagLower === qHex) tier0.push(entry);
+        else tier1.push(entry);
+      } else if (fmtLower.includes(q)) {
+        tier2.push(entry);
+      }
+      continue;
+    }
+
+    if ((qHex !== '' && tagLower === qHex) || kwLower === q) {
+      tier0.push(entry);
+    } else if (
+      (qHex !== '' && tagLower.startsWith(qHex)) ||
+      fmtLower.startsWith(q) ||
+      kwLower.startsWith(q) ||
+      nameLower.startsWith(q)
     ) {
-      results.push(entry);
-      if (results.length >= limit) break;
+      tier1.push(entry);
+    } else if (
+      (qHex !== '' && tagLower.includes(qHex)) ||
+      fmtLower.includes(q) ||
+      kwLower.includes(q) ||
+      nameLower.includes(q)
+    ) {
+      tier2.push(entry);
     }
   }
-  return results;
+
+  return tier0.concat(tier1, tier2).slice(0, limit);
 }

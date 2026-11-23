@@ -10,6 +10,7 @@ import {
   VR_32BIT_LENGTH,
   NUMERIC_VRS,
   NULL_PAD_VRS,
+  LUT_DESCRIPTOR_SIGNED_TAGS,
   VR_SPECS,
 } from './vrSpec.js';
 import { getTransferSyntaxInfo, parseTagString } from './dictionary.js';
@@ -57,7 +58,7 @@ function padEven(bytes, padByte) {
 /**
  * Encode numeric / AT value string into binary bytes.
  */
-function encodeBinaryNumeric(value, vr, littleEndian) {
+function encodeBinaryNumeric(value, vr, littleEndian, tag = '') {
   const raw = (value ?? '').trim();
   if (raw === '') return new Uint8Array(0);
   const parts = raw.split('\\').map((s) => s.trim()).filter((s) => s !== '');
@@ -66,6 +67,7 @@ function encodeBinaryNumeric(value, vr, littleEndian) {
   const itemSize = spec?.fixedLength || 4;
   const buf = new Uint8Array(parts.length * itemSize);
   const view = new DataView(buf.buffer);
+  const isSignedLutDesc = vr === 'SS' && LUT_DESCRIPTOR_SIGNED_TAGS.has(tag);
 
   for (let i = 0; i < parts.length; i++) {
     const off = i * itemSize;
@@ -75,7 +77,11 @@ function encodeBinaryNumeric(value, vr, littleEndian) {
         view.setUint16(off, Math.max(0, Math.min(65535, Number(str) || 0)), littleEndian);
         break;
       case 'SS':
-        view.setInt16(off, Math.max(-32768, Math.min(32767, Number(str) || 0)), littleEndian);
+        if (isSignedLutDesc && i !== 1) {
+          view.setUint16(off, Math.max(0, Math.min(65535, Number(str) || 0)), littleEndian);
+        } else {
+          view.setInt16(off, Math.max(-32768, Math.min(32767, Number(str) || 0)), littleEndian);
+        }
         break;
       case 'UL':
         view.setUint32(off, (Number(str) || 0) >>> 0, littleEndian);
@@ -166,6 +172,10 @@ function buildElementHeader(group, element, vr, valueLength, explicit, littleEnd
  * Serialize a single node (including SQ recursion).
  */
 function serializeNode(node, explicit, littleEndian, charset) {
+  if (node.group === 0xfffe) {
+    throw new Error(`DICOM delimiter tag ${node.formattedTag || '(FFFE,xxxx)'} cannot be serialized as a data element.`);
+  }
+
   // 1) Sequence (SQ)
   if (node.isSequence) {
     const itemExplicit = explicit && !node.sequenceEncodedAsUn;
@@ -219,7 +229,7 @@ function serializeNode(node, explicit, littleEndian, charset) {
 
   // 5) Numeric or AT node
   if (NUMERIC_VRS.has(node.vr) || node.vr === 'AT') {
-    const body = encodeBinaryNumeric(node.value, node.vr, littleEndian);
+    const body = encodeBinaryNumeric(node.value, node.vr, littleEndian, node.tag);
     const hdr = buildElementHeader(node.group, node.element, node.vr, body.length, explicit, littleEndian);
     return concatUint8Arrays([hdr, body]);
   }

@@ -75,7 +75,7 @@ document.getElementById('welcome-pwa-icon').innerHTML = icons.download(14);
 document.getElementById('welcome-gh-link').innerHTML = `${icons.github(14)}<span>GitHub</span>`;
 document.getElementById('status-gh-link').innerHTML = `${icons.github(13)}<span>GitHub</span>`;
 
-let _fileInputAppendMode = false;
+let _fileInputAppendMode = true;
 let saveInProgress = false;
 let deferredInstallPrompt = null;
 let pwaJustInstalled = false;
@@ -207,6 +207,7 @@ const treeView = new TreeView(treeBody, store, {
 const modals = new ModalManager(modalRoot, store, {
   onSaveAs: () => saveDocumentAs(),
   onJumpToNode: (id) => {
+    if (store.compareMode) store.exitCompareMode();
     store.setSearchQuery('');
     store.setFilterMode('all');
     store.expandAll();
@@ -290,7 +291,10 @@ function updateToolbarAndHeader() {
   editorView.setAttribute('data-mobile-tab', store.mobileTab);
   mobFilesCount.textContent = String(fileCount);
   mobileNav.querySelectorAll('.mob-tab').forEach((tab) => {
-    tab.classList.toggle('active', tab.dataset.mobTab === store.mobileTab);
+    const isActiveMobTab = inCompare
+      ? store.mobileTab === 'files' && tab.dataset.mobTab === 'files'
+      : tab.dataset.mobTab === store.mobileTab;
+    tab.classList.toggle('active', isActiveMobTab);
   });
 
   // Files toggle button on desktop
@@ -298,17 +302,17 @@ function updateToolbarAndHeader() {
   btnFiles.innerHTML = `${icons.files(15)}<span>${t('btnFiles')} (${fileCount})</span>`;
   btnFiles.classList.toggle('btn-primary', store.showFileList && hasDoc);
 
-  btnUndo.disabled = !store.canUndo();
-  btnRedo.disabled = !store.canRedo();
-  btnAddTag.disabled = !hasDoc;
-  btnAnonymize.disabled = !hasDoc || store.anonymizing || saveInProgress;
-  btnDiff.disabled = !hasDoc;
-  btnRaw.disabled = !hasDoc;
-  btnSaveAs.disabled = !hasDoc || saveInProgress || store.anonymizing;
+  btnUndo.disabled = inCompare || !store.canUndo();
+  btnRedo.disabled = inCompare || !store.canRedo();
+  btnAddTag.disabled = !hasDoc || inCompare;
+  btnAnonymize.disabled = !hasDoc || inCompare || store.anonymizing || saveInProgress;
+  btnDiff.disabled = !hasDoc || inCompare;
+  btnRaw.disabled = !hasDoc || inCompare;
+  btnSaveAs.disabled = !hasDoc || inCompare || saveInProgress || store.anonymizing;
 
   const canDirectSave = hasDoc && Boolean(store.fileHandle);
   btnSaveDirect.classList.toggle('hidden', !canDirectSave);
-  btnSaveDirect.disabled = !canDirectSave || saveInProgress || store.anonymizing;
+  btnSaveDirect.disabled = !canDirectSave || inCompare || saveInProgress || store.anonymizing;
 
   if (!hasDoc) {
     summaryStrip.classList.add('hidden');
@@ -389,6 +393,8 @@ function updateToolbarAndHeader() {
   btnSearchClear.classList.toggle('hidden', !store.searchQuery);
 }
 
+let lastWorkspaceVersion = store.workspaceVersion;
+
 store.subscribe((reason) => {
   if (reason === 'theme') {
     applyTheme();
@@ -405,6 +411,10 @@ store.subscribe((reason) => {
   }
   if (reason === 'lang') {
     applyLanguage();
+  }
+  if (lastWorkspaceVersion !== store.workspaceVersion) {
+    lastWorkspaceVersion = store.workspaceVersion;
+    compareView.reset();
   }
   updateToolbarAndHeader();
   fileListPanel.render();
@@ -435,6 +445,7 @@ async function loadSelectedFileItems(items, { append = true } = {}) {
 
   try {
     const res = await store.loadFileItems(items, { append });
+    if (res.stale) return;
     if (res.alreadyOpenEntry) {
       showToast(t('toastFileAlreadyOpen', { name: res.alreadyOpenEntry.name }), 'info');
     } else if (res.wasAppended) {
@@ -837,7 +848,11 @@ btnSettings.addEventListener('click', () => modals.openSettings());
 mobileNav.addEventListener('click', (e) => {
   const tab = e.target.closest('.mob-tab');
   if (!tab) return;
-  store.setMobileTab(tab.dataset.mobTab);
+  const nextTab = tab.dataset.mobTab;
+  if (store.compareMode && nextTab !== 'files') {
+    store.exitCompareMode();
+  }
+  store.setMobileTab(nextTab);
 });
 
 searchInput.addEventListener('input', () => store.setSearchQuery(searchInput.value));
@@ -857,8 +872,8 @@ btnCollapseAll.addEventListener('click', () => store.collapseAll());
 
 // Global keyboard shortcuts
 window.addEventListener('keydown', (e) => {
-  if (!modalRoot.classList.contains('hidden')) return;
-  if (e.key === 'Escape' && store.compareMode && !e.target.closest('input, textarea, select')) {
+  if (e.defaultPrevented || !modalRoot.classList.contains('hidden')) return;
+  if (e.key === 'Escape' && store.compareMode && !e.target?.closest?.('input, textarea, select')) {
     e.preventDefault();
     store.exitCompareMode();
     return;
@@ -870,6 +885,14 @@ window.addEventListener('keydown', (e) => {
     !e.shiftKey &&
     (e.code === 'KeyW' || e.key.toLowerCase() === 'w')
   ) {
+    if (e.repeat) return;
+    if (
+      e.target?.closest?.(
+        'input:not([type="checkbox"]):not([type="radio"]):not([type="button"]), textarea, select, [contenteditable]'
+      )
+    ) {
+      return;
+    }
     if (store.compareMode || store.activeFileId) {
       e.preventDefault();
       fileTabs.closeActiveTab();
@@ -885,6 +908,7 @@ window.addEventListener('keydown', (e) => {
     openFileDialog();
   } else if (key === 's' && store.doc) {
     e.preventDefault();
+    if (store.compareMode) return;
     if (e.shiftKey || !store.fileHandle) saveDocumentAs();
     else saveDocumentDirect();
   } else if (key === 'f' && store.doc) {
@@ -895,13 +919,13 @@ window.addEventListener('keydown', (e) => {
       searchInput.focus();
       searchInput.select();
     }
-  } else if (key === 'z' && store.doc) {
+  } else if (key === 'z' && store.doc && !store.compareMode) {
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     e.preventDefault();
     if (e.shiftKey) store.redo();
     else store.undo();
-  } else if (key === 'y' && store.doc) {
+  } else if (key === 'y' && store.doc && !store.compareMode) {
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     e.preventDefault();

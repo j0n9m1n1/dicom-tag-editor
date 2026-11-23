@@ -26,6 +26,19 @@ export const NULL_PAD_VRS = new Set([
   'UI', 'OB', 'OD', 'OF', 'OL', 'OV', 'OW', 'UN',
 ]);
 
+/**
+ * DICOM PS3.3 C.11.1 / C.7.6.3.1.5 16-bit LUT Descriptor tags (VM=3, VR "US or SS"):
+ * Even when VR is SS (PixelRepresentation = 1), value #1 (entry count) and value #3 (bits)
+ * are unsigned 16-bit integers; only value #2 (first pixel value mapped) is signed.
+ */
+export const LUT_DESCRIPTOR_SIGNED_TAGS = new Set([
+  '00281100', // GrayLookupTableDescriptor (Ret)
+  '00281101', // RedPaletteColorLookupTableDescriptor
+  '00281102', // GreenPaletteColorLookupTableDescriptor
+  '00281103', // BluePaletteColorLookupTableDescriptor
+  '00283002', // LUTDescriptor
+]);
+
 /** @type {Record<string, {
  *   code: string,
  *   name: string,
@@ -255,9 +268,10 @@ export function getVrSpec(vr) {
  * Validate a tag's string representation against DICOM PS3.5 VR rules.
  * @param {string} vr
  * @param {string} value
+ * @param {string} [tag] Normalized 8-char uppercase hex tag ("GGGGEEEE") for context-dependent rules
  * @returns {{ valid: boolean, severity: 'ok'|'warning'|'error', messages: string[] }}
  */
-export function validateVrValue(vr, value) {
+export function validateVrValue(vr, value, tag = '') {
   const spec = getVrSpec(vr);
   const messages = [];
   let severity = 'ok';
@@ -431,9 +445,10 @@ export function validateVrValue(vr, value) {
             UL: [0, 4294967295],
             SL: [-2147483648, 2147483647],
           };
-          const [min, max] = ranges[vr];
+          const effVr = vr === 'SS' && LUT_DESCRIPTOR_SIGNED_TAGS.has(tag) && i !== 1 ? 'US' : vr;
+          const [min, max] = ranges[effVr];
           if (n < min || n > max) {
-            pushError(`${prefix}${t('valIntRange', { vr, min, max })}`);
+            pushError(`${prefix}${t('valIntRange', { vr: effVr, min, max })}`);
           }
         }
         break;

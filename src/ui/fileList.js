@@ -121,9 +121,6 @@ export class FileListPanel {
     const entry = this.store.files.find((f) => f.id === fileId) || null;
     try {
       await this.store.switchToFile(fileId);
-      if (this.store.compareMode) {
-        this.store.exitCompareMode();
-      }
       if (window.innerWidth <= 820) {
         this.store.setMobileTab('tree');
       }

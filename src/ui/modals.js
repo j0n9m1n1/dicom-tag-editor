@@ -116,7 +116,8 @@ export class ModalManager {
       const vrText = getLocalizedVrText(spec);
       vrHint.innerHTML = `<strong>${spec.code} (${escapeHtml(spec.name)}):</strong> ${escapeHtml(vrText.formatHint)}`;
       valInp.disabled = spec.category === 'sequence' || spec.category === 'binary';
-      const v = validateVrValue(vrSel.value, valInp.value);
+      const parsedTag = parseTagString(tagInp.value);
+      const v = validateVrValue(vrSel.value, valInp.value, parsedTag?.hex || '');
       if (!v.valid) {
         feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(v.messages.join(' / '))}</span>`;
       } else {
@@ -151,7 +152,9 @@ export class ModalManager {
       const item = e.target.closest('.dict-item');
       if (!item) return;
       tagInp.value = item.dataset.tag;
-      vrSel.value = item.dataset.vr;
+      if (item.dataset.vr && ALL_VR_CODES.includes(item.dataset.vr)) {
+        vrSel.value = item.dataset.vr;
+      }
       updateVrHint();
       valInp.focus();
     });
@@ -611,7 +614,8 @@ export class ModalManager {
       const isDel = modeSel.value === 'delete';
       valGroup.classList.toggle('hidden', isDel);
       if (!isDel) {
-        const v = validateVrValue(vrSel.value, valInp.value);
+        const parsedTag = parseTagString(tagInp.value);
+        const v = validateVrValue(vrSel.value, valInp.value, parsedTag?.hex || '');
         feedbackEl.innerHTML = v.valid
           ? ''
           : `<span class="text-danger">${escapeHtml(v.messages.join(' / '))}</span>`;
@@ -619,7 +623,7 @@ export class ModalManager {
     };
 
     const renderSuggestions = (q) => {
-      const hits = searchDictionary(q, 8).filter((h) => editableVrs.includes(h.vr));
+      const hits = searchDictionary(q, 8, (h) => editableVrs.includes(h.vr));
       if (hits.length === 0) {
         listEl.innerHTML = `<div class="dict-empty">${escapeHtml(t('modalAddNoDict'))}</div>`;
         return;

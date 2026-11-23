@@ -9,6 +9,7 @@ import {
   VR_32BIT_LENGTH,
   BINARY_VRS,
   NUMERIC_VRS,
+  LUT_DESCRIPTOR_SIGNED_TAGS,
   VR_SPECS,
   validateVrValue,
 } from './vrSpec.js';
@@ -17,6 +18,7 @@ import {
   tagHex,
   lookupTag,
   getTransferSyntaxInfo,
+  PIXEL_REP_SIGNED_TAGS,
 } from './dictionary.js';
 import { decodeDicomString, usesSpecificCharacterSet } from './charset.js';
 
@@ -174,7 +176,7 @@ async function inflateRawBytes(compressed, offset = 0) {
 /**
  * Decode numeric or AT binary values into display/editable string (backslash-separated for VM > 1).
  */
-export function decodeBinaryNumeric(bytes, vr, littleEndian) {
+export function decodeBinaryNumeric(bytes, vr, littleEndian, tag = '') {
   if (!bytes || bytes.length === 0) return '';
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const vals = [];
@@ -183,9 +185,16 @@ export function decodeBinaryNumeric(bytes, vr, littleEndian) {
     case 'US':
       for (let i = 0; i + 2 <= bytes.length; i += 2) vals.push(String(view.getUint16(i, littleEndian)));
       break;
-    case 'SS':
-      for (let i = 0; i + 2 <= bytes.length; i += 2) vals.push(String(view.getInt16(i, littleEndian)));
+    case 'SS': {
+      const isSignedLutDesc = LUT_DESCRIPTOR_SIGNED_TAGS.has(tag);
+      for (let i = 0, idx = 0; i + 2 <= bytes.length; i += 2, idx++) {
+        const num = isSignedLutDesc && idx !== 1
+          ? view.getUint16(i, littleEndian)
+          : view.getInt16(i, littleEndian);
+        vals.push(String(num));
+      }
       break;
+    }
     case 'UL':
       for (let i = 0; i + 4 <= bytes.length; i += 4) vals.push(String(view.getUint32(i, littleEndian)));
       break;
@@ -307,6 +316,33 @@ function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleE
   );
 }
 
+function applyPixelRepToImplicitNodes(nodes, pixelRep, littleEndian, itemHasOwnPixelRepMap) {
+  const targetVr = pixelRep === 1 ? 'SS' : 'US';
+  for (const node of nodes || []) {
+    if (node.isSequence && node.items) {
+      const itemLittleEndian = node.sequenceEncodedAsUn || littleEndian;
+      for (const item of node.items) {
+        if (!itemHasOwnPixelRepMap.get(item)) {
+          applyPixelRepToImplicitNodes(item.children, pixelRep, itemLittleEndian, itemHasOwnPixelRepMap);
+        }
+      }
+      continue;
+    }
+    if (
+      node.vrSource === 'dict' &&
+      PIXEL_REP_SIGNED_TAGS.has(node.tag) &&
+      node.rawBytes instanceof Uint8Array &&
+      node.vr !== targetVr
+    ) {
+      const decoded = decodeBinaryNumeric(node.rawBytes, targetVr, littleEndian, node.tag);
+      node.vr = targetVr;
+      node.originalValue = decoded;
+      node.value = decoded;
+      node.validation = validateVrValue(targetVr, decoded, node.tag);
+    }
+  }
+}
+
 /**
  * Parse a dataset range into an array of tag nodes.
  */
@@ -317,11 +353,15 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     isMetaSection = false,
     stopAfterGroup0002 = false,
     inheritedCharset = '',
+    inheritedPixelRepresentation = null,
     expectItemDelimiter = false,
+    itemHasOwnPixelRepMap = new WeakMap(),
   } = opts;
 
   let pos = startOffset;
   let charset = inheritedCharset;
+  let pixelRepresentation = inheritedPixelRepresentation;
+  let hasOwnPixelRepresentation = false;
   const nodes = [];
   const privateCreators = new Map();
 
@@ -331,12 +371,15 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     const element = view.getUint16(pos + 2, littleEndian);
 
     if (stopAfterGroup0002 && group !== 0x0002) {
-      return { nodes, nextOffset: tagStart };
+      return { nodes, nextOffset: tagStart, hasOwnPixelRepresentation };
     }
 
     if (group === 0xfffe) {
       if (expectItemDelimiter && element === 0xe00d && view.getUint32(pos + 4, littleEndian) === 0) {
-        return { nodes, nextOffset: pos + 8 };
+        if (hasOwnPixelRepresentation && pixelRepresentation !== inheritedPixelRepresentation) {
+          applyPixelRepToImplicitNodes(nodes, pixelRepresentation, littleEndian, itemHasOwnPixelRepMap);
+        }
+        return { nodes, nextOffset: pos + 8, hasOwnPixelRepresentation };
       }
       throw new DicomParseError(
         'UNEXPECTED_ITEM',
@@ -389,6 +432,10 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     const undefinedLength = length === 0xffffffff;
     const hex = tagHex(group, element);
 
+    if (vrSource === 'dict' && PIXEL_REP_SIGNED_TAGS.has(hex) && pixelRepresentation === 1) {
+      vr = 'SS';
+    }
+
     // PS3.5 6.2.2 defines an explicit UN sequence's value as Implicit VR Little Endian.
     const sequenceEncodedAsUn = explicit && vrSource === 'explicit' && vr === 'UN' && undefinedLength && hex !== '7FE00010';
     if (
@@ -439,9 +486,15 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
           explicit: itemExplicit,
           littleEndian: itemLittleEndian,
           inheritedCharset: charset,
+          inheritedPixelRepresentation: pixelRepresentation,
           expectItemDelimiter: itemUndef,
+          itemHasOwnPixelRepMap,
         });
-        items.push({ id: genNodeId(), undefinedLength: itemUndef, children: itemResult.nodes });
+        const itemObj = { id: genNodeId(), undefinedLength: itemUndef, children: itemResult.nodes };
+        if (itemResult.hasOwnPixelRepresentation) {
+          itemHasOwnPixelRepMap.set(itemObj, true);
+        }
+        items.push(itemObj);
         sqPos = itemResult.nextOffset;
       }
 
@@ -541,7 +594,7 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     if (isBinary) {
       decodedValue = `[Binary ${vr}: ${formatByteSize(rawBytes.length)}]`;
     } else if (NUMERIC_VRS.has(vr) || vr === 'AT') {
-      decodedValue = decodeBinaryNumeric(rawBytes, vr, littleEndian);
+      decodedValue = decodeBinaryNumeric(rawBytes, vr, littleEndian, hex);
     } else {
       decodedValue = decodeDicomString(rawBytes, vr, charset);
     }
@@ -549,6 +602,16 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     // Track SpecificCharacterSet for subsequent tags in this dataset
     if (hex === '00080005') {
       charset = decodedValue;
+    }
+
+    // Track PixelRepresentation (0 = unsigned US, 1 = signed SS) for Implicit VR US/SS tags
+    if (hex === '00280103' && !isBinary) {
+      const firstVal = decodedValue.split('\\')[0]?.trim();
+      const rep = firstVal !== '' ? Number(firstVal) : NaN;
+      if (rep === 0 || rep === 1) {
+        pixelRepresentation = rep;
+        hasOwnPixelRepresentation = true;
+      }
     }
 
     // Track Private Creator IDs
@@ -566,7 +629,7 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
 
     const validation = isBinary
       ? { valid: true, severity: 'ok', messages: [] }
-      : validateVrValue(vr, decodedValue);
+      : validateVrValue(vr, decodedValue, hex);
 
     nodes.push({
       id: genNodeId(),
@@ -613,7 +676,10 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       { offset: pos, availableBytes: endOffset - pos }
     );
   }
-  return { nodes, nextOffset: pos };
+  if (hasOwnPixelRepresentation && pixelRepresentation !== inheritedPixelRepresentation) {
+    applyPixelRepToImplicitNodes(nodes, pixelRepresentation, littleEndian, itemHasOwnPixelRepMap);
+  }
+  return { nodes, nextOffset: pos, hasOwnPixelRepresentation };
 }
 
 export function formatByteSize(bytes) {

@@ -43,9 +43,21 @@ export class FileTabsBar {
     this._lastActiveKey = null;
     this._dragFileId = null;
     this._ctxMenuEl = null;
+    this._ctxTimer = null;
+    this._ctxScrollEl = null;
     this._boundDismissCtx = () => this._closeContextMenu();
+    this._boundKeyDownCtx = (e) => {
+      if (e.key === 'Escape' && this._ctxMenuEl) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        this._closeContextMenu();
+      }
+    };
+    this._boundClearDrag = () => this._clearDragState();
 
     this.container.addEventListener('click', (e) => this._onClick(e));
+    this.container.addEventListener('keydown', (e) => this._onKeyDown(e));
     this.container.addEventListener('mousedown', (e) => {
       // Prevent browser middle-click autoscroll cursor on tabs
       if (e.button === 1 && e.target.closest('.file-tab')) {
@@ -61,16 +73,19 @@ export class FileTabsBar {
     this.container.addEventListener('dragover', (e) => this._onDragOver(e));
     this.container.addEventListener('dragleave', (e) => this._onDragLeave(e));
     this.container.addEventListener('drop', (e) => this._onDrop(e));
-    this.container.addEventListener('dragend', () => this._clearDragState());
+    this.container.addEventListener('dragend', this._boundClearDrag);
+    window.addEventListener('dragend', this._boundClearDrag);
   }
 
   render() {
+    this._closeContextMenu();
+    this._clearDragState();
+
     const files = this.store.files || [];
     const hasFiles = files.length > 0 && Boolean(this.store.doc);
     this.container.classList.toggle('hidden', !hasFiles);
 
     if (!hasFiles) {
-      this._closeContextMenu();
       this.container.innerHTML = '';
       this._lastActiveKey = null;
       return;
@@ -100,6 +115,7 @@ export class FileTabsBar {
         return `
           <div class="file-tab ${isActive ? 'active' : ''} ${entry.error ? 'has-error' : ''}"
                role="tab"
+               tabindex="0"
                aria-selected="${isActive ? 'true' : 'false'}"
                data-file-id="${entry.id}"
                draggable="true"
@@ -119,7 +135,7 @@ export class FileTabsBar {
     const compareTabHtml = files.length >= 2
       ? inCompare
         ? `
-          <div class="file-tab file-tab-compare active" role="tab" aria-selected="true" data-tab-action="compare" title="${escapeHtml(t('tabCompareTitle'))}">
+          <div class="file-tab file-tab-compare active" role="tab" tabindex="0" aria-selected="true" data-tab-action="compare" title="${escapeHtml(t('tabCompareTitle'))}">
             ${icons.diff(13)}
             <span class="file-tab-label">${escapeHtml(t('tabCompareLabel'))}</span>
             <button type="button"
@@ -194,6 +210,55 @@ export class FileTabsBar {
     await this.store.removeFiles(entries.map((e) => e.id));
   }
 
+  async _activateFileTab(fileId) {
+    const entry = this.store.files.find((f) => f.id === fileId) || null;
+    try {
+      await this.store.switchToFile(fileId);
+    } catch (err) {
+      this.callbacks.onSwitchError?.(err, entry);
+      this.render();
+    }
+  }
+
+  async _onKeyDown(e) {
+    if (e.target.closest('button')) return;
+    const tab = e.target.closest('.file-tab');
+    if (!tab) return;
+
+    const tabs = Array.from(this.container.querySelectorAll('.file-tab'));
+    const curIdx = tabs.indexOf(tab);
+
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft' || e.key === 'Home' || e.key === 'End') {
+      if (tabs.length === 0) return;
+      e.preventDefault();
+      let nextIdx = curIdx;
+      if (e.key === 'ArrowRight') nextIdx = (curIdx + 1) % tabs.length;
+      else if (e.key === 'ArrowLeft') nextIdx = (curIdx - 1 + tabs.length) % tabs.length;
+      else if (e.key === 'Home') nextIdx = 0;
+      else if (e.key === 'End') nextIdx = tabs.length - 1;
+      tabs[nextIdx]?.focus();
+      return;
+    }
+
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (tab.dataset.fileId) {
+        const fid = tab.dataset.fileId;
+        await this._activateFileTab(fid);
+        this.container.querySelector(`.file-tab[data-file-id="${fid}"]`)?.focus();
+      } else if (tab.dataset.tabAction === 'compare' && !this.store.compareMode) {
+        this.callbacks.onCompare?.();
+      }
+      return;
+    }
+
+    if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && tab.dataset.fileId) {
+      e.preventDefault();
+      const rect = tab.getBoundingClientRect();
+      this._openFileContextMenu(tab.dataset.fileId, rect.left + 8, rect.bottom + 2);
+    }
+  }
+
   async _onClick(e) {
     const closeCompareBtn = e.target.closest('[data-tab-action="close-compare"]');
     if (closeCompareBtn) {
@@ -221,17 +286,7 @@ export class FileTabsBar {
 
     const tab = e.target.closest('.file-tab[data-file-id]');
     if (!tab) return;
-    const fileId = tab.dataset.fileId;
-    const entry = this.store.files.find((f) => f.id === fileId) || null;
-    try {
-      await this.store.switchToFile(fileId);
-      if (this.store.compareMode) {
-        this.store.exitCompareMode();
-      }
-    } catch (err) {
-      this.callbacks.onSwitchError?.(err, entry);
-      this.render();
-    }
+    await this._activateFileTab(tab.dataset.fileId);
   }
 
   async _onAuxClick(e) {
@@ -279,6 +334,7 @@ export class FileTabsBar {
   _onDragLeave(e) {
     const tab = e.target.closest('.file-tab[data-file-id]');
     if (!tab) return;
+    if (e.relatedTarget && tab.contains(e.relatedTarget)) return;
     tab.classList.remove('tab-drop-before', 'tab-drop-after');
   }
 
@@ -315,7 +371,10 @@ export class FileTabsBar {
     const tab = e.target.closest('.file-tab[data-file-id]');
     if (!tab) return;
     e.preventDefault();
-    const fileId = tab.dataset.fileId;
+    this._openFileContextMenu(tab.dataset.fileId, e.clientX, e.clientY);
+  }
+
+  _openFileContextMenu(fileId, x, y) {
     const files = this.store.files || [];
     const idx = files.findIndex((f) => f.id === fileId);
     if (idx < 0) return;
@@ -324,7 +383,7 @@ export class FileTabsBar {
     const hasOthers = files.length >= 2;
     const hasRight = idx < files.length - 1;
 
-    this._openContextMenu(e.clientX, e.clientY, [
+    this._openContextMenu(x, y, [
       ...(canCompareWithActive
         ? [{
             label: t('tabCtxCompareWithActive'),
@@ -383,7 +442,12 @@ export class FileTabsBar {
     menu.style.top = `${top}px`;
 
     this._ctxMenuEl = menu;
-    setTimeout(() => {
+    this._ctxScrollEl = this.container.querySelector('#file-tabs-scroll');
+    window.addEventListener('keydown', this._boundKeyDownCtx, true);
+    this._ctxScrollEl?.addEventListener('scroll', this._boundDismissCtx, { passive: true });
+    this._ctxTimer = setTimeout(() => {
+      this._ctxTimer = null;
+      if (this._ctxMenuEl !== menu) return;
       window.addEventListener('click', this._boundDismissCtx);
       window.addEventListener('contextmenu', this._boundDismissCtx);
       window.addEventListener('resize', this._boundDismissCtx);
@@ -391,11 +455,20 @@ export class FileTabsBar {
   }
 
   _closeContextMenu() {
-    if (!this._ctxMenuEl) return;
-    this._ctxMenuEl.remove();
-    this._ctxMenuEl = null;
+    if (this._ctxTimer !== null) {
+      clearTimeout(this._ctxTimer);
+      this._ctxTimer = null;
+    }
+    window.removeEventListener('keydown', this._boundKeyDownCtx, true);
     window.removeEventListener('click', this._boundDismissCtx);
     window.removeEventListener('contextmenu', this._boundDismissCtx);
     window.removeEventListener('resize', this._boundDismissCtx);
+    if (this._ctxScrollEl) {
+      this._ctxScrollEl.removeEventListener('scroll', this._boundDismissCtx);
+      this._ctxScrollEl = null;
+    }
+    if (!this._ctxMenuEl) return;
+    this._ctxMenuEl.remove();
+    this._ctxMenuEl = null;
   }
 }

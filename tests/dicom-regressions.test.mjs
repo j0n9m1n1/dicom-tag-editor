@@ -7,7 +7,7 @@ import { generateSampleDicomBuffer } from '../src/dicom/sampleGenerator.js';
 import { writeDicomDocument } from '../src/dicom/writer.js';
 import { validateVrValue } from '../src/dicom/vrSpec.js';
 import { formatDicomJson } from '../src/dicom/dcmdump.js';
-import { DICOM_DICTIONARY, lookupTag, lookupUidName } from '../src/dicom/dictionary.js';
+import { DICOM_DICTIONARY, lookupTag, lookupUidName, searchDictionary } from '../src/dicom/dictionary.js';
 import { buildCompareRows } from '../src/ui/compareView.js';
 import { formatTabLabel } from '../src/ui/fileTabs.js';
 import { buildZipArchive } from '../src/utils/zipWriter.js';
@@ -467,4 +467,359 @@ test('file tab label middle-truncates long DICOM UID filenames and store support
   await store.removeFiles([idB, idC]);
   assert.deepEqual(store.files.map((f) => f.id), [idA]);
   assert.equal(store.activeFileId, idA);
+});
+
+test('Group FFFE delimiters are blocked from dictionary search, addTag, batchEdit, and writer while SQ remains intact', async () => {
+  assert.deepEqual(searchDictionary('FFFE', 10), []);
+  assert.equal(searchDictionary('Item', 50).some((e) => e.tag.startsWith('FFFE')), false);
+
+  const bytes = await generateSampleDicomBuffer();
+  const doc = await parseDicomBuffer(bytes, 'fffe.dcm');
+  const store = new AppStore();
+  store.loadDocument(doc);
+
+  assert.equal(store.addTag({ group: 0xfffe, element: 0xe000, vr: 'UN', value: '' }).locked, true);
+  assert.equal(store.addTag({ group: 0xfffe, element: 0xe0dd, vr: 'UN', value: '' }).locked, true);
+  assert.deepEqual(
+    await store.batchEditAcrossFiles({ group: 0xfffe, element: 0xe000, vr: 'LO', value: 'bad', mode: 'set' }),
+    { affectedFiles: 0, locked: true }
+  );
+
+  // Normal SQ still round-trips cleanly
+  assert.deepEqual(await writeDicomDocument(doc), new Uint8Array(bytes));
+
+  // Writer also defends against raw Group FFFE elements injected into datasetNodes
+  doc.datasetNodes.push({
+    id: 'bad_fffe',
+    group: 0xfffe,
+    element: 0xe000,
+    tag: 'FFFEE000',
+    formattedTag: '(FFFE,E000)',
+    vr: 'UN',
+    isSequence: false,
+    isBinary: true,
+    rawBytes: new Uint8Array(0),
+    value: '',
+    status: 'added',
+  });
+  await assert.rejects(writeDicomDocument(doc), /FFFE/);
+});
+
+test('dictionary search prioritizes 0002/0040 groups, supports pre-limit filtering, and resolves repeating Overlay tags', () => {
+  const g0002 = searchDictionary('0002', 8);
+  assert.equal(g0002.length, 8);
+  assert.ok(g0002.every((e) => e.tag.startsWith('0002')));
+
+  const g0002Fmt = searchDictionary('(0002,', 8);
+  assert.equal(g0002Fmt.length, 8);
+  assert.ok(g0002Fmt.every((e) => e.tag.startsWith('0002')));
+
+  const g0040 = searchDictionary('0040', 8);
+  assert.equal(g0040.length, 8);
+  assert.ok(g0040.every((e) => e.tag.startsWith('0040')));
+
+  const editableSeq = searchDictionary('Sequence', 8, (e) => e.vr !== 'SQ' && e.vr !== 'OB' && e.vr !== 'OW' && e.vr !== 'UN');
+  assert.ok(editableSeq.length > 0);
+  assert.ok(editableSeq.every((e) => e.vr !== 'SQ'));
+
+  assert.equal(lookupTag(0x6000, 0x1301).keyword, 'ROIArea');
+  assert.equal(lookupTag(0x6000, 0x1301).vr, 'IS');
+  assert.equal(lookupTag(0x6002, 0x1302).keyword, 'ROIMean');
+  assert.equal(lookupTag(0x6004, 0x1303).keyword, 'ROIStandardDeviation');
+  assert.equal(lookupTag(0x6000, 0x1001).keyword, 'OverlayActivationLayer');
+});
+
+test('Implicit VR signed pixel-dependent tags resolve SS/US by PixelRepresentation across nested items, JSON, edit, and save', async () => {
+  const implicitU16 = (g, e, vals) => {
+    const b = Buffer.alloc(8 + vals.length * 2);
+    b.writeUInt16LE(g, 0);
+    b.writeUInt16LE(e, 2);
+    b.writeUInt32LE(vals.length * 2, 4);
+    vals.forEach((v, i) => b.writeUInt16LE(v & 0xffff, 8 + i * 2));
+    return b;
+  };
+  const implicitItem = (payload) => {
+    const hdr = Buffer.alloc(8);
+    hdr.writeUInt16LE(0xfffe, 0);
+    hdr.writeUInt16LE(0xe000, 2);
+    hdr.writeUInt32LE(payload.length, 4);
+    return Buffer.concat([hdr, payload]);
+  };
+  const implicitSq = (g, e, items) => {
+    const body = Buffer.concat(items);
+    const hdr = Buffer.alloc(8);
+    hdr.writeUInt16LE(g, 0);
+    hdr.writeUInt16LE(e, 2);
+    hdr.writeUInt32LE(body.length, 4);
+    return Buffer.concat([hdr, body]);
+  };
+
+  // Signed Implicit VR dataset: (0018,9810) before (0028,0103)=1, (0028,0120)=-1024, (0028,0121)=-100,
+  // signed Palette LUT Descriptor (0028,1101) & nested LUT Descriptor (0028,3002) with unsigned #1/#3 & signed #2
+  const itemInherit = implicitItem(implicitU16(0x0028, 0x3002, [0x9c40, 0xffff, 0x0010]));
+  const itemOverrideUnsigned = implicitItem(
+    Buffer.concat([implicitU16(0x0028, 0x0103, [0]), implicitU16(0x0028, 0x0120, [0xfc00])])
+  );
+  const signedBytes = Buffer.concat([
+    fileMeta('1.2.840.10008.1.2'),
+    implicitU16(0x0018, 0x9810, [-50]),
+    implicitU16(0x0028, 0x0103, [1]),
+    implicitU16(0x0028, 0x0120, [-1024]),
+    implicitU16(0x0028, 0x0121, [-100]),
+    implicitU16(0x0028, 0x1101, [0x9c40, 0xffff, 0x0010]),
+    implicitSq(0x0028, 0x3010, [itemInherit, itemOverrideUnsigned]),
+  ]);
+
+  const doc = await parse(signedBytes);
+  const zeroVel = doc.datasetNodes.find((n) => n.tag === '00189810');
+  const padVal = doc.datasetNodes.find((n) => n.tag === '00280120');
+  const padLimit = doc.datasetNodes.find((n) => n.tag === '00280121');
+  const redLutDesc = doc.datasetNodes.find((n) => n.tag === '00281101');
+  const lutSq = doc.datasetNodes.find((n) => n.tag === '00283010');
+  const nestedLutDesc = lutSq.items[0].children.find((n) => n.tag === '00283002');
+  const nestedUnsignedPad = lutSq.items[1].children.find((n) => n.tag === '00280120');
+
+  assert.equal(zeroVel.vr, 'SS');
+  assert.equal(zeroVel.value, '-50');
+  assert.equal(padVal.vr, 'SS');
+  assert.equal(padVal.value, '-1024');
+  assert.equal(padLimit.vr, 'SS');
+  assert.equal(padLimit.value, '-100');
+  assert.equal(redLutDesc.vr, 'SS');
+  assert.equal(redLutDesc.value, '40000\\-1\\16');
+  assert.equal(redLutDesc.validation.valid, true);
+  assert.equal(nestedLutDesc.vr, 'SS');
+  assert.equal(nestedLutDesc.value, '40000\\-1\\16');
+  assert.equal(nestedLutDesc.validation.valid, true);
+  assert.equal(nestedUnsignedPad.vr, 'US');
+  assert.equal(nestedUnsignedPad.value, '64512');
+
+  // Validation enforces unsigned #1/#3 and signed #2 for signed LUT Descriptors
+  assert.equal(validateVrValue('SS', '40000\\-1\\16', '00283002').valid, true);
+  assert.equal(validateVrValue('SS', '-1\\-1\\16', '00283002').valid, false);
+  assert.equal(validateVrValue('SS', '40000\\40000\\16', '00283002').valid, false);
+
+  const json = JSON.parse(formatDicomJson(doc));
+  assert.equal(json.dataset['00280120'].vr, 'SS');
+  assert.deepEqual(json.dataset['00280120'].Value, ['-1024']);
+  assert.deepEqual(json.dataset['00281101'].Value, ['40000', '-1', '16']);
+  assert.deepEqual(json.dataset['00283010'].Value[0]['00283002'].Value, ['40000', '-1', '16']);
+
+  // Edit & round-trip save preserves unsigned #1/#3 (no 32767 clamp) and signed #2
+  const store = new AppStore();
+  store.loadDocument(doc);
+  store.updateNodeValue(padVal.id, '-2048');
+  store.updateNodeValue(nestedLutDesc.id, '40000\\-2\\16');
+  store.updateNodeValue(redLutDesc.id, '40000\\-3\\16');
+  assert.equal(padVal.validation.valid, true);
+  assert.equal(nestedLutDesc.validation.valid, true);
+  assert.equal(redLutDesc.validation.valid, true);
+  const reopened = await parse(await writeDicomDocument(doc));
+  assert.equal(reopened.datasetNodes.find((n) => n.tag === '00280120').vr, 'SS');
+  assert.equal(reopened.datasetNodes.find((n) => n.tag === '00280120').value, '-2048');
+  assert.equal(reopened.datasetNodes.find((n) => n.tag === '00281101').value, '40000\\-3\\16');
+  assert.equal(
+    reopened.datasetNodes.find((n) => n.tag === '00283010').items[0].children.find((n) => n.tag === '00283002').value,
+    '40000\\-2\\16'
+  );
+
+  // Explicit VR keeps encoded US on (0028,0120) and applies PS3.3 C.11.1 on explicit SS (0028,3002)
+  const explicitDocBytes = Buffer.concat([
+    fileMeta(explicitLittleEndian),
+    hex('28 00 03 01 55 53 02 00 01 00'), // (0028,0103) US 1
+    hex('28 00 20 01 55 53 02 00 00 fc'), // (0028,0120) US 64512
+    hex('28 00 02 30 53 53 06 00 40 9c ff ff 10 00'), // (0028,3002) SS 40000\-1\16
+  ]);
+  const expDoc = await parse(explicitDocBytes);
+  assert.equal(expDoc.datasetNodes.find((n) => n.tag === '00280120').vr, 'US');
+  assert.equal(expDoc.datasetNodes.find((n) => n.tag === '00280120').value, '64512');
+  assert.equal(expDoc.datasetNodes.find((n) => n.tag === '00283002').vr, 'SS');
+  assert.equal(expDoc.datasetNodes.find((n) => n.tag === '00283002').value, '40000\\-1\\16');
+});
+
+test('AppStore handles compare exit transitions, async switch races, and corrupt-only cleanup cleanly', async () => {
+  const bytes = await generateSampleDicomBuffer();
+  const a = await parseDicomBuffer(bytes, 'a.dcm');
+  const b = await parseDicomBuffer(bytes, 'b.dcm');
+  const c = await parseDicomBuffer(bytes, 'c.dcm');
+
+  const store = new AppStore();
+  store.loadDocument(a);
+  store.loadDocument(b, null, { append: true });
+  store.enterCompareMode();
+  assert.equal(store.compareMode, true);
+
+  // Appending a new document exits Compare mode
+  store.loadDocument(c, null, { append: true });
+  assert.equal(store.compareMode, false);
+  assert.equal(store.doc, c);
+
+  // Switching to the already-active file while in Compare exits Compare mode
+  store.enterCompareMode();
+  await store.switchToFile(store.activeFileId);
+  assert.equal(store.compareMode, false);
+
+  // Replacing workspace (append: false) clears Compare mode & bumps workspaceVersion
+  store.enterCompareMode();
+  const prevWsVer = store.workspaceVersion;
+  store.loadDocument(await parseDicomBuffer(bytes, 'fresh.dcm'), null, { append: false });
+  assert.equal(store.compareMode, false);
+  assert.equal(store.compareFileAId, null);
+  assert.equal(store.compareFileBId, null);
+  assert.ok(store.workspaceVersion > prevWsVer);
+
+  // Async race: slow switch closed mid-flight must not reactivate, and fast re-switch must win
+  const raceStore = new AppStore();
+  let resolveSlow;
+  const slowSource = {
+    size: bytes.byteLength,
+    arrayBuffer: () => new Promise((r) => { resolveSlow = () => r(bytes.slice(0)); }),
+  };
+  await raceStore.loadFileItems([
+    { name: 'first.dcm', arrayBuffer: bytes.slice(0) },
+    { name: 'slow.dcm', size: bytes.byteLength, sourceFile: slowSource },
+    { name: 'fast.dcm', arrayBuffer: bytes.slice(0) },
+  ]);
+  const [firstId, slowId, fastId] = raceStore.files.map((f) => f.id);
+  const slowSwitch = raceStore.switchToFile(slowId);
+  await raceStore.switchToFile(fastId);
+  assert.equal(raceStore.activeFileId, fastId);
+  resolveSlow();
+  await slowSwitch;
+  assert.equal(raceStore.activeFileId, fastId);
+
+  // Closing an entry while switching to it must not resurrect it
+  const raceStore2 = new AppStore();
+  let resolveSlow2;
+  const slowSource2 = {
+    size: bytes.byteLength,
+    arrayBuffer: () => new Promise((r) => { resolveSlow2 = () => r(bytes.slice(0)); }),
+  };
+  await raceStore2.loadFileItems([
+    { name: 'keep.dcm', arrayBuffer: bytes.slice(0) },
+    { name: 'closing.dcm', size: bytes.byteLength, sourceFile: slowSource2 },
+  ]);
+  const [keepId, closingId] = raceStore2.files.map((f) => f.id);
+  const pCloseRace = raceStore2.switchToFile(closingId);
+  await raceStore2.removeFile(closingId);
+  resolveSlow2();
+  await pCloseRace;
+  assert.equal(raceStore2.activeFileId, keepId);
+  assert.equal(raceStore2.files.length, 1);
+
+  // Closing the only valid file when only a corrupt entry remains resets cleanly to empty workspace
+  const badStore = new AppStore();
+  const corruptBuf = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52]).buffer;
+  await badStore.loadFileItems([
+    { name: 'good.dcm', arrayBuffer: bytes.slice(0) },
+    { name: 'corrupt.dcm', arrayBuffer: corruptBuf },
+  ]);
+  assert.equal(badStore.files.length, 2);
+  await badStore.removeFile(badStore.files[0].id);
+  assert.equal(badStore.files.length, 0);
+  assert.equal(badStore.doc, null);
+  assert.equal(badStore.activeFileId, null);
+  assert.equal(badStore.compareMode, false);
+
+  // Stale slow corrupt load on empty workspace must NOT wipe a synchronously loaded newer document Y
+  const staleFailStore = new AppStore();
+  let resolveCorruptX;
+  const slowCorruptX = {
+    size: corruptBuf.byteLength,
+    arrayBuffer: () => new Promise((r) => { resolveCorruptX = () => r(corruptBuf.slice(0)); }),
+  };
+  const pendingCorrupt = staleFailStore.loadFileItems([{ name: 'slow_bad.dcm', size: corruptBuf.byteLength, sourceFile: slowCorruptX }]);
+  const docY = await parseDicomBuffer(bytes, 'y.dcm');
+  staleFailStore.loadDocument(docY);
+  resolveCorruptX();
+  await assert.rejects(pendingCorrupt);
+  assert.equal(staleFailStore.doc, docY);
+  assert.equal(staleFailStore.files.length, 1);
+  assert.equal(staleFailStore.files[0].doc, docY);
+
+  // Stale slow duplicate check must NOT switch away from a newer active file
+  const staleDupStore = new AppStore();
+  const fileA = new File([bytes], 'dup.dcm');
+  const fileB = new File([bytes], 'other.dcm');
+  await staleDupStore.loadFileItems([{ name: 'dup.dcm', size: fileA.size, sourceFile: fileA }]);
+  await staleDupStore.loadFileItems([{ name: 'other.dcm', size: fileB.size, sourceFile: fileB }]);
+  const [dupAId, otherBId] = staleDupStore.files.map((f) => f.id);
+  let resolveDupSlice;
+  const slowDupSource = {
+    size: fileA.size,
+    slice: () => ({ arrayBuffer: () => new Promise((r) => { resolveDupSlice = () => r(bytes.slice(0)); }) }),
+  };
+  const pendingDup = staleDupStore.loadFileItems([{ name: 'dup.dcm', size: fileA.size, sourceFile: slowDupSource }]);
+  await staleDupStore.switchToFile(otherBId);
+  resolveDupSlice();
+  const dupRes = await pendingDup;
+  assert.equal(dupRes.stale, true);
+  assert.equal(staleDupStore.activeFileId, otherBId);
+  assert.notEqual(staleDupStore.activeFileId, dupAId);
+
+  // Symmetric recovery: slow valid A on empty workspace -> append corrupt B fails -> A finishes and recovers cleanly
+  const recoverStore = new AppStore();
+  let resolveSlowA;
+  const slowValidA = {
+    size: bytes.byteLength,
+    arrayBuffer: () => new Promise((r) => { resolveSlowA = () => r(bytes.slice(0)); }),
+  };
+  const pendingA = recoverStore.loadFileItems([{ name: 'slow_valid_a.dcm', size: bytes.byteLength, sourceFile: slowValidA }]);
+  await assert.rejects(
+    recoverStore.loadFileItems([{ name: 'bad_b.dcm', arrayBuffer: corruptBuf.slice(0) }], { append: true })
+  );
+  assert.equal(recoverStore.files.length, 1);
+  assert.equal(recoverStore.doc, null);
+  resolveSlowA();
+  const resA = await pendingA;
+  assert.equal(Boolean(resA.stale), false);
+  assert.equal(recoverStore.files.length, 1);
+  assert.equal(recoverStore.doc?.fileName, 'slow_valid_a.dcm');
+  assert.equal(recoverStore.activeFileId, recoverStore.files[0].id);
+
+  // Negative guard: recovery MUST NOT fire after closeAll() (new workspaceVersion) or when another doc is already active
+  const noRecoverStore = new AppStore();
+  let resolveClosedA;
+  const slowClosedA = {
+    size: bytes.byteLength,
+    arrayBuffer: () => new Promise((r) => { resolveClosedA = () => r(bytes.slice(0)); }),
+  };
+  const pendingClosedA = noRecoverStore.loadFileItems([{ name: 'closed_a.dcm', size: bytes.byteLength, sourceFile: slowClosedA }]);
+  noRecoverStore.closeAll();
+  resolveClosedA();
+  const closedRes = await pendingClosedA;
+  assert.equal(closedRes.stale, true);
+  assert.equal(noRecoverStore.files.length, 0);
+  assert.equal(noRecoverStore.doc, null);
+});
+
+test('buildCompareRows detects binary VR differences and preserves SQ parent context under diffOnly', async () => {
+  const bytes = await generateSampleDicomBuffer();
+  const a = await parseDicomBuffer(bytes, 'a.dcm');
+  const b = await parseDicomBuffer(bytes, 'b.dcm');
+
+  // Same rawBytes on (0009,1002), different binary VR (OB vs OW)
+  const privB = b.datasetNodes.find((n) => n.tag === '00091002');
+  privB.vr = 'OW';
+
+  // Different nested leaf inside (0008,1115) -> (0008,114A) -> (0008,1155) with same SQ item counts
+  const leafB = b.datasetNodes
+    .find((n) => n.tag === '00081115').items[0].children
+    .find((n) => n.tag === '0008114A').items[0].children
+    .find((n) => n.tag === '00081155');
+  leafB.value = '2.25.999999999';
+
+  const res = buildCompareRows(a, b, { diffOnly: true });
+  assert.equal(res.diffs, 2);
+  assert.equal(res.changed, 2);
+  assert.ok(res.rows.some((r) => r.a?.tag === '(0009,1002)' && r.kind === 'changed'));
+
+  const sqParentIdx = res.rows.findIndex((r) => r.a?.tag === '(0008,1115)');
+  const sqChildIdx = res.rows.findIndex((r) => r.a?.tag === '(0008,114A)');
+  const leafIdx = res.rows.findIndex((r) => r.a?.tag === '(0008,1155)');
+  assert.ok(sqParentIdx >= 0 && res.rows[sqParentIdx].isContext === true);
+  assert.equal(sqChildIdx, sqParentIdx + 1);
+  assert.equal(res.rows[sqChildIdx].isContext, true);
+  assert.equal(leafIdx, sqChildIdx + 1);
+  assert.equal(res.rows[leafIdx].kind, 'changed');
 });
