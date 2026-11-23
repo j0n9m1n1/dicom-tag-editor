@@ -426,15 +426,18 @@ code {
    ============================================================================ */
 .welcome-view {
   flex: 1;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 28px;
+  padding: 36px 24px 48px;
+  overflow-y: auto;
 }
 
 .welcome-card {
   max-width: 720px;
   width: 100%;
+  flex-shrink: 0;
   background: var(--bg-surface);
   border: 1.5px dashed var(--border-strong);
   border-radius: var(--radius-lg);
@@ -523,6 +526,122 @@ code {
 }
 .welcome-pwa-link:hover {
   opacity: 0.78;
+}
+
+/* Below-the-fold Welcome Guide & FAQ (SEO-friendly, understated) */
+.welcome-guide {
+  max-width: 720px;
+  width: 100%;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 8px;
+  color: var(--text-secondary);
+}
+
+.welcome-guide-head h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.welcome-guide-head p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.guide-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.guide-card {
+  padding: 13px 14px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+}
+
+.guide-card h3 {
+  margin: 0 0 5px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.guide-card p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.welcome-faq {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.faq-heading {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.faq-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.faq-item {
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.faq-item summary {
+  padding: 10px 13px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.faq-item summary::-webkit-details-marker {
+  display: none;
+}
+.faq-item summary::after {
+  content: "+";
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.faq-item[open] summary::after {
+  content: "−";
+}
+.faq-item summary:hover {
+  background: var(--bg-hover);
+}
+
+.faq-item p {
+  margin: 0;
+  padding: 0 13px 11px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
 }
 
 /* ============================================================================
@@ -3508,6 +3627,12 @@ kbd {
   border: 1px solid var(--border);
 }
 
+:root[data-ui="raw"] .guide-card,
+:root[data-ui="raw"] .faq-item {
+  background: var(--bg-canvas);
+  border: 1px solid var(--border);
+}
+
 :root[data-ui="raw"] .mobile-nav {
   border-top: 1px solid var(--border-strong);
 }
@@ -3690,6 +3815,10 @@ kbd {
 
   .welcome-card h1 {
     font-size: 18px;
+  }
+
+  .guide-grid {
+    grid-template-columns: 1fr;
   }
 
   /* Single-pane tab switching on mobile */

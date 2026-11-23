@@ -40,7 +40,7 @@ jobs:
           if [ -f CNAME ]; then cp CNAME _site/; fi
           VER="${GITHUB_SHA::8}"
           python3 - "$VER" <<'EOF'
-          import pathlib, re, sys
+          import datetime, pathlib, re, sys
           ver = sys.argv[1]
           idx = pathlib.Path("_site/index.html")
           html = idx.read_text(encoding="utf-8")
@@ -56,7 +56,10 @@ jobs:
           sw_txt = sw_txt.replace("const CACHE_VERSION = 'dev';", f"const CACHE_VERSION = '{ver}';")
           sw_txt = re.sub(r"""'(\./src/[^']+\.(?:js|css))'""", rf"'\1?v={ver}'", sw_txt)
           sw.write_text(sw_txt, encoding="utf-8")
-          print(f"Applied cache-busting query ?v={ver}")
+          sm = pathlib.Path("_site/sitemap.xml")
+          today = datetime.date.today().isoformat()
+          sm.write_text(re.sub(r"<lastmod>[^<]+</lastmod>", f"<lastmod>{today}</lastmod>", sm.read_text(encoding="utf-8")), encoding="utf-8")
+          print(f"Applied cache-busting query ?v={ver} and sitemap lastmod={today}")
           EOF
 
       - name: Upload artifact

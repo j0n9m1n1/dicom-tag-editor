@@ -2,7 +2,7 @@
   "id": "./",
   "name": "DICOM Tag Editor",
   "short_name": "DICOM Editor",
-  "description": "100% browser-local DICOM Tag Editor, Metadata Viewer, VR Validator, PHI Anonymizer, and Pixel Preview with zero server upload.",
+  "description": "100% browser-local DICOM Tag Editor, Metadata Viewer, Side-by-Side Compare, 5,000+ PS3.6/MPPS Dictionary, VR Validator, PHI Anonymizer, and Pixel Preview with zero server upload.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
