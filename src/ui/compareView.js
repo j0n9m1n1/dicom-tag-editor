@@ -16,14 +16,15 @@ export const INTERNAL_FILE_DRAG_MIME = 'application/x-dcm-file-id';
 
 function flattenDoc(doc) {
   const map = new Map();
-  const walk = (nodes, prefix, depth) => {
+  const walk = (nodes, section, sortPrefix, displayPrefix, depth) => {
     for (const n of nodes || []) {
       if (n.status === 'deleted') continue;
-      const key = prefix ? `${prefix}/${n.tag}` : n.tag;
-      const displayPath = prefix ? `${prefix} › ${n.formattedTag}` : n.formattedTag;
+      const key = `${sortPrefix}/${n.tag}`;
+      const displayPath = displayPrefix ? `${displayPrefix} › ${n.formattedTag}` : n.formattedTag;
       if (n.isSequence) {
         map.set(key, {
           key,
+          section,
           tag: n.formattedTag,
           path: displayPath,
           depth,
@@ -35,12 +36,17 @@ function flattenDoc(doc) {
           isSequence: true,
         });
         (n.items || []).forEach((item, idx) => {
-          const nextPrefix = prefix ? `${prefix} › ${n.formattedTag}[#${idx}]` : `${n.formattedTag}[#${idx}]`;
-          walk(item.children, nextPrefix, depth + 1);
+          const idxPad = String(idx).padStart(6, '0');
+          const nextSort = `${key}/${idxPad}`;
+          const nextDisp = displayPrefix
+            ? `${displayPrefix} › ${n.formattedTag}[#${idx}]`
+            : `${n.formattedTag}[#${idx}]`;
+          walk(item.children, section, nextSort, nextDisp, depth + 1);
         });
       } else {
         map.set(key, {
           key,
+          section,
           tag: n.formattedTag,
           path: displayPath,
           depth,
@@ -55,8 +61,8 @@ function flattenDoc(doc) {
       }
     }
   };
-  walk(doc.metaNodes, 'Meta', 0);
-  walk(doc.datasetNodes, '', 0);
+  walk(doc.metaNodes, 'meta', '0', 'Meta', 0);
+  walk(doc.datasetNodes, 'main', '1', '', 0);
   return map;
 }
 
@@ -67,6 +73,76 @@ function bytesEqual(a, b) {
     if (a[i] !== b[i]) return false;
   }
   return true;
+}
+
+/**
+ * Build aligned, DICOM-ordered compare rows (File Meta 0002 -> Main Dataset, with SQ children under their parent).
+ */
+export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = '' } = {}) {
+  const mapA = flattenDoc(docA);
+  const mapB = flattenDoc(docB);
+  const allKeys = Array.from(new Set([...mapA.keys(), ...mapB.keys()])).sort();
+
+  const q = (searchQuery || '').trim().toLowerCase();
+  const isTagLike = /^[0-9a-f(),\s]+$/.test(q);
+  const qHex = isTagLike ? q.replace(/[^0-9a-f]/g, '') : '';
+
+  let changed = 0;
+  let onlyA = 0;
+  let onlyB = 0;
+  const rows = [];
+
+  const matchesSearch = (a, b) => {
+    if (!q) return true;
+    const items = [a, b].filter(Boolean);
+    return items.some((it) => {
+      const tagHexStr = it.tag.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+      return (
+        (qHex !== '' && tagHexStr.includes(qHex)) ||
+        it.tag.toLowerCase().includes(q) ||
+        it.path.toLowerCase().includes(q) ||
+        (it.keyword && it.keyword.toLowerCase().includes(q)) ||
+        (it.name && it.name.toLowerCase().includes(q)) ||
+        (it.vr && it.vr.toLowerCase() === q) ||
+        (!it.isBinary && (it.value || '').toLowerCase().includes(q))
+      );
+    });
+  };
+
+  for (const k of allKeys) {
+    const a = mapA.get(k) || null;
+    const b = mapB.get(k) || null;
+    const section = (a || b).section;
+    let kind = 'equal';
+    if (a && !b) {
+      kind = 'onlyA';
+      onlyA++;
+    } else if (!a && b) {
+      kind = 'onlyB';
+      onlyB++;
+    } else if (a.isBinary && b.isBinary) {
+      if (!bytesEqual(a.rawBytes, b.rawBytes)) {
+        kind = 'changed';
+        changed++;
+      }
+    } else if (a.value !== b.value || a.vr !== b.vr) {
+      kind = 'changed';
+      changed++;
+    }
+
+    if (diffOnly && kind === 'equal') continue;
+    if (!matchesSearch(a, b)) continue;
+    rows.push({ kind, section, a, b });
+  }
+
+  return {
+    rows,
+    total: allKeys.length,
+    changed,
+    onlyA,
+    onlyB,
+    diffs: changed + onlyA + onlyB,
+  };
 }
 
 export class CompareView {
@@ -437,65 +513,16 @@ export class CompareView {
     }
     if (token !== this._renderToken) return;
 
-    const mapA = flattenDoc(docA);
-    const mapB = flattenDoc(docB);
-    const allKeys = Array.from(new Set([...mapA.keys(), ...mapB.keys()])).sort();
+    const result = buildCompareRows(docA, docB, {
+      diffOnly: this.diffOnly,
+      searchQuery: this.searchQuery,
+    });
+    const { rows, total, changed, onlyA, onlyB, diffs: totalDiffs } = result;
+    const q = this.searchQuery.trim();
 
-    const q = this.searchQuery.trim().toLowerCase();
-    const isTagLike = /^[0-9a-f(),\s]+$/.test(q);
-    const qHex = isTagLike ? q.replace(/[^0-9a-f]/g, '') : '';
-
-    let changed = 0;
-    let onlyA = 0;
-    let onlyB = 0;
-    const rows = [];
-
-    const matchesSearch = (a, b) => {
-      if (!q) return true;
-      const items = [a, b].filter(Boolean);
-      return items.some((it) => {
-        const tagHexStr = it.tag.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
-        return (
-          (qHex !== '' && tagHexStr.includes(qHex)) ||
-          it.tag.toLowerCase().includes(q) ||
-          it.path.toLowerCase().includes(q) ||
-          (it.keyword && it.keyword.toLowerCase().includes(q)) ||
-          (it.name && it.name.toLowerCase().includes(q)) ||
-          (it.vr && it.vr.toLowerCase() === q) ||
-          (!it.isBinary && (it.value || '').toLowerCase().includes(q))
-        );
-      });
-    };
-
-    for (const k of allKeys) {
-      const a = mapA.get(k) || null;
-      const b = mapB.get(k) || null;
-      let kind = 'equal';
-      if (a && !b) {
-        kind = 'onlyA';
-        onlyA++;
-      } else if (!a && b) {
-        kind = 'onlyB';
-        onlyB++;
-      } else if (a.isBinary && b.isBinary) {
-        if (!bytesEqual(a.rawBytes, b.rawBytes)) {
-          kind = 'changed';
-          changed++;
-        }
-      } else if (a.value !== b.value || a.vr !== b.vr) {
-        kind = 'changed';
-        changed++;
-      }
-
-      if (this.diffOnly && kind === 'equal') continue;
-      if (!matchesSearch(a, b)) continue;
-      rows.push({ kind, a, b });
-    }
-
-    const totalDiffs = changed + onlyA + onlyB;
     if (summaryEl) {
       summaryEl.textContent = t('modalCompareSummary', {
-        total: allKeys.length,
+        total,
         diffs: totalDiffs,
         changed,
         onlyA,
@@ -518,6 +545,14 @@ export class CompareView {
       this._updateNavStatus();
       return;
     }
+
+    const renderSectionHeader = (section, count) => {
+      const label = section === 'meta' ? t('sectionMeta') : t('sectionMain');
+      return `<div class="cmp-section-row section-${section}">
+        <span class="section-label">${escapeHtml(label)}</span>
+        <span class="section-count">${count}</span>
+      </div>`;
+    };
 
     const renderCellRow = (item, kind, side, idx) => {
       if (!item) {
@@ -551,10 +586,22 @@ export class CompareView {
       </div>`;
     };
 
+    const sectionCounts = {
+      meta: rows.filter((r) => r.section === 'meta').length,
+      main: rows.filter((r) => r.section === 'main').length,
+    };
+
     const htmlA = [];
     const htmlB = [];
+    let lastSection = null;
     for (let i = 0; i < rows.length; i++) {
-      const { kind, a, b } = rows[i];
+      const { kind, section, a, b } = rows[i];
+      if (section !== lastSection) {
+        const secHtml = renderSectionHeader(section, sectionCounts[section]);
+        htmlA.push(secHtml);
+        htmlB.push(secHtml);
+        lastSection = section;
+      }
       htmlA.push(renderCellRow(a, kind, 'a', i));
       htmlB.push(renderCellRow(b, kind, 'b', i));
     }

@@ -8,6 +8,7 @@ import { writeDicomDocument } from '../src/dicom/writer.js';
 import { validateVrValue } from '../src/dicom/vrSpec.js';
 import { formatDicomJson } from '../src/dicom/dcmdump.js';
 import { DICOM_DICTIONARY, lookupTag, lookupUidName } from '../src/dicom/dictionary.js';
+import { buildCompareRows } from '../src/ui/compareView.js';
 import { buildZipArchive } from '../src/utils/zipWriter.js';
 import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges } from '../src/state/store.js';
 
@@ -418,4 +419,24 @@ test('AppStore compare mode initializes two files, updates selection, and exits 
 
   await store.removeFile(id2);
   assert.equal(store.compareMode, false);
+});
+
+test('buildCompareRows orders File Meta (0002) first, then Main Dataset with SQ children directly beneath parent SQ', async () => {
+  const bytes = await generateSampleDicomBuffer();
+  const a = await parseDicomBuffer(bytes, 'a.dcm');
+  const b = await parseDicomBuffer(bytes, 'b.dcm');
+  const { rows } = buildCompareRows(a, b, { diffOnly: false });
+
+  const metaIdx = rows.findIndex((r) => r.a?.tag === '(0002,0010)');
+  const mainFirstIdx = rows.findIndex((r) => r.a?.tag === '(0008,0005)');
+  const sqParentIdx = rows.findIndex((r) => r.a?.tag === '(0008,1115)');
+  const sqChildIdx = rows.findIndex((r) => r.a?.tag === '(0008,114A)');
+  const sqGrandChildIdx = rows.findIndex((r) => r.a?.tag === '(0008,1150)');
+  const patientIdx = rows.findIndex((r) => r.a?.tag === '(0010,0010)');
+
+  assert.ok(metaIdx >= 0 && metaIdx < mainFirstIdx);
+  assert.ok(mainFirstIdx < sqParentIdx);
+  assert.equal(sqChildIdx, sqParentIdx + 1);
+  assert.equal(sqGrandChildIdx, sqChildIdx + 1);
+  assert.ok(sqGrandChildIdx < patientIdx);
 });
