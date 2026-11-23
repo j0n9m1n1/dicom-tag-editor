@@ -10,6 +10,7 @@ import { generateSampleDicomBuffer } from './dicom/sampleGenerator.js';
 import { buildZipArchive } from './utils/zipWriter.js';
 import { AppStore } from './state/store.js';
 import { FileListPanel } from './ui/fileList.js';
+import { FileTabsBar } from './ui/fileTabs.js';
 import { TreeView } from './ui/treeView.js';
 import { InspectorPanel } from './ui/inspector.js';
 import { PixelPanel } from './ui/pixelPanel.js';
@@ -53,6 +54,7 @@ const btnCollapseAll = document.getElementById('btn-collapse-all');
 const statusCounts = document.getElementById('status-counts');
 
 const fileListPane = document.getElementById('filelist-pane');
+const fileTabsBar = document.getElementById('file-tabs-bar');
 const treePane = document.getElementById('tree-pane');
 const resizer = document.getElementById('pane-resizer');
 const sidePane = document.getElementById('side-pane');
@@ -230,6 +232,13 @@ const fileListPanel = new FileListPanel(fileListPane, store, {
     modals.openFileError([{ fileName: entry?.name, size: entry?.size, error: err }]),
 });
 
+const fileTabs = new FileTabsBar(fileTabsBar, store, {
+  onAddFiles: () => openFileDialog(),
+  onCompare: () => store.enterCompareMode(),
+  onSwitchError: (err, entry) =>
+    modals.openFileError([{ fileName: entry?.name, size: entry?.size, error: err }]),
+});
+
 const inspector = new InspectorPanel(inspectorContainer, store, {
   onOpenAddTagForItem: openAddTagForItem,
   onToast: showToast,
@@ -399,6 +408,7 @@ store.subscribe((reason) => {
   }
   updateToolbarAndHeader();
   fileListPanel.render();
+  fileTabs.render();
   if (store.compareMode && store.files.length >= 2) {
     compareView.render();
     return;
@@ -987,6 +997,7 @@ applyUiStyle();
 applyLanguage();
 updateToolbarAndHeader();
 fileListPanel.render();
+fileTabs.render();
 inspector.render();
 pixelPanel.sync(true);
 

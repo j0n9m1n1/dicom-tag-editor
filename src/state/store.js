@@ -144,6 +144,7 @@ export class AppStore {
     this.showPixelPanel = true;
     this._userPrefPixelOpen = true;
     this.showFileList = false;
+    this._userToggledFileList = false;
     this.compareMode = false;
     this.compareFileAId = null;
     this.compareFileBId = null;
@@ -218,6 +219,7 @@ export class AppStore {
   }
 
   toggleFileList() {
+    this._userToggledFileList = true;
     this.showFileList = !this.showFileList;
     this.emit('layout');
   }
@@ -358,10 +360,11 @@ export class AppStore {
 
     if (append && this.files.length > 0) {
       this.files.push(entry);
-      if (this.files.length > 1) this.showFileList = true;
+      if (!this._userToggledFileList && this.files.length > 1) this.showFileList = true;
     } else {
       this.files = [entry];
       this.showFileList = false;
+      this._userToggledFileList = false;
     }
 
     this._bindEntryToActive(entry);
@@ -433,10 +436,11 @@ export class AppStore {
       this.files = newEntries;
     }
 
-    if (this.files.length > 1) {
+    if (!this._userToggledFileList && this.files.length > 1) {
       this.showFileList = true;
     } else if (!hadExisting) {
       this.showFileList = false;
+      this._userToggledFileList = false;
     }
 
     // Parse and activate the first newly added valid file
@@ -556,6 +560,82 @@ export class AppStore {
   }
 
   /**
+   * Reorder an open file tab/entry relative to another entry.
+   */
+  reorderFile(fromId, toId, insertAfter = false) {
+    if (!fromId || !toId || fromId === toId) return;
+    const fromIdx = this.files.findIndex((f) => f.id === fromId);
+    const toIdx = this.files.findIndex((f) => f.id === toId);
+    if (fromIdx < 0 || toIdx < 0) return;
+
+    const [moved] = this.files.splice(fromIdx, 1);
+    let targetIdx = this.files.findIndex((f) => f.id === toId);
+    if (targetIdx < 0) {
+      this.files.push(moved);
+    } else {
+      if (insertAfter) targetIdx += 1;
+      this.files.splice(targetIdx, 0, moved);
+    }
+    this.emit('files');
+  }
+
+  /**
+   * Remove multiple files at once (e.g. "Close Others" or "Close to the Right").
+   */
+  async removeFiles(fileIds) {
+    const idSet = new Set(fileIds || []);
+    if (idSet.size === 0) return;
+
+    const wasActive = idSet.has(this.activeFileId);
+    const firstRemovedIdx = this.files.findIndex((f) => idSet.has(f.id));
+    this.files = this.files.filter((f) => !idSet.has(f.id));
+
+    if (this.files.length <= 1) {
+      this.showFileList = false;
+      this.compareMode = false;
+      this.compareFileAId = null;
+      this.compareFileBId = null;
+    } else if (this.compareMode) {
+      const validIds = new Set(this.files.map((f) => f.id));
+      if (!validIds.has(this.compareFileAId)) {
+        this.compareFileAId = (this.files.find((f) => f.id !== this.compareFileBId) || this.files[0]).id;
+      }
+      if (!validIds.has(this.compareFileBId)) {
+        this.compareFileBId = (this.files.find((f) => f.id !== this.compareFileAId) || this.files[0]).id;
+      }
+    }
+
+    if (this.files.length === 0) {
+      this._bindEntryToActive(null);
+      this.pixelVersion++;
+      this.emit('document');
+      return;
+    }
+
+    if (wasActive) {
+      const idx = Math.max(0, Math.min(firstRemovedIdx, this.files.length - 1));
+      const next = this.files.slice(idx).concat(this.files.slice(0, idx).reverse());
+      let active = null;
+      for (const entry of next) {
+        try {
+          await this.ensureEntryParsed(entry);
+          if (this.files.includes(entry)) {
+            active = entry;
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+      this._bindEntryToActive(active);
+      this.pixelVersion++;
+      this.emit('document');
+    } else {
+      this.emit('files');
+    }
+  }
+
+  /**
    * Count total unsaved tag modifications across all open files.
    */
   getTotalUnsavedChanges() {
@@ -574,6 +654,7 @@ export class AppStore {
     this.files = [];
     this._bindEntryToActive(null);
     this.showFileList = false;
+    this._userToggledFileList = false;
     this.compareMode = false;
     this.compareFileAId = null;
     this.compareFileBId = null;

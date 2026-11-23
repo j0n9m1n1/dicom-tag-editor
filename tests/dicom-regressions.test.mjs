@@ -9,6 +9,7 @@ import { validateVrValue } from '../src/dicom/vrSpec.js';
 import { formatDicomJson } from '../src/dicom/dcmdump.js';
 import { DICOM_DICTIONARY, lookupTag, lookupUidName } from '../src/dicom/dictionary.js';
 import { buildCompareRows } from '../src/ui/compareView.js';
+import { formatTabLabel } from '../src/ui/fileTabs.js';
 import { buildZipArchive } from '../src/utils/zipWriter.js';
 import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges } from '../src/state/store.js';
 
@@ -439,4 +440,31 @@ test('buildCompareRows orders File Meta (0002) first, then Main Dataset with SQ 
   assert.equal(sqChildIdx, sqParentIdx + 1);
   assert.equal(sqGrandChildIdx, sqChildIdx + 1);
   assert.ok(sqGrandChildIdx < patientIdx);
+});
+
+test('file tab label middle-truncates long DICOM UID filenames and store supports reorderFile / removeFiles', async () => {
+  assert.equal(formatTabLabel('Series1/IM0001.dcm'), 'IM0001.dcm');
+  const truncated = formatTabLabel('Series1/1.2.840.113619.2.55.3.604688119.868.1234567890.0001.dcm', 28);
+  assert.ok(truncated.length <= 28);
+  assert.ok(truncated.includes('…'));
+  assert.ok(truncated.endsWith('0001.dcm'));
+
+  const bytes = await generateSampleDicomBuffer();
+  const a = await parseDicomBuffer(bytes, 'a.dcm');
+  const b = await parseDicomBuffer(bytes, 'b.dcm');
+  const c = await parseDicomBuffer(bytes, 'c.dcm');
+  const store = new AppStore();
+  store.loadDocument(a);
+  store.loadDocument(b, null, { append: true });
+  store.loadDocument(c, null, { append: true });
+
+  const [idA, idB, idC] = store.files.map((f) => f.id);
+  store.reorderFile(idC, idA, false);
+  assert.deepEqual(store.files.map((f) => f.id), [idC, idA, idB]);
+  store.reorderFile(idC, idB, true);
+  assert.deepEqual(store.files.map((f) => f.id), [idA, idB, idC]);
+
+  await store.removeFiles([idB, idC]);
+  assert.deepEqual(store.files.map((f) => f.id), [idA]);
+  assert.equal(store.activeFileId, idA);
 });

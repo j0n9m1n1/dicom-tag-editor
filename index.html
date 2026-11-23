@@ -156,8 +156,13 @@
       <!-- Left Multi-File Sidebar -->
       <aside class="filelist-pane desktop-hidden" id="filelist-pane"></aside>
 
-      <!-- Center Pane: Summary strip + Filter bar + Tag Tree Table -->
-      <section class="tree-pane" id="tree-pane">
+      <!-- Workspace Main Column: VS Code-style File Tab Bar + Editor/Compare Panes -->
+      <div class="workspace-column" id="workspace-column">
+        <nav class="file-tabs-bar hidden" id="file-tabs-bar" role="tablist" aria-label="Open DICOM files"></nav>
+
+        <div class="workspace-panes">
+          <!-- Center Pane: Summary strip + Filter bar + Tag Tree Table -->
+          <section class="tree-pane" id="tree-pane">
         <div class="summary-strip hidden" id="summary-strip"></div>
         <div class="filter-bar">
           <div class="search-box">
@@ -208,8 +213,10 @@
         <div class="pixel-dock" id="pixel-container"></div>
       </aside>
 
-      <!-- WinMerge-style Split Compare Workspace -->
-      <section class="compare-pane hidden" id="compare-pane" aria-label="DICOM Compare"></section>
+          <!-- WinMerge-style Split Compare Workspace -->
+          <section class="compare-pane hidden" id="compare-pane" aria-label="DICOM Compare"></section>
+        </div>
+      </div>
     </main>
 
     <!-- Mobile Bottom Tab Bar (visible <= 820px when a file is open) -->

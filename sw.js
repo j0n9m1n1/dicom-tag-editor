@@ -32,6 +32,7 @@ const PRECACHE_URLS = [
   './src/dicom/vrSpec.js',
   './src/dicom/writer.js',
   './src/ui/fileList.js',
+  './src/ui/fileTabs.js',
   './src/ui/compareView.js',
   './src/ui/icons.js',
   './src/ui/inspector.js',
