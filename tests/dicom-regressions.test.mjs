@@ -7,6 +7,7 @@ import { generateSampleDicomBuffer } from '../src/dicom/sampleGenerator.js';
 import { writeDicomDocument } from '../src/dicom/writer.js';
 import { validateVrValue } from '../src/dicom/vrSpec.js';
 import { formatDicomJson } from '../src/dicom/dcmdump.js';
+import { DICOM_DICTIONARY, lookupTag, lookupUidName } from '../src/dicom/dictionary.js';
 import { buildZipArchive } from '../src/utils/zipWriter.js';
 import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges } from '../src/state/store.js';
 
@@ -388,4 +389,33 @@ test('buildZipArchive normalizes Windows slashes and strips path traversal segme
   assert.ok(text.includes('study/slice_1.dcm'));
   assert.equal(text.includes('..'), false);
   assert.equal(text.includes('\\'), false);
+});
+
+test('full PS3.6 dictionary resolves MPPS tags and SOP Class UIDs', () => {
+  assert.ok(DICOM_DICTIONARY.size > 4500);
+  assert.equal(lookupTag(0x0040, 0x0252).keyword, 'PerformedProcedureStepStatus');
+  assert.equal(lookupTag(0x0040, 0x0270).keyword, 'ScheduledStepAttributesSequence');
+  assert.equal(lookupTag(0x0040, 0x0340).keyword, 'PerformedSeriesSequence');
+  assert.equal(lookupUidName('1.2.840.10008.3.1.2.3.3'), 'Modality Performed Procedure Step SOP Class');
+});
+
+test('AppStore compare mode initializes two files, updates selection, and exits cleanly below two files', async () => {
+  const bytes = await generateSampleDicomBuffer();
+  const a = await parseDicomBuffer(bytes, 'a.dcm');
+  const b = await parseDicomBuffer(bytes, 'b.dcm');
+  const store = new AppStore();
+  store.loadDocument(a);
+  store.loadDocument(b, null, { append: true });
+
+  store.enterCompareMode();
+  assert.equal(store.compareMode, true);
+  assert.notEqual(store.compareFileAId, store.compareFileBId);
+
+  const [id1, id2] = store.files.map((f) => f.id);
+  store.setCompareFiles(id1, id2);
+  assert.equal(store.compareFileAId, id1);
+  assert.equal(store.compareFileBId, id2);
+
+  await store.removeFile(id2);
+  assert.equal(store.compareMode, false);
 });

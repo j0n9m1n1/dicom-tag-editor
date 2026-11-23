@@ -6,6 +6,7 @@
 
 import { countDocChanges } from '../state/store.js';
 import { formatByteSize } from '../dicom/parser.js';
+import { INTERNAL_FILE_DRAG_MIME } from './compareView.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
 
@@ -26,6 +27,14 @@ export class FileListPanel {
     this.callbacks = callbacks || {};
 
     this.container.addEventListener('click', (e) => this._onClick(e));
+    this.container.addEventListener('dragstart', (e) => this._onDragStart(e));
+  }
+
+  _onDragStart(e) {
+    const row = e.target.closest('.file-row[data-file-id]');
+    if (!row || !e.dataTransfer) return;
+    e.dataTransfer.setData(INTERNAL_FILE_DRAG_MIME, row.dataset.fileId);
+    e.dataTransfer.effectAllowed = 'link';
   }
 
   render() {
@@ -50,7 +59,7 @@ export class FileListPanel {
             : '';
 
         return `
-          <div class="file-row ${active} ${entry.error ? 'has-error' : ''}" data-file-id="${entry.id}" title="${escapeHtml(entry.name)}">
+          <div class="file-row ${active} ${entry.error ? 'has-error' : ''}" data-file-id="${entry.id}" draggable="true" title="${escapeHtml(entry.name)}">
             <div class="file-row-main">
               <span class="file-idx">${idx + 1}</span>
               <div class="file-row-info">
@@ -76,7 +85,7 @@ export class FileListPanel {
         </div>
       </div>
       <div class="filelist-actions filelist-actions-3">
-        <button class="btn btn-xs" data-fl-action="compare" title="${escapeHtml(t('btnCompareTitle'))}" ${files.length < 2 ? 'disabled' : ''}>${icons.diff(12)} ${escapeHtml(t('btnCompare'))}</button>
+        <button class="btn btn-xs ${this.store.compareMode ? 'btn-active' : ''}" data-fl-action="compare" title="${escapeHtml(t('btnCompareTitle'))}" ${files.length < 2 ? 'disabled' : ''}>${icons.diff(12)} ${escapeHtml(t('btnCompare'))}</button>
         <button class="btn btn-xs" data-fl-action="batch-edit" title="${escapeHtml(t('fileListBatchEditTitle'))}" ${files.length < 1 ? 'disabled' : ''}>${icons.sliders(12)} ${escapeHtml(t('fileListBatchEdit'))}</button>
         <button class="btn btn-xs btn-primary" data-fl-action="save-zip" title="${escapeHtml(t('fileListSaveZipTitle'))}" ${this.store.anonymizing ? 'disabled' : ''}>${icons.archive(12)} ${escapeHtml(t('fileListSaveZip'))}</button>
       </div>
@@ -112,6 +121,9 @@ export class FileListPanel {
     const entry = this.store.files.find((f) => f.id === fileId) || null;
     try {
       await this.store.switchToFile(fileId);
+      if (this.store.compareMode) {
+        this.store.exitCompareMode();
+      }
       if (window.innerWidth <= 820) {
         this.store.setMobileTab('tree');
       }

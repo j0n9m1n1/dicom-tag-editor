@@ -157,7 +157,7 @@
       <aside class="filelist-pane desktop-hidden" id="filelist-pane"></aside>
 
       <!-- Center Pane: Summary strip + Filter bar + Tag Tree Table -->
-      <section class="tree-pane">
+      <section class="tree-pane" id="tree-pane">
         <div class="summary-strip hidden" id="summary-strip"></div>
         <div class="filter-bar">
           <div class="search-box">
@@ -207,6 +207,9 @@
         <div class="inspector-scroll" id="inspector-container"></div>
         <div class="pixel-dock" id="pixel-container"></div>
       </aside>
+
+      <!-- WinMerge-style Split Compare Workspace -->
+      <section class="compare-pane hidden" id="compare-pane" aria-label="DICOM Compare"></section>
     </main>
 
     <!-- Mobile Bottom Tab Bar (visible <= 820px when a file is open) -->

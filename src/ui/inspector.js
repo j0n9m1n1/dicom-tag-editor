@@ -25,6 +25,7 @@ const TAG_QUICK_PRESETS = {
   '00185100': ['HFS', 'HFP', 'FFS', 'FFP', 'HFDR', 'HFDL'],
   '00080005': ['ISO_IR 192', 'ISO_IR 100', 'ISO 2022 IR 149'],
   '00120062': ['YES', 'NO'],
+  '00400252': ['IN PROGRESS', 'DISCONTINUED', 'COMPLETED'],
 };
 
 function buildHexDump(bytes, maxBytes = 256) {

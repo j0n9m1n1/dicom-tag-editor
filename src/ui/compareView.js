@@ -1,0 +1,568 @@
+/**
+ * WinMerge-style inline Side-by-Side DICOM Compare View.
+ * Features:
+ *  - Split Left (File A) | Draggable Center Resizer | Right (File B) workspace
+ *  - Content-sized 4-column tag table (Tag | Keyword | VR | Value) decoupled from filename width
+ *  - File selection via top combo boxes AND drag-and-drop from the Open Files sidebar
+ *  - Synchronized vertical scrolling, aligned rows with empty placeholders, synchronized hover/selection
+ *  - Show differences only filter, real-time tag search, and Prev/Next diff jump controls
+ */
+
+import { getVrSpec } from '../dicom/vrSpec.js';
+import { icons, escapeHtml } from './icons.js';
+import { t } from '../i18n.js';
+
+export const INTERNAL_FILE_DRAG_MIME = 'application/x-dcm-file-id';
+
+function flattenDoc(doc) {
+  const map = new Map();
+  const walk = (nodes, prefix, depth) => {
+    for (const n of nodes || []) {
+      if (n.status === 'deleted') continue;
+      const key = prefix ? `${prefix}/${n.tag}` : n.tag;
+      const displayPath = prefix ? `${prefix} › ${n.formattedTag}` : n.formattedTag;
+      if (n.isSequence) {
+        map.set(key, {
+          key,
+          tag: n.formattedTag,
+          path: displayPath,
+          depth,
+          keyword: n.keyword,
+          name: n.name,
+          vr: n.vr,
+          value: `${(n.items || []).length} item(s)`,
+          isBinary: false,
+          isSequence: true,
+        });
+        (n.items || []).forEach((item, idx) => {
+          const nextPrefix = prefix ? `${prefix} › ${n.formattedTag}[#${idx}]` : `${n.formattedTag}[#${idx}]`;
+          walk(item.children, nextPrefix, depth + 1);
+        });
+      } else {
+        map.set(key, {
+          key,
+          tag: n.formattedTag,
+          path: displayPath,
+          depth,
+          keyword: n.keyword,
+          name: n.name,
+          vr: n.vr,
+          value: n.isBinary ? n.value : (n.value || ''),
+          isBinary: n.isBinary,
+          isSequence: false,
+          rawBytes: n.rawBytes,
+        });
+      }
+    }
+  };
+  walk(doc.metaNodes, 'Meta', 0);
+  walk(doc.datasetNodes, '', 0);
+  return map;
+}
+
+function bytesEqual(a, b) {
+  if (!a || !b) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+export class CompareView {
+  /**
+   * @param {HTMLElement} container
+   * @param {import('../state/store.js').AppStore} store
+   */
+  constructor(container, store) {
+    this.container = container;
+    this.store = store;
+    this.diffOnly = true;
+    this.searchQuery = '';
+    this.leftPct = 50;
+    this.rows = [];
+    this.diffIndices = [];
+    this.activeRowIdx = -1;
+    this._renderToken = 0;
+    this._syncingScroll = false;
+    this._shellBuilt = false;
+  }
+
+  focusSearch() {
+    const inp = this.container.querySelector('#cmp-search-input');
+    if (inp) {
+      inp.focus();
+      inp.select();
+    }
+  }
+
+  _buildShell() {
+    this.container.innerHTML = `
+      <div class="compare-topbar">
+        <div class="compare-topbar-left">
+          <div class="search-box compare-search-box">
+            <span class="search-icon">${icons.search(14)}</span>
+            <input type="text" id="cmp-search-input" autocomplete="off" />
+            <button type="button" class="search-clear hidden" id="btn-cmp-search-clear">×</button>
+          </div>
+          <label class="checkbox-row small compare-diff-toggle">
+            <input type="checkbox" id="cmp-diff-only" checked />
+            <span id="cmp-diff-only-lbl"></span>
+          </label>
+          <div class="compare-nav-group">
+            <button type="button" class="btn btn-xs" id="cmp-prev-diff" disabled>▲</button>
+            <span class="compare-nav-pos mono" id="cmp-nav-pos">0 / 0</span>
+            <button type="button" class="btn btn-xs" id="cmp-next-diff" disabled>▼</button>
+          </div>
+        </div>
+        <div class="compare-topbar-right">
+          <span class="compare-summary-text muted small" id="cmp-summary"></span>
+          <button type="button" class="btn btn-sm" id="btn-cmp-close"></button>
+        </div>
+      </div>
+
+      <div class="compare-split" id="compare-split">
+        <div class="compare-side" data-side="a">
+          <div class="compare-side-header">
+            <span class="compare-side-badge badge-a">A</span>
+            <select class="input input-sm compare-select" id="cmp-sel-a"></select>
+          </div>
+          <div class="compare-col-header">
+            <div class="cmp-th col-cmp-tag">Tag</div>
+            <div class="cmp-th col-cmp-kw">Keyword</div>
+            <div class="cmp-th col-cmp-vr">VR</div>
+            <div class="cmp-th col-cmp-val">Value</div>
+          </div>
+          <div class="compare-side-body" id="cmp-body-a" data-cmp-scroll="a"></div>
+        </div>
+
+        <div class="compare-resizer" id="compare-resizer"></div>
+
+        <div class="compare-side" data-side="b">
+          <div class="compare-side-header">
+            <span class="compare-side-badge badge-b">B</span>
+            <select class="input input-sm compare-select" id="cmp-sel-b"></select>
+          </div>
+          <div class="compare-col-header">
+            <div class="cmp-th col-cmp-tag">Tag</div>
+            <div class="cmp-th col-cmp-kw">Keyword</div>
+            <div class="cmp-th col-cmp-vr">VR</div>
+            <div class="cmp-th col-cmp-val">Value</div>
+          </div>
+          <div class="compare-side-body" id="cmp-body-b" data-cmp-scroll="b"></div>
+        </div>
+      </div>
+    `;
+
+    this._shellBuilt = true;
+    this._bindShellEvents();
+  }
+
+  _bindShellEvents() {
+    const searchInp = this.container.querySelector('#cmp-search-input');
+    const clearBtn = this.container.querySelector('#btn-cmp-search-clear');
+    const diffCb = this.container.querySelector('#cmp-diff-only');
+    const prevBtn = this.container.querySelector('#cmp-prev-diff');
+    const nextBtn = this.container.querySelector('#cmp-next-diff');
+    const closeBtn = this.container.querySelector('#btn-cmp-close');
+    const selA = this.container.querySelector('#cmp-sel-a');
+    const selB = this.container.querySelector('#cmp-sel-b');
+    const bodyA = this.container.querySelector('#cmp-body-a');
+    const bodyB = this.container.querySelector('#cmp-body-b');
+    const resizer = this.container.querySelector('#compare-resizer');
+    const splitEl = this.container.querySelector('#compare-split');
+
+    searchInp.addEventListener('input', () => {
+      this.searchQuery = searchInp.value;
+      clearBtn.classList.toggle('hidden', !this.searchQuery);
+      this._renderComparison();
+    });
+    clearBtn.addEventListener('click', () => {
+      this.searchQuery = '';
+      searchInp.value = '';
+      clearBtn.classList.add('hidden');
+      searchInp.focus();
+      this._renderComparison();
+    });
+
+    diffCb.addEventListener('change', () => {
+      this.diffOnly = diffCb.checked;
+      this._renderComparison();
+    });
+
+    prevBtn.addEventListener('click', () => this._stepDiff(-1));
+    nextBtn.addEventListener('click', () => this._stepDiff(1));
+    closeBtn.addEventListener('click', () => this.store.exitCompareMode());
+
+    selA.addEventListener('change', () => {
+      this.store.setCompareFiles(selA.value, this.store.compareFileBId);
+    });
+    selB.addEventListener('change', () => {
+      this.store.setCompareFiles(this.store.compareFileAId, selB.value);
+    });
+
+    // Synchronized vertical scroll
+    const syncScroll = (src, dst) => {
+      if (this._syncingScroll) return;
+      this._syncingScroll = true;
+      dst.scrollTop = src.scrollTop;
+      requestAnimationFrame(() => {
+        this._syncingScroll = false;
+      });
+    };
+    bodyA.addEventListener('scroll', () => syncScroll(bodyA, bodyB));
+    bodyB.addEventListener('scroll', () => syncScroll(bodyB, bodyA));
+
+    // Synchronized row hover & click selection
+    const bindRowSync = (bodyEl) => {
+      bodyEl.addEventListener('mouseover', (e) => {
+        const row = e.target.closest('.cmp-row[data-row-idx]');
+        this._setHoveredIdx(row ? Number(row.dataset.rowIdx) : -1);
+      });
+      bodyEl.addEventListener('mouseleave', () => this._setHoveredIdx(-1));
+      bodyEl.addEventListener('click', (e) => {
+        const row = e.target.closest('.cmp-row[data-row-idx]');
+        if (!row) return;
+        this._setActiveRow(Number(row.dataset.rowIdx), false);
+      });
+    };
+    bindRowSync(bodyA);
+    bindRowSync(bodyB);
+
+    // Center draggable splitter
+    resizer.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      resizer.classList.add('active');
+      const rect = splitEl.getBoundingClientRect();
+      const onMove = (ev) => {
+        if (rect.width <= 0) return;
+        const pct = ((ev.clientX - rect.left) / rect.width) * 100;
+        this.leftPct = Math.max(20, Math.min(80, Number(pct.toFixed(2))));
+        splitEl.style.setProperty('--cmp-left-pct', `${this.leftPct}%`);
+      };
+      const onUp = () => {
+        resizer.classList.remove('active');
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+
+    resizer.addEventListener('dblclick', () => {
+      this.leftPct = 50;
+      splitEl.style.setProperty('--cmp-left-pct', '50%');
+    });
+
+    // Drag-and-drop from Open Files sidebar onto Left (A) or Right (B) pane
+    this.container.querySelectorAll('.compare-side').forEach((sideEl) => {
+      const side = sideEl.dataset.side;
+      let dragCount = 0;
+
+      const isInternalFileDrag = (e) =>
+        Array.from(e.dataTransfer?.types || []).includes(INTERNAL_FILE_DRAG_MIME);
+
+      sideEl.addEventListener('dragenter', (e) => {
+        if (!isInternalFileDrag(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragCount++;
+        sideEl.classList.add('cmp-drop-active');
+      });
+
+      sideEl.addEventListener('dragover', (e) => {
+        if (!isInternalFileDrag(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'link';
+      });
+
+      sideEl.addEventListener('dragleave', (e) => {
+        if (!isInternalFileDrag(e)) return;
+        e.stopPropagation();
+        dragCount = Math.max(0, dragCount - 1);
+        if (dragCount === 0) sideEl.classList.remove('cmp-drop-active');
+      });
+
+      sideEl.addEventListener('drop', (e) => {
+        if (!isInternalFileDrag(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        dragCount = 0;
+        sideEl.classList.remove('cmp-drop-active');
+        const fileId = e.dataTransfer.getData(INTERNAL_FILE_DRAG_MIME);
+        if (!fileId) return;
+        if (side === 'a') {
+          this.store.setCompareFiles(fileId, this.store.compareFileBId);
+        } else {
+          this.store.setCompareFiles(this.store.compareFileAId, fileId);
+        }
+      });
+    });
+  }
+
+  _setHoveredIdx(idx) {
+    this.container.querySelectorAll('.cmp-row.cmp-hover').forEach((el) => el.classList.remove('cmp-hover'));
+    if (idx < 0) return;
+    this.container.querySelectorAll(`.cmp-row[data-row-idx="${idx}"]`).forEach((el) => el.classList.add('cmp-hover'));
+  }
+
+  _setActiveRow(idx, scrollIntoView = true) {
+    this.activeRowIdx = idx;
+    this.container.querySelectorAll('.cmp-row.cmp-active').forEach((el) => el.classList.remove('cmp-active'));
+    if (idx >= 0) {
+      this.container.querySelectorAll(`.cmp-row[data-row-idx="${idx}"]`).forEach((el) => el.classList.add('cmp-active'));
+      if (scrollIntoView) {
+        const rowA = this.container.querySelector(`#cmp-body-a .cmp-row[data-row-idx="${idx}"]`);
+        const bodyA = this.container.querySelector('#cmp-body-a');
+        const bodyB = this.container.querySelector('#cmp-body-b');
+        if (rowA && bodyA && bodyB) {
+          rowA.scrollIntoView({ block: 'center', inline: 'nearest' });
+          bodyB.scrollTop = bodyA.scrollTop;
+        }
+      }
+    }
+    this._updateNavStatus();
+  }
+
+  _stepDiff(direction) {
+    if (this.diffIndices.length === 0) return;
+    let nextDiffPos;
+    const curPos = this.diffIndices.indexOf(this.activeRowIdx);
+    if (curPos >= 0) {
+      nextDiffPos = (curPos + direction + this.diffIndices.length) % this.diffIndices.length;
+    } else if (direction > 0) {
+      const found = this.diffIndices.findIndex((rowIdx) => rowIdx > this.activeRowIdx);
+      nextDiffPos = found >= 0 ? found : 0;
+    } else {
+      let found = -1;
+      for (let i = this.diffIndices.length - 1; i >= 0; i--) {
+        if (this.diffIndices[i] < this.activeRowIdx) {
+          found = i;
+          break;
+        }
+      }
+      nextDiffPos = found >= 0 ? found : this.diffIndices.length - 1;
+    }
+    this._setActiveRow(this.diffIndices[nextDiffPos], true);
+  }
+
+  _updateNavStatus() {
+    const posEl = this.container.querySelector('#cmp-nav-pos');
+    const prevBtn = this.container.querySelector('#cmp-prev-diff');
+    const nextBtn = this.container.querySelector('#cmp-next-diff');
+    if (!posEl || !prevBtn || !nextBtn) return;
+
+    const totalDiffs = this.diffIndices.length;
+    const curPos = this.diffIndices.indexOf(this.activeRowIdx);
+    posEl.textContent = totalDiffs === 0 ? '0 / 0' : `${curPos >= 0 ? curPos + 1 : 0} / ${totalDiffs}`;
+    prevBtn.disabled = totalDiffs === 0;
+    nextBtn.disabled = totalDiffs === 0;
+  }
+
+  _syncLabels() {
+    const searchInp = this.container.querySelector('#cmp-search-input');
+    const clearBtn = this.container.querySelector('#btn-cmp-search-clear');
+    const diffLbl = this.container.querySelector('#cmp-diff-only-lbl');
+    const prevBtn = this.container.querySelector('#cmp-prev-diff');
+    const nextBtn = this.container.querySelector('#cmp-next-diff');
+    const closeBtn = this.container.querySelector('#btn-cmp-close');
+    const resizer = this.container.querySelector('#compare-resizer');
+
+    if (searchInp) searchInp.placeholder = t('compareSearchPh');
+    if (clearBtn) clearBtn.title = t('searchClearTitle');
+    if (diffLbl) diffLbl.textContent = t('modalCompareDiffOnly');
+    if (prevBtn) prevBtn.title = t('comparePrevDiff');
+    if (nextBtn) nextBtn.title = t('compareNextDiff');
+    if (closeBtn) closeBtn.innerHTML = `${icons.x(14)}<span>${escapeHtml(t('compareExitBtn'))}</span>`;
+    if (resizer) resizer.title = t('compareResizerHint');
+  }
+
+  async render() {
+    if (!this.store.compareMode || this.store.files.length < 2) {
+      return;
+    }
+    if (!this._shellBuilt) {
+      this._buildShell();
+    }
+    this._syncLabels();
+
+    const files = this.store.files;
+    const selA = this.container.querySelector('#cmp-sel-a');
+    const selB = this.container.querySelector('#cmp-sel-b');
+    const splitEl = this.container.querySelector('#compare-split');
+    splitEl.style.setProperty('--cmp-left-pct', `${this.leftPct}%`);
+
+    const buildOpts = (selectedId) =>
+      files
+        .map(
+          (f, i) =>
+            `<option value="${f.id}" ${f.id === selectedId ? 'selected' : ''}>#${i + 1} ${escapeHtml(f.name)}</option>`
+        )
+        .join('');
+
+    selA.innerHTML = buildOpts(this.store.compareFileAId);
+    selB.innerHTML = buildOpts(this.store.compareFileBId);
+    const entryA = files.find((f) => f.id === this.store.compareFileAId);
+    const entryB = files.find((f) => f.id === this.store.compareFileBId);
+    selA.title = entryA ? `${entryA.name} — ${t('compareDropHint')}` : '';
+    selB.title = entryB ? `${entryB.name} — ${t('compareDropHint')}` : '';
+
+    await this._renderComparison();
+  }
+
+  async _renderComparison() {
+    const token = ++this._renderToken;
+    const files = this.store.files;
+    const entryA = files.find((f) => f.id === this.store.compareFileAId);
+    const entryB = files.find((f) => f.id === this.store.compareFileBId);
+    const bodyA = this.container.querySelector('#cmp-body-a');
+    const bodyB = this.container.querySelector('#cmp-body-b');
+    const summaryEl = this.container.querySelector('#cmp-summary');
+    if (!entryA || !entryB || !bodyA || !bodyB) return;
+
+    let docA, docB;
+    try {
+      docA = await this.store.ensureEntryParsed(entryA);
+      docB = await this.store.ensureEntryParsed(entryB);
+    } catch (err) {
+      if (token !== this._renderToken) return;
+      const errHtml = `<div class="compare-empty text-danger">${escapeHtml(err.message)}</div>`;
+      bodyA.innerHTML = errHtml;
+      bodyB.innerHTML = errHtml;
+      this.rows = [];
+      this.diffIndices = [];
+      this._updateNavStatus();
+      return;
+    }
+    if (token !== this._renderToken) return;
+
+    const mapA = flattenDoc(docA);
+    const mapB = flattenDoc(docB);
+    const allKeys = Array.from(new Set([...mapA.keys(), ...mapB.keys()])).sort();
+
+    const q = this.searchQuery.trim().toLowerCase();
+    const isTagLike = /^[0-9a-f(),\s]+$/.test(q);
+    const qHex = isTagLike ? q.replace(/[^0-9a-f]/g, '') : '';
+
+    let changed = 0;
+    let onlyA = 0;
+    let onlyB = 0;
+    const rows = [];
+
+    const matchesSearch = (a, b) => {
+      if (!q) return true;
+      const items = [a, b].filter(Boolean);
+      return items.some((it) => {
+        const tagHexStr = it.tag.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+        return (
+          (qHex !== '' && tagHexStr.includes(qHex)) ||
+          it.tag.toLowerCase().includes(q) ||
+          it.path.toLowerCase().includes(q) ||
+          (it.keyword && it.keyword.toLowerCase().includes(q)) ||
+          (it.name && it.name.toLowerCase().includes(q)) ||
+          (it.vr && it.vr.toLowerCase() === q) ||
+          (!it.isBinary && (it.value || '').toLowerCase().includes(q))
+        );
+      });
+    };
+
+    for (const k of allKeys) {
+      const a = mapA.get(k) || null;
+      const b = mapB.get(k) || null;
+      let kind = 'equal';
+      if (a && !b) {
+        kind = 'onlyA';
+        onlyA++;
+      } else if (!a && b) {
+        kind = 'onlyB';
+        onlyB++;
+      } else if (a.isBinary && b.isBinary) {
+        if (!bytesEqual(a.rawBytes, b.rawBytes)) {
+          kind = 'changed';
+          changed++;
+        }
+      } else if (a.value !== b.value || a.vr !== b.vr) {
+        kind = 'changed';
+        changed++;
+      }
+
+      if (this.diffOnly && kind === 'equal') continue;
+      if (!matchesSearch(a, b)) continue;
+      rows.push({ kind, a, b });
+    }
+
+    const totalDiffs = changed + onlyA + onlyB;
+    if (summaryEl) {
+      summaryEl.textContent = t('modalCompareSummary', {
+        total: allKeys.length,
+        diffs: totalDiffs,
+        changed,
+        onlyA,
+        onlyB,
+      });
+    }
+
+    this.rows = rows;
+    this.diffIndices = [];
+    rows.forEach((r, idx) => {
+      if (r.kind !== 'equal') this.diffIndices.push(idx);
+    });
+    this.activeRowIdx = -1;
+
+    if (rows.length === 0) {
+      const emptyMsg = totalDiffs === 0 && this.diffOnly && !q ? t('modalCompareSame') : t('treeEmptyMsg');
+      const emptyHtml = `<div class="compare-empty">${escapeHtml(emptyMsg)}</div>`;
+      bodyA.innerHTML = emptyHtml;
+      bodyB.innerHTML = emptyHtml;
+      this._updateNavStatus();
+      return;
+    }
+
+    const renderCellRow = (item, kind, side, idx) => {
+      if (!item) {
+        return `<div class="cmp-row cmp-placeholder cmp-kind-${kind}" data-row-idx="${idx}">
+          <div class="cmp-cell col-cmp-tag"></div>
+          <div class="cmp-cell col-cmp-kw"></div>
+          <div class="cmp-cell col-cmp-vr"></div>
+          <div class="cmp-cell col-cmp-val muted">—</div>
+        </div>`;
+      }
+      const spec = getVrSpec(item.vr);
+      const indentPx = Math.min(item.depth, 5) * 12;
+      const depthPrefix = item.depth > 0 ? '<span class="cmp-depth-mark">↳</span>' : '';
+      const valCls = item.isSequence ? 'val-seq' : item.isBinary ? 'val-binary' : item.value === '' ? 'val-empty' : 'val-text';
+      const valText = item.value === '' ? '(empty)' : item.value;
+      const sideCls =
+        kind === 'changed'
+          ? 'cmp-changed'
+          : kind === 'onlyA' && side === 'a'
+            ? 'cmp-only-a'
+            : kind === 'onlyB' && side === 'b'
+              ? 'cmp-only-b'
+              : 'cmp-equal';
+      const label = item.keyword !== 'UnknownTag' ? item.keyword : item.name;
+
+      return `<div class="cmp-row ${sideCls}" data-row-idx="${idx}">
+        <div class="cmp-cell col-cmp-tag" style="padding-left:${6 + indentPx}px" title="${escapeHtml(item.path)}">${depthPrefix}<span class="tag-code">${escapeHtml(item.tag)}</span></div>
+        <div class="cmp-cell col-cmp-kw" title="${escapeHtml(item.name)} (${escapeHtml(item.keyword)})"><span class="tag-name">${escapeHtml(label)}</span></div>
+        <div class="cmp-cell col-cmp-vr"><span class="vr-pill vr-cat-${spec.category}" title="${escapeHtml(spec.name)}">${escapeHtml(item.vr)}</span></div>
+        <div class="cmp-cell col-cmp-val" title="${escapeHtml(valText)}"><span class="${valCls}">${escapeHtml(valText)}</span></div>
+      </div>`;
+    };
+
+    const htmlA = [];
+    const htmlB = [];
+    for (let i = 0; i < rows.length; i++) {
+      const { kind, a, b } = rows[i];
+      htmlA.push(renderCellRow(a, kind, 'a', i));
+      htmlB.push(renderCellRow(b, kind, 'b', i));
+    }
+
+    bodyA.innerHTML = htmlA.join('');
+    bodyB.innerHTML = htmlB.join('');
+    bodyA.scrollTop = 0;
+    bodyB.scrollTop = 0;
+    this._updateNavStatus();
+  }
+}

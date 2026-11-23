@@ -13,6 +13,7 @@ import { FileListPanel } from './ui/fileList.js';
 import { TreeView } from './ui/treeView.js';
 import { InspectorPanel } from './ui/inspector.js';
 import { PixelPanel } from './ui/pixelPanel.js';
+import { CompareView, INTERNAL_FILE_DRAG_MIME } from './ui/compareView.js';
 import { ModalManager } from './ui/modals.js';
 import { icons, escapeHtml } from './ui/icons.js';
 import { t, getLang } from './i18n.js';
@@ -52,6 +53,10 @@ const btnCollapseAll = document.getElementById('btn-collapse-all');
 const statusCounts = document.getElementById('status-counts');
 
 const fileListPane = document.getElementById('filelist-pane');
+const treePane = document.getElementById('tree-pane');
+const resizer = document.getElementById('pane-resizer');
+const sidePane = document.getElementById('side-pane');
+const comparePane = document.getElementById('compare-pane');
 const summaryStrip = document.getElementById('summary-strip');
 const treeBody = document.getElementById('tree-body');
 const inspectorContainer = document.getElementById('inspector-container');
@@ -218,7 +223,7 @@ const modals = new ModalManager(modalRoot, store, {
 const fileListPanel = new FileListPanel(fileListPane, store, {
   onAddFiles: () => openFileDialog(),
   onClearAll: () => goHomeWithConfirm(),
-  onCompare: () => modals.openCompare(),
+  onCompare: () => (store.compareMode ? store.exitCompareMode() : store.enterCompareMode()),
   onBatchEdit: () => modals.openBatchEdit(),
   onSaveZip: () => saveAllAsZip(),
   onSwitchError: (err, entry) =>
@@ -231,6 +236,7 @@ const inspector = new InspectorPanel(inspectorContainer, store, {
 });
 
 const pixelPanel = new PixelPanel(pixelContainer, store);
+const compareView = new CompareView(comparePane, store);
 
 // ============================================================================
 // Render Synchronization
@@ -263,6 +269,13 @@ function updateToolbarAndHeader() {
   welcomeView.classList.toggle('hidden', hasDoc);
   editorView.classList.toggle('hidden', !hasDoc);
   mobileNav.classList.toggle('hidden', !hasDoc);
+
+  const inCompare = hasDoc && store.compareMode && fileCount >= 2;
+  editorView.classList.toggle('compare-active', inCompare);
+  treePane.classList.toggle('hidden', inCompare);
+  resizer.classList.toggle('hidden', inCompare);
+  sidePane.classList.toggle('hidden', inCompare);
+  comparePane.classList.toggle('hidden', !inCompare);
 
   // Sync mobile tab state on editor view & bottom nav
   editorView.setAttribute('data-mobile-tab', store.mobileTab);
@@ -386,6 +399,10 @@ store.subscribe((reason) => {
   }
   updateToolbarAndHeader();
   fileListPanel.render();
+  if (store.compareMode && store.files.length >= 2) {
+    compareView.render();
+    return;
+  }
   treeView.render(reason);
   inspector.render(reason);
   pixelPanel.sync(reason === 'document' || reason === 'layout' || reason === 'lang');
@@ -695,25 +712,31 @@ function readEntryRecursive(entry, prefix = '') {
 }
 
 let dragDepth = 0;
+const isInternalFileDrag = (e) =>
+  Array.from(e.dataTransfer?.types || []).includes(INTERNAL_FILE_DRAG_MIME);
 
 window.addEventListener('dragenter', (e) => {
+  if (isInternalFileDrag(e)) return;
   e.preventDefault();
   dragDepth++;
   dragOverlay.classList.remove('hidden');
 });
 
 window.addEventListener('dragover', (e) => {
+  if (isInternalFileDrag(e)) return;
   e.preventDefault();
   if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
 });
 
 window.addEventListener('dragleave', (e) => {
+  if (isInternalFileDrag(e)) return;
   e.preventDefault();
   dragDepth = Math.max(0, dragDepth - 1);
   if (dragDepth === 0) dragOverlay.classList.add('hidden');
 });
 
 window.addEventListener('drop', (e) => {
+  if (isInternalFileDrag(e)) return;
   e.preventDefault();
   dragDepth = 0;
   dragOverlay.classList.add('hidden');
@@ -824,9 +847,14 @@ btnCollapseAll.addEventListener('click', () => store.collapseAll());
 
 // Global keyboard shortcuts
 window.addEventListener('keydown', (e) => {
+  if (!modalRoot.classList.contains('hidden')) return;
+  if (e.key === 'Escape' && store.compareMode && !e.target.closest('input, textarea, select')) {
+    e.preventDefault();
+    store.exitCompareMode();
+    return;
+  }
   const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
-  if (!modalRoot.classList.contains('hidden')) return;
   const key = e.key.toLowerCase();
 
   if (key === 'o') {
@@ -838,8 +866,12 @@ window.addEventListener('keydown', (e) => {
     else saveDocumentDirect();
   } else if (key === 'f' && store.doc) {
     e.preventDefault();
-    searchInput.focus();
-    searchInput.select();
+    if (store.compareMode) {
+      compareView.focusSearch();
+    } else {
+      searchInput.focus();
+      searchInput.select();
+    }
   } else if (key === 'z' && store.doc) {
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
@@ -855,9 +887,6 @@ window.addEventListener('keydown', (e) => {
 });
 
 // Resizer between tree pane and side pane
-const resizer = document.getElementById('pane-resizer');
-const sidePane = document.getElementById('side-pane');
-
 resizer.addEventListener('mousedown', (e) => {
   e.preventDefault();
   resizer.classList.add('active');

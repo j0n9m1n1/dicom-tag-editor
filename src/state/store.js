@@ -144,6 +144,9 @@ export class AppStore {
     this.showPixelPanel = true;
     this._userPrefPixelOpen = true;
     this.showFileList = false;
+    this.compareMode = false;
+    this.compareFileAId = null;
+    this.compareFileBId = null;
     this.mobileTab = 'tree'; // 'files' | 'tree' | 'inspector' | 'pixel'
     this.theme = safeStorageGet('dcm_editor_theme') || 'dark';
     this.uiStyle = safeStorageGet('dcm_editor_ui') === 'raw' ? 'raw' : 'modern';
@@ -217,6 +220,40 @@ export class AppStore {
   toggleFileList() {
     this.showFileList = !this.showFileList;
     this.emit('layout');
+  }
+
+  enterCompareMode(fileAId = null, fileBId = null) {
+    if (this.files.length < 2) return;
+    const validIds = new Set(this.files.map((f) => f.id));
+    let a = fileAId && validIds.has(fileAId)
+      ? fileAId
+      : this.compareFileAId && validIds.has(this.compareFileAId)
+        ? this.compareFileAId
+        : this.activeFileId || this.files[0].id;
+    let b = fileBId && validIds.has(fileBId)
+      ? fileBId
+      : this.compareFileBId && validIds.has(this.compareFileBId) && this.compareFileBId !== a
+        ? this.compareFileBId
+        : (this.files.find((f) => f.id !== a) || this.files[1]).id;
+    this.compareFileAId = a;
+    this.compareFileBId = b;
+    this.compareMode = true;
+    this.mobileTab = 'tree';
+    this.emit('compare');
+  }
+
+  exitCompareMode() {
+    if (!this.compareMode) return;
+    this.compareMode = false;
+    this.emit('compare');
+  }
+
+  setCompareFiles(fileAId, fileBId) {
+    if (this.files.length < 2) return;
+    const validIds = new Set(this.files.map((f) => f.id));
+    if (fileAId && validIds.has(fileAId)) this.compareFileAId = fileAId;
+    if (fileBId && validIds.has(fileBId)) this.compareFileBId = fileBId;
+    this.emit('compare');
   }
 
   setMobileTab(tab) {
@@ -476,6 +513,16 @@ export class AppStore {
 
     if (this.files.length <= 1) {
       this.showFileList = false;
+      this.compareMode = false;
+      this.compareFileAId = null;
+      this.compareFileBId = null;
+    } else if (this.compareMode) {
+      if (this.compareFileAId === fileId) {
+        this.compareFileAId = (this.files.find((f) => f.id !== this.compareFileBId) || this.files[0]).id;
+      }
+      if (this.compareFileBId === fileId) {
+        this.compareFileBId = (this.files.find((f) => f.id !== this.compareFileAId) || this.files[0]).id;
+      }
     }
 
     if (this.files.length === 0) {
@@ -527,6 +574,9 @@ export class AppStore {
     this.files = [];
     this._bindEntryToActive(null);
     this.showFileList = false;
+    this.compareMode = false;
+    this.compareFileAId = null;
+    this.compareFileBId = null;
     this.searchQuery = '';
     this.filterMode = 'all';
     this.mobileTab = 'tree';
