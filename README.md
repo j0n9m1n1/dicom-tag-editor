@@ -34,8 +34,9 @@ All parsing, editing, VR validation, multi-file comparison, anonymization, pixel
   - Inline split workspace (`File A | Draggable Resizer | File B`) with 4 content-sized columns (`Tag | Keyword | VR | Value`)
   - Structured DICOM order (`File Meta 0002` → `Main Dataset` → nested `SQ` children), synchronized scroll/hover/selection, keyboard navigation (`↑↓`, `PageUp/PageDown`, `Home/End`), `Show differences only`, search, Prev/Next diff stepper, and compact diff stat chips
   - Assign File A / B via top dropdowns OR by dragging files directly from the top tab bar or `Open Files` sidebar
-- **Raw View (`dcmdump` & DICOM JSON) + Error Diagnostics**
-  - View, copy to clipboard, or export the entire dataset as DCMTK `dcmdump`-compatible text or structured JSON
+- **Inline Raw View (`dcmdump` · DICOM JSON · Binary Hex) + Error Diagnostics**
+  - Switch seamlessly across **`Tree` / `Raw` / `Compare`** view modes right from the topbar
+  - Inspect, search, copy, or export the live dataset as DCMTK `dcmdump` text, structured DICOM JSON, or paginated **Binary Hex dump** with quick jumps (`0x0000 Preamble`, `0x0080 DICM`, `Main`, `PixelData`)
   - Built-in **File Open Error Diagnostics** modal inspecting Part 10 `DICM` header, detected non-DICOM signatures, failure offset, and hex preview
 - **Collapsible Pixel Preview Dock**
   - Supports uncompressed Grayscale (8/16-bit signed/unsigned, `MONOCHROME1/2`, Rescale Slope/Intercept), RGB, `YBR_FULL`, `YBR_FULL_422`, **RLE Lossless**, **JPEG Baseline**, and multi-frame stepping

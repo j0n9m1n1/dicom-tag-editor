@@ -34,6 +34,7 @@ const PRECACHE_URLS = [
   './src/ui/fileList.js',
   './src/ui/fileTabs.js',
   './src/ui/compareView.js',
+  './src/ui/rawView.js',
   './src/ui/icons.js',
   './src/ui/inspector.js',
   './src/ui/modals.js',

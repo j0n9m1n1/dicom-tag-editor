@@ -9,6 +9,7 @@ import { validateVrValue } from '../src/dicom/vrSpec.js';
 import { formatDicomJson } from '../src/dicom/dcmdump.js';
 import { DICOM_DICTIONARY, lookupTag, lookupUidName, searchDictionary } from '../src/dicom/dictionary.js';
 import { buildCompareRows } from '../src/ui/compareView.js';
+import { formatHexSlice, findSerializedLandmarks } from '../src/ui/rawView.js';
 import { formatTabLabel } from '../src/ui/fileTabs.js';
 import { buildZipArchive } from '../src/utils/zipWriter.js';
 import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges } from '../src/state/store.js';
@@ -849,4 +850,48 @@ test('buildCompareRows detects binary VR differences and preserves SQ parent con
   assert.equal(res.rows[sqChildIdx].isContext, true);
   assert.equal(leafIdx, sqChildIdx + 1);
   assert.equal(res.rows[leafIdx].kind, 'changed');
+});
+
+test('AppStore viewMode switches Tree/Raw/Compare cleanly and RawView locates serialized Hex landmarks', async () => {
+  const sampleBytes = new Uint8Array(await generateSampleDicomBuffer());
+  const a = await parseDicomBuffer(sampleBytes.buffer, 'a.dcm');
+  const b = await parseDicomBuffer(sampleBytes.buffer, 'b.dcm');
+  const store = new AppStore();
+
+  store.loadDocument(a);
+  assert.equal(store.viewMode, 'tree');
+  store.setViewMode('raw');
+  assert.equal(store.viewMode, 'raw');
+  assert.equal(store.compareMode, false);
+
+  // Appending and switching tabs preserves Raw mode while Compare exits on tab switch
+  store.loadDocument(b, null, { append: true });
+  assert.equal(store.viewMode, 'raw');
+  await store.switchToFile(store.files[0].id);
+  assert.equal(store.viewMode, 'raw');
+
+  store.setViewMode('compare');
+  assert.equal(store.viewMode, 'compare');
+  assert.equal(store.compareMode, true);
+  await store.switchToFile(store.files[1].id);
+  assert.equal(store.viewMode, 'tree');
+  assert.equal(store.compareMode, false);
+
+  // Serialized Hex landmarks & formatting on sample Part 10 DICOM
+  const serialized = await writeDicomDocument(a);
+  const landmarks = findSerializedLandmarks(serialized, a);
+  assert.equal(landmarks.preambleOffset, 0);
+  assert.equal(landmarks.dicmOffset, 128);
+  assert.ok(landmarks.mainOffset > 144);
+  assert.ok(landmarks.pixelOffset !== null && landmarks.pixelOffset > landmarks.mainOffset);
+  assert.equal(serialized[landmarks.pixelOffset], 0xe0);
+  assert.equal(serialized[landmarks.pixelOffset + 1], 0x7f);
+  assert.equal(serialized[landmarks.pixelOffset + 2], 0x10);
+  assert.equal(serialized[landmarks.pixelOffset + 3], 0x00);
+
+  const slice = formatHexSlice(serialized, 128, 32);
+  assert.equal(slice.startOffset, 128);
+  assert.equal(slice.lines.length, 2);
+  assert.ok(slice.lines[0].text.startsWith('00000080  44 49 43 4D'));
+  assert.ok(slice.lines[0].text.includes('|DICM'));
 });

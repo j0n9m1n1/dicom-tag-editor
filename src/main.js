@@ -15,6 +15,7 @@ import { TreeView } from './ui/treeView.js';
 import { InspectorPanel } from './ui/inspector.js';
 import { PixelPanel } from './ui/pixelPanel.js';
 import { CompareView, INTERNAL_FILE_DRAG_MIME } from './ui/compareView.js';
+import { RawView } from './ui/rawView.js';
 import { ModalManager } from './ui/modals.js';
 import { icons, escapeHtml } from './ui/icons.js';
 import { t, getLang } from './i18n.js';
@@ -28,12 +29,14 @@ const editorView = document.getElementById('editor-view');
 
 const btnOpen = document.getElementById('btn-open');
 const btnFiles = document.getElementById('btn-files');
-const btnCompare = document.getElementById('btn-compare');
+const viewModeGroup = document.getElementById('view-mode-group');
+const btnViewTree = document.getElementById('btn-view-tree');
+const btnViewRaw = document.getElementById('btn-view-raw');
+const btnViewCompare = document.getElementById('btn-view-compare');
 const btnUndo = document.getElementById('btn-undo');
 const btnRedo = document.getElementById('btn-redo');
 const btnEditMenu = document.getElementById('btn-edit-menu');
 const btnDiff = document.getElementById('btn-diff');
-const btnRaw = document.getElementById('btn-raw');
 const saveSplitBtn = document.getElementById('save-split-btn');
 const btnSaveMain = document.getElementById('btn-save-main');
 const btnSaveMenu = document.getElementById('btn-save-menu');
@@ -59,6 +62,7 @@ const fileTabsBar = document.getElementById('file-tabs-bar');
 const treePane = document.getElementById('tree-pane');
 const resizer = document.getElementById('pane-resizer');
 const sidePane = document.getElementById('side-pane');
+const rawPane = document.getElementById('raw-pane');
 const comparePane = document.getElementById('compare-pane');
 const summaryStrip = document.getElementById('summary-strip');
 const treeBody = document.getElementById('tree-body');
@@ -152,8 +156,12 @@ function applyLanguage() {
   btnOpen.title = t('btnOpenTitle');
   btnFiles.innerHTML = `${icons.files(15)}<span>${t('btnFiles')} (${store.files.length})</span>`;
   btnFiles.title = t('btnFilesTitle');
-  btnCompare.innerHTML = `${icons.compare(15)}<span>${t('btnCompare')}</span>`;
-  btnCompare.title = store.files.length >= 2 ? t('btnCompareTitle') : t('btnCompareNeedTwoTitle');
+  btnViewTree.innerHTML = `${icons.tree(14)}<span>${t('viewModeTree')}</span>`;
+  btnViewTree.title = t('viewModeTreeTitle');
+  btnViewRaw.innerHTML = `${icons.code(14)}<span>${t('viewModeRaw')}</span>`;
+  btnViewRaw.title = t('viewModeRawTitle');
+  btnViewCompare.innerHTML = `${icons.compare(14)}<span>${t('btnCompare')}</span>`;
+  btnViewCompare.title = store.files.length >= 2 ? t('btnCompareTitle') : t('btnCompareNeedTwoTitle');
   btnUndo.innerHTML = `${icons.undo(15)}`;
   btnUndo.title = t('btnUndoTitle');
   btnRedo.innerHTML = `${icons.redo(15)}`;
@@ -162,8 +170,6 @@ function applyLanguage() {
   btnEditMenu.title = t('btnEditTitle');
   btnDiff.innerHTML = `${icons.diff(15)}<span>${t('btnDiff')}</span>`;
   btnDiff.title = t('btnDiffTitle');
-  btnRaw.innerHTML = `${icons.code(15)}<span>${t('btnRaw')}</span>`;
-  btnRaw.title = t('btnRawTitle');
   btnSaveMain.innerHTML = `${icons.save(15)}<span>${t('btnSave')}</span>`;
   btnSaveMain.title = store.fileHandle ? t('btnSaveDirectTitle') : t('btnSaveAsTitle');
   btnSaveMenu.innerHTML = icons.chevronDown(13);
@@ -208,7 +214,7 @@ const treeView = new TreeView(treeBody, store, {
 const modals = new ModalManager(modalRoot, store, {
   onSaveAs: () => saveDocumentAs(),
   onJumpToNode: (id) => {
-    if (store.compareMode) store.exitCompareMode();
+    if (store.viewMode !== 'tree') store.setViewMode('tree');
     store.setSearchQuery('');
     store.setFilterMode('all');
     store.expandAll();
@@ -243,6 +249,7 @@ const inspector = new InspectorPanel(inspectorContainer, store, {
 });
 
 const pixelPanel = new PixelPanel(pixelContainer, store);
+const rawView = new RawView(rawPane, store, { onToast: showToast });
 const compareView = new CompareView(comparePane, store);
 
 // ============================================================================
@@ -277,40 +284,50 @@ function updateToolbarAndHeader() {
   editorView.classList.toggle('hidden', !hasDoc);
   mobileNav.classList.toggle('hidden', !hasDoc);
 
-  const inCompare = hasDoc && store.compareMode && fileCount >= 2;
+  const inCompare = hasDoc && store.viewMode === 'compare' && fileCount >= 2;
+  const inRaw = hasDoc && store.viewMode === 'raw';
+  const inTree = hasDoc && !inCompare && !inRaw;
   editorView.classList.toggle('compare-active', inCompare);
-  treePane.classList.toggle('hidden', inCompare);
-  resizer.classList.toggle('hidden', inCompare);
-  sidePane.classList.toggle('hidden', inCompare);
+  editorView.classList.toggle('raw-active', inRaw);
+  treePane.classList.toggle('hidden', !inTree);
+  resizer.classList.toggle('hidden', !inTree);
+  sidePane.classList.toggle('hidden', !inTree);
+  rawPane.classList.toggle('hidden', !inRaw);
   comparePane.classList.toggle('hidden', !inCompare);
 
   // Sync mobile tab state on editor view & bottom nav
   editorView.setAttribute('data-mobile-tab', store.mobileTab);
   mobFilesCount.textContent = String(fileCount);
+  const isSpecialView = inCompare || inRaw;
   mobileNav.querySelectorAll('.mob-tab').forEach((tab) => {
-    const isActiveMobTab = inCompare
+    const isActiveMobTab = isSpecialView
       ? store.mobileTab === 'files' && tab.dataset.mobTab === 'files'
       : tab.dataset.mobTab === store.mobileTab;
     tab.classList.toggle('active', isActiveMobTab);
   });
 
-  // Files & Compare toggle buttons in topbar
+  // Files toggle & View Mode segmented switcher in topbar
   btnFiles.classList.toggle('hidden', !hasDoc);
   btnFiles.innerHTML = `${icons.files(15)}<span>${t('btnFiles')} (${fileCount})</span>`;
   btnFiles.classList.toggle('btn-primary', store.showFileList && hasDoc);
 
-  btnCompare.classList.toggle('hidden', !hasDoc);
-  btnCompare.disabled = !hasDoc || fileCount < 2;
-  btnCompare.classList.toggle('btn-primary', inCompare);
-  btnCompare.setAttribute('aria-pressed', String(inCompare));
-  btnCompare.title = fileCount >= 2 ? t('btnCompareTitle') : t('btnCompareNeedTwoTitle');
+  viewModeGroup.classList.toggle('hidden', !hasDoc);
+  btnViewTree.disabled = !hasDoc;
+  btnViewRaw.disabled = !hasDoc;
+  btnViewCompare.disabled = !hasDoc || fileCount < 2;
+  btnViewCompare.title = fileCount >= 2 ? t('btnCompareTitle') : t('btnCompareNeedTwoTitle');
+  btnViewTree.classList.toggle('active', inTree);
+  btnViewRaw.classList.toggle('active', inRaw);
+  btnViewCompare.classList.toggle('active', inCompare);
+  btnViewTree.setAttribute('aria-pressed', String(inTree));
+  btnViewRaw.setAttribute('aria-pressed', String(inRaw));
+  btnViewCompare.setAttribute('aria-pressed', String(inCompare));
 
   const busy = saveInProgress || store.anonymizing;
   btnUndo.disabled = inCompare || !store.canUndo();
   btnRedo.disabled = inCompare || !store.canRedo();
   btnEditMenu.disabled = !hasDoc || busy;
   btnDiff.disabled = !hasDoc || inCompare;
-  btnRaw.disabled = !hasDoc || inCompare;
   btnSaveMain.disabled = !hasDoc || inCompare || busy;
   btnSaveMain.title = store.fileHandle ? t('btnSaveDirectTitle') : t('btnSaveAsTitle');
   btnSaveMenu.disabled = !hasDoc || busy || (inCompare && fileCount < 2);
@@ -410,7 +427,7 @@ store.subscribe((reason) => {
     inspector.render(reason);
     return;
   }
-  if (reason === 'document' || reason === 'compare' || reason === 'lang') {
+  if (reason === 'document' || reason === 'compare' || reason === 'view' || reason === 'lang') {
     closeToolbarMenu();
   }
   if (reason === 'lang') {
@@ -419,12 +436,17 @@ store.subscribe((reason) => {
   if (lastWorkspaceVersion !== store.workspaceVersion) {
     lastWorkspaceVersion = store.workspaceVersion;
     compareView.reset();
+    rawView.reset();
   }
   updateToolbarAndHeader();
   fileListPanel.render();
   fileTabs.render();
-  if (store.compareMode && store.files.length >= 2) {
+  if (store.viewMode === 'compare' && store.files.length >= 2) {
     compareView.render();
+    return;
+  }
+  if (store.viewMode === 'raw' && store.doc) {
+    rawView.render();
     return;
   }
   treeView.render(reason);
@@ -948,9 +970,10 @@ btnWelcomeInstall.addEventListener('click', async () => {
   }
 });
 btnFiles.addEventListener('click', () => store.toggleFileList());
-btnCompare.addEventListener('click', () => {
-  if (store.compareMode) store.exitCompareMode();
-  else store.enterCompareMode();
+viewModeGroup.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-view-mode]');
+  if (!btn || btn.disabled) return;
+  store.setViewMode(btn.dataset.viewMode);
 });
 
 // ============================================================================
@@ -1075,11 +1098,19 @@ function openSaveMenu() {
   const hasDoc = Boolean(store.doc);
   const fileCount = store.files.length;
   const inCompare = hasDoc && store.compareMode && fileCount >= 2;
+  const inRaw = hasDoc && store.viewMode === 'raw';
   const busy = saveInProgress || store.anonymizing;
   const canDirectSave = hasDoc && Boolean(store.fileHandle);
   const canFolderSave = window.isSecureContext && typeof window.showDirectoryPicker === 'function';
 
   openToolbarMenu(btnSaveMenu, saveSplitBtn, [
+    ...(inRaw
+      ? [{
+          icon: icons.code(14),
+          label: t('saveMenuExportRaw', { ext: rawView.getExportExtension() }),
+          action: () => rawView.exportCurrent(),
+        }, { sep: true }]
+      : []),
     ...(canDirectSave
       ? [{
           icon: icons.save(14),
@@ -1117,7 +1148,6 @@ btnUndo.addEventListener('click', () => store.undo());
 btnRedo.addEventListener('click', () => store.redo());
 btnEditMenu.addEventListener('click', () => openEditMenu());
 btnDiff.addEventListener('click', () => modals.openDiff());
-btnRaw.addEventListener('click', () => modals.openRawView());
 btnSaveMain.addEventListener('click', () => {
   closeToolbarMenu();
   if (store.fileHandle) saveDocumentDirect();
@@ -1130,8 +1160,8 @@ mobileNav.addEventListener('click', (e) => {
   const tab = e.target.closest('.mob-tab');
   if (!tab) return;
   const nextTab = tab.dataset.mobTab;
-  if (store.compareMode && nextTab !== 'files') {
-    store.exitCompareMode();
+  if (store.viewMode !== 'tree' && nextTab !== 'files') {
+    store.setViewMode('tree');
   }
   store.setMobileTab(nextTab);
 });
@@ -1170,9 +1200,9 @@ window.addEventListener('keydown', (e) => {
     }
   }
   if (!modalRoot.classList.contains('hidden')) return;
-  if (e.key === 'Escape' && store.compareMode && !e.target?.closest?.('input, textarea, select')) {
+  if (e.key === 'Escape' && store.viewMode !== 'tree' && !e.target?.closest?.('input, textarea, select')) {
     e.preventDefault();
-    store.exitCompareMode();
+    store.setViewMode('tree');
     return;
   }
   if (
@@ -1211,6 +1241,8 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (store.compareMode) {
       compareView.focusSearch();
+    } else if (store.viewMode === 'raw') {
+      rawView.focusSearch();
     } else {
       searchInput.focus();
       searchInput.select();

@@ -8,7 +8,6 @@
 import { ALL_VR_CODES, getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
 import { parseTagString, searchDictionary, lookupTag, tagHex } from '../dicom/dictionary.js';
 import { formatByteSize } from '../dicom/parser.js';
-import { formatDcmDump, formatDicomJson } from '../dicom/dcmdump.js';
 import { ANONYMIZE_PRESET_TAGS, getReadOnlyTagMessage } from '../state/store.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLang, getLocalizedVrText } from '../i18n.js';
@@ -435,105 +434,6 @@ export class ModalManager {
           count > 0 ? 'ok' : 'info'
         );
       }
-    });
-  }
-
-  /**
-   * Open Raw DICOM View modal (DCMTK dcmdump text & structured JSON).
-   */
-  openRawView() {
-    if (!this.store.doc) return;
-    let mode = 'dcmdump';
-    let includeDeleted = false;
-
-    const getText = () =>
-      mode === 'dcmdump'
-        ? formatDcmDump(this.store.doc, { includeDeleted })
-        : formatDicomJson(this.store.doc, { includeDeleted });
-
-    this.root.innerHTML = `
-      <div class="modal-card modal-xl" role="dialog" aria-modal="true">
-        <div class="modal-header">
-          <div>
-            <h3>${escapeHtml(t('modalRawTitle'))}</h3>
-            <div class="muted small">${escapeHtml(t('modalRawSubtitle'))}</div>
-          </div>
-          <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
-        </div>
-        <div class="raw-toolbar">
-          <div class="raw-tabs">
-            <button class="chip active" data-raw-mode="dcmdump">dcmdump (Text)</button>
-            <button class="chip" data-raw-mode="json">DICOM JSON</button>
-          </div>
-          <label class="checkbox-row small">
-            <input type="checkbox" id="raw-inc-del" />
-            <span>${escapeHtml(t('modalRawIncludeDeleted'))}</span>
-          </label>
-        </div>
-        <div class="modal-body modal-scroll raw-body">
-          <pre class="raw-pre" id="raw-output-pre"></pre>
-        </div>
-        <div class="modal-footer">
-          <button class="btn" id="btn-raw-copy">${icons.copy(14)} ${escapeHtml(t('modalRawCopy'))}</button>
-          <button class="btn btn-primary" id="btn-raw-download">${icons.download(14)} ${escapeHtml(t('modalRawExport'))}</button>
-          <button class="btn" data-modal-close>${escapeHtml(t('modalClose'))}</button>
-        </div>
-      </div>
-    `;
-
-    this.root.classList.remove('hidden');
-
-    const preEl = this.root.querySelector('#raw-output-pre');
-    const delCb = this.root.querySelector('#raw-inc-del');
-    const renderRaw = () => {
-      preEl.textContent = getText();
-    };
-    renderRaw();
-
-    this.root.querySelectorAll('[data-raw-mode]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        mode = btn.dataset.rawMode;
-        this.root.querySelectorAll('[data-raw-mode]').forEach((b) =>
-          b.classList.toggle('active', b.dataset.rawMode === mode)
-        );
-        renderRaw();
-      });
-    });
-
-    delCb.addEventListener('change', () => {
-      includeDeleted = delCb.checked;
-      renderRaw();
-    });
-
-    this.root.querySelector('#btn-raw-copy').addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(getText());
-        this.callbacks.onToast?.(t('toastCopied'), 'ok');
-      } catch {
-        const range = document.createRange();
-        range.selectNodeContents(preEl);
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-        document.execCommand('copy');
-        sel.removeAllRanges();
-        this.callbacks.onToast?.(t('toastCopied'), 'ok');
-      }
-    });
-
-    this.root.querySelector('#btn-raw-download').addEventListener('click', () => {
-      const ext = mode === 'dcmdump' ? 'txt' : 'json';
-      const mime = mode === 'dcmdump' ? 'text/plain;charset=utf-8' : 'application/json;charset=utf-8';
-      const base = this.store.doc.fileName.replace(/\.dcm$/i, '');
-      const blob = new Blob([getText()], { type: mime });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${base}_${mode}.${ext}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
   }
 

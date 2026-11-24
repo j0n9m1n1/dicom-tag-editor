@@ -146,7 +146,7 @@ export class AppStore {
     this._userPrefPixelOpen = true;
     this.showFileList = false;
     this._userToggledFileList = false;
-    this.compareMode = false;
+    this.viewMode = 'tree'; // 'tree' | 'raw' | 'compare'
     this.compareFileAId = null;
     this.compareFileBId = null;
     this.mobileTab = 'tree'; // 'files' | 'tree' | 'inspector' | 'pixel'
@@ -225,6 +225,37 @@ export class AppStore {
     this._userToggledFileList = true;
     this.showFileList = !this.showFileList;
     this.emit('layout');
+  }
+
+  get compareMode() {
+    return this.viewMode === 'compare';
+  }
+
+  set compareMode(val) {
+    if (val) {
+      this.viewMode = 'compare';
+    } else if (this.viewMode === 'compare') {
+      this.viewMode = 'tree';
+    }
+  }
+
+  setViewMode(mode) {
+    if (mode === 'compare') {
+      this.enterCompareMode();
+      return;
+    }
+    if (mode === 'raw') {
+      if (!this.doc) return;
+      if (this.viewMode === 'raw' && this.mobileTab === 'tree') return;
+      this.viewMode = 'raw';
+      this.mobileTab = 'tree';
+      this.emit('view');
+      return;
+    }
+    if (this.viewMode !== 'tree') {
+      this.viewMode = 'tree';
+      this.emit('view');
+    }
   }
 
   enterCompareMode(fileAId = null, fileBId = null) {
@@ -369,6 +400,7 @@ export class AppStore {
       this.files = [entry];
       this.showFileList = false;
       this._userToggledFileList = false;
+      this.viewMode = 'tree';
       this.compareFileAId = null;
       this.compareFileBId = null;
       this.workspaceVersion++;
@@ -457,7 +489,7 @@ export class AppStore {
       this.files.push(...newEntries);
     } else {
       this.files = newEntries;
-      this.compareMode = false;
+      this.viewMode = 'tree';
       this.compareFileAId = null;
       this.compareFileBId = null;
       this.workspaceVersion++;
@@ -589,7 +621,7 @@ export class AppStore {
     this.files = [];
     this.showFileList = false;
     this._userToggledFileList = false;
-    this.compareMode = false;
+    this.viewMode = 'tree'; // 'tree' | 'raw' | 'compare'
     this.compareFileAId = null;
     this.compareFileBId = null;
     this.searchQuery = '';
