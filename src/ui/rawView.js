@@ -12,47 +12,90 @@ import { copyTextToClipboard, downloadBlobBytes } from '../utils/uiHelpers.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
 
-export const HEX_PAGE_SIZE = 16384; // 16 KB (1,024 rows) per page for smooth rendering of large DICOMs
+export const HEX_PAGE_SIZE = 16384; // ~16 KB per page for smooth rendering of large DICOMs
+export const HEX_BYTES_PER_ROW_OPTIONS = [8, 16, 24, 32, 64];
+const HEX_BPR_STORAGE_KEY = 'dcm_editor_hex_bpr';
 const MAX_SEARCH_HIGHLIGHTS = 2000;
 const MAX_FULL_HEX_EXPORT_BYTES = 2 * 1024 * 1024; // 2 MB binary -> ~10 MB hex text
 
+function normalizeBytesPerRow(val) {
+  const n = Number(val);
+  return HEX_BYTES_PER_ROW_OPTIONS.includes(n) ? n : 16;
+}
+
+function loadSavedBytesPerRow() {
+  try {
+    return normalizeBytesPerRow(localStorage.getItem(HEX_BPR_STORAGE_KEY));
+  } catch {
+    return 16;
+  }
+}
+
+function saveBytesPerRow(bpr) {
+  try {
+    localStorage.setItem(HEX_BPR_STORAGE_KEY, String(bpr));
+  } catch {
+    // ignore restricted storage
+  }
+}
+
 /**
- * Format a slice of bytes into classic 16-bytes-per-row hex + ASCII dump lines.
+ * Format the column header ruler matching formatHexSlice() for a given bytesPerRow width.
+ * @param {number} [bytesPerRow]
+ */
+export function formatHexRuler(bytesPerRow = 16) {
+  const bpr = normalizeBytesPerRow(bytesPerRow);
+  const groups = [];
+  for (let start = 0; start < bpr; start += 8) {
+    const chunk = [];
+    for (let j = 0; j < 8 && start + j < bpr; j++) {
+      chunk.push((start + j).toString(16).toUpperCase().padStart(2, '0'));
+    }
+    groups.push(chunk.join(' '));
+  }
+  return `${'Offset'.padEnd(8, ' ')}  ${groups.join('  ')}  |ASCII`;
+}
+
+/**
+ * Format a slice of bytes into hex + ASCII dump lines (8/16/24/32/64 bytes per row).
  * @param {Uint8Array} bytes
  * @param {number} [startOffset]
  * @param {number} [length]
+ * @param {number} [bytesPerRow]
  */
-export function formatHexSlice(bytes, startOffset = 0, length = HEX_PAGE_SIZE) {
+export function formatHexSlice(bytes, startOffset = 0, length = HEX_PAGE_SIZE, bytesPerRow = 16) {
   if (!bytes || bytes.length === 0) {
     return { lines: [], text: '(0 bytes)', startOffset: 0, endOffset: 0 };
   }
-  const alignedStart = Math.max(0, Math.min(bytes.length, startOffset - (startOffset % 16)));
-  const endOffset = Math.min(bytes.length, alignedStart + Math.max(16, length));
+  const bpr = normalizeBytesPerRow(bytesPerRow);
+  const alignedStart = Math.max(0, Math.min(bytes.length, startOffset - (startOffset % bpr)));
+  const endOffset = Math.min(bytes.length, alignedStart + Math.max(bpr, length));
   const lines = [];
 
-  for (let off = alignedStart; off < endOffset; off += 16) {
+  for (let off = alignedStart; off < endOffset; off += bpr) {
     const addr = off.toString(16).toUpperCase().padStart(8, '0');
-    const leftHex = [];
-    const rightHex = [];
+    const groups = [];
     let ascii = '';
 
-    for (let j = 0; j < 16; j++) {
-      if (off + j < endOffset) {
-        const b = bytes[off + j];
-        const hex = b.toString(16).toUpperCase().padStart(2, '0');
-        if (j < 8) leftHex.push(hex);
-        else rightHex.push(hex);
-        ascii += b >= 0x20 && b <= 0x7e ? String.fromCharCode(b) : '.';
-      } else {
-        if (j < 8) leftHex.push('  ');
-        else rightHex.push('  ');
-        ascii += ' ';
+    for (let gStart = 0; gStart < bpr; gStart += 8) {
+      const chunk = [];
+      for (let j = 0; j < 8 && gStart + j < bpr; j++) {
+        const idx = off + gStart + j;
+        if (idx < endOffset) {
+          const b = bytes[idx];
+          chunk.push(b.toString(16).toUpperCase().padStart(2, '0'));
+          ascii += b >= 0x20 && b <= 0x7e ? String.fromCharCode(b) : '.';
+        } else {
+          chunk.push('  ');
+          ascii += ' ';
+        }
       }
+      groups.push(chunk.join(' '));
     }
 
     lines.push({
       offset: off,
-      text: `${addr}  ${leftHex.join(' ')}  ${rightHex.join(' ')}  |${ascii}|`,
+      text: `${addr}  ${groups.join('  ')}  |${ascii}|`,
     });
   }
 
@@ -207,6 +250,7 @@ export class RawView {
     this.activeMatchIdx = -1;
 
     this.hexPage = 0;
+    this.hexBytesPerRow = loadSavedBytesPerRow();
     this.hexHighlightOffset = -1;
     this._hexCache = null; // { doc, rev, needsResave, bytes, landmarks }
     this._lastDocRef = null;
@@ -227,10 +271,15 @@ export class RawView {
       const searchInp = this.container.querySelector('#raw-search-input');
       const clearBtn = this.container.querySelector('#btn-raw-search-clear');
       const jumpInp = this.container.querySelector('#raw-hex-jump-input');
+      const rulerEl = this.container.querySelector('#raw-hex-ruler');
       const preEl = this.container.querySelector('#raw-inline-pre');
       if (searchInp) searchInp.value = '';
       if (clearBtn) clearBtn.classList.add('hidden');
       if (jumpInp) jumpInp.value = '';
+      if (rulerEl) {
+        rulerEl.textContent = '';
+        rulerEl.classList.add('hidden');
+      }
       if (preEl) preEl.innerHTML = '';
       this._updateMatchNav();
     }
@@ -286,6 +335,9 @@ export class RawView {
             <input type="text" class="input input-sm mono raw-hex-jump-input" id="raw-hex-jump-input" placeholder="0x0080" autocomplete="off" />
             <button type="button" class="btn btn-xs" id="btn-raw-hex-go">Go</button>
           </div>
+          <select class="input input-sm mono raw-hex-bpr-select" id="raw-hex-bpr-select">
+            ${HEX_BYTES_PER_ROW_OPTIONS.map((n) => `<option value="${n}" ${n === this.hexBytesPerRow ? 'selected' : ''}>${n} B</option>`).join('')}
+          </select>
           <div class="raw-hex-landmarks" id="raw-hex-landmarks"></div>
           <div class="compare-nav-group">
             <button type="button" class="btn btn-xs" id="raw-hex-prev" disabled>◀</button>
@@ -303,6 +355,7 @@ export class RawView {
       </div>
 
       <div class="raw-inline-body" id="raw-inline-body">
+        <div class="raw-hex-ruler hidden" id="raw-hex-ruler" aria-hidden="true"></div>
         <pre class="raw-inline-pre" id="raw-inline-pre"></pre>
       </div>
     `;
@@ -318,6 +371,7 @@ export class RawView {
     const delCb = this.container.querySelector('#raw-inc-del');
     const jumpInp = this.container.querySelector('#raw-hex-jump-input');
     const jumpBtn = this.container.querySelector('#btn-raw-hex-go');
+    const bprSel = this.container.querySelector('#raw-hex-bpr-select');
     const landmarksEl = this.container.querySelector('#raw-hex-landmarks');
     const prevPageBtn = this.container.querySelector('#raw-hex-prev');
     const nextPageBtn = this.container.querySelector('#raw-hex-next');
@@ -380,6 +434,22 @@ export class RawView {
       }
     });
 
+    bprSel.addEventListener('change', () => {
+      const nextBpr = normalizeBytesPerRow(bprSel.value);
+      if (nextBpr === this.hexBytesPerRow) return;
+      const anchorOffset = this.hexHighlightOffset >= 0
+        ? this.hexHighlightOffset
+        : this.hexPage * this._getHexPageSize();
+      this.hexBytesPerRow = nextBpr;
+      saveBytesPerRow(nextBpr);
+      const nextPageSize = this._getHexPageSize();
+      this.hexPage = Math.floor(anchorOffset / nextPageSize);
+      if (this.hexHighlightOffset >= 0) {
+        this.hexHighlightOffset = anchorOffset - (anchorOffset % nextBpr);
+      }
+      this._renderHexPage(this.hexHighlightOffset >= 0);
+    });
+
     landmarksEl.addEventListener('click', (e) => {
       const btn = e.target.closest('[data-hex-offset]');
       if (!btn) return;
@@ -413,6 +483,7 @@ export class RawView {
     const delLbl = this.container.querySelector('#raw-inc-del-lbl');
     const jumpInp = this.container.querySelector('#raw-hex-jump-input');
     const jumpBtn = this.container.querySelector('#btn-raw-hex-go');
+    const bprSel = this.container.querySelector('#raw-hex-bpr-select');
     const copyBtn = this.container.querySelector('#btn-raw-copy');
     const exportBtn = this.container.querySelector('#btn-raw-export');
     const closeBtn = this.container.querySelector('#btn-raw-close');
@@ -422,6 +493,10 @@ export class RawView {
     if (delLbl) delLbl.textContent = t('modalRawIncludeDeleted');
     if (jumpInp) jumpInp.title = t('rawHexJumpTitle');
     if (jumpBtn) jumpBtn.textContent = t('rawHexJumpBtn');
+    if (bprSel) {
+      bprSel.title = t('rawHexBprTitle');
+      bprSel.setAttribute('aria-label', t('rawHexBprTitle'));
+    }
     if (copyBtn) copyBtn.innerHTML = `${icons.copy(13)}<span>${escapeHtml(t('modalRawCopy'))}</span>`;
     if (exportBtn) exportBtn.innerHTML = `${icons.download(13)}<span>${escapeHtml(t('modalRawExport'))}</span>`;
     if (closeBtn) closeBtn.innerHTML = `${icons.x(13)}<span>${escapeHtml(t('rawExitBtn'))}</span>`;
@@ -459,6 +534,7 @@ export class RawView {
     });
     this.container.querySelector('#raw-text-controls')?.classList.toggle('hidden', isHex);
     this.container.querySelector('#raw-hex-controls')?.classList.toggle('hidden', !isHex);
+    this.container.querySelector('#raw-hex-ruler')?.classList.toggle('hidden', !isHex);
 
     if (isHex) {
       await this._renderHexContent({ preserveScroll });
@@ -588,9 +664,14 @@ export class RawView {
     return this._hexCache;
   }
 
+  _getHexPageSize() {
+    const bpr = normalizeBytesPerRow(this.hexBytesPerRow);
+    return Math.max(bpr, Math.floor(HEX_PAGE_SIZE / bpr) * bpr);
+  }
+
   _getHexTotalPages() {
     const len = this._hexCache?.bytes?.length || 0;
-    return Math.max(1, Math.ceil(len / HEX_PAGE_SIZE));
+    return Math.max(1, Math.ceil(len / this._getHexPageSize()));
   }
 
   async _renderHexContent({ preserveScroll = false } = {}) {
@@ -634,15 +715,18 @@ export class RawView {
   _jumpToHexOffset(offset) {
     const bytes = this._hexCache?.bytes;
     if (!bytes || bytes.length === 0) return;
+    const bpr = normalizeBytesPerRow(this.hexBytesPerRow);
+    const pageSize = this._getHexPageSize();
     const clamped = Math.max(0, Math.min(bytes.length - 1, Math.floor(offset)));
-    this.hexPage = Math.floor(clamped / HEX_PAGE_SIZE);
-    this.hexHighlightOffset = clamped - (clamped % 16);
+    this.hexPage = Math.floor(clamped / pageSize);
+    this.hexHighlightOffset = clamped - (clamped % bpr);
     this._renderHexPage(true);
   }
 
   _renderHexPage(scrollToHighlight = false, preserveScroll = false) {
     const cache = this._hexCache;
     const preEl = this.container.querySelector('#raw-inline-pre');
+    const rulerEl = this.container.querySelector('#raw-hex-ruler');
     const bodyEl = this.container.querySelector('#raw-inline-body');
     const pagePos = this.container.querySelector('#raw-hex-page-pos');
     const prevBtn = this.container.querySelector('#raw-hex-prev');
@@ -652,15 +736,24 @@ export class RawView {
 
     const prevScrollTop = preserveScroll && bodyEl ? bodyEl.scrollTop : 0;
     const { bytes } = cache;
+    const bpr = normalizeBytesPerRow(this.hexBytesPerRow);
+    const pageSize = this._getHexPageSize();
     const totalPages = this._getHexTotalPages();
-    const startOffset = this.hexPage * HEX_PAGE_SIZE;
-    const slice = formatHexSlice(bytes, startOffset, HEX_PAGE_SIZE);
+    if (this.hexPage >= totalPages) this.hexPage = totalPages - 1;
+    const startOffset = this.hexPage * pageSize;
+    const slice = formatHexSlice(bytes, startOffset, pageSize, bpr);
+
+    if (rulerEl) {
+      rulerEl.textContent = formatHexRuler(bpr);
+      rulerEl.classList.remove('hidden');
+    }
 
     preEl.classList.add('raw-hex-pre');
+    const dicmOff = cache.landmarks.dicmOffset;
     const html = slice.lines
       .map((line) => {
         const isTarget = line.offset === this.hexHighlightOffset;
-        const isDicm = cache.landmarks.dicmOffset !== null && line.offset === 128;
+        const isDicm = dicmOff !== null && line.offset <= dicmOff && dicmOff < line.offset + bpr;
         const cls = isTarget ? 'hex-line hex-line-target' : isDicm ? 'hex-line hex-line-dicm' : 'hex-line';
         return `<span class="${cls}" data-hex-row="${line.offset}">${escapeHtml(line.text)}</span>`;
       })
@@ -687,9 +780,11 @@ export class RawView {
     if (this.mode === 'hex') {
       const cache = await this._ensureHexSerialized().catch(() => null);
       if (!cache) return;
-      const startOffset = this.hexPage * HEX_PAGE_SIZE;
-      text = formatHexSlice(cache.bytes, startOffset, HEX_PAGE_SIZE).text;
-      isHexPageOnly = cache.bytes.length > HEX_PAGE_SIZE;
+      const bpr = normalizeBytesPerRow(this.hexBytesPerRow);
+      const pageSize = this._getHexPageSize();
+      const startOffset = this.hexPage * pageSize;
+      text = formatHexSlice(cache.bytes, startOffset, pageSize, bpr).text;
+      isHexPageOnly = cache.bytes.length > pageSize;
     } else {
       text = this._getCurrentText();
     }
@@ -721,13 +816,15 @@ export class RawView {
         return null;
       });
       if (!cache) return;
+      const bpr = normalizeBytesPerRow(this.hexBytesPerRow);
+      const pageSize = this._getHexPageSize();
       isPartialHex = cache.bytes.length > MAX_FULL_HEX_EXPORT_BYTES;
       const slice = isPartialHex
-        ? formatHexSlice(cache.bytes, this.hexPage * HEX_PAGE_SIZE, HEX_PAGE_SIZE)
-        : formatHexSlice(cache.bytes, 0, cache.bytes.length);
-      const header = `# DICOM Hex Dump: ${doc.fileName} (${cache.bytes.length.toLocaleString()} bytes)` +
+        ? formatHexSlice(cache.bytes, this.hexPage * pageSize, pageSize, bpr)
+        : formatHexSlice(cache.bytes, 0, cache.bytes.length, bpr);
+      const header = `# DICOM Hex Dump: ${doc.fileName} (${cache.bytes.length.toLocaleString()} bytes, ${bpr} B/row)` +
         (isPartialHex ? ` [Page ${this.hexPage + 1}/${this._getHexTotalPages()}: 0x${slice.startOffset.toString(16).toUpperCase()} - 0x${slice.endOffset.toString(16).toUpperCase()}]` : '');
-      content = `${header}\n\n${slice.text}\n`;
+      content = `${header}\n\n${formatHexRuler(bpr)}\n${slice.text}\n`;
       ext = 'txt';
       suffix = 'hex';
     } else if (this.mode === 'json') {

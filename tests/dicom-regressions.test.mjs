@@ -9,7 +9,7 @@ import { validateVrValue } from '../src/dicom/vrSpec.js';
 import { formatDicomJson } from '../src/dicom/dcmdump.js';
 import { DICOM_DICTIONARY, lookupTag, lookupUidName, searchDictionary } from '../src/dicom/dictionary.js';
 import { buildCompareRows } from '../src/ui/compareView.js';
-import { formatHexSlice, findSerializedLandmarks } from '../src/ui/rawView.js';
+import { formatHexSlice, formatHexRuler, findSerializedLandmarks } from '../src/ui/rawView.js';
 import { formatTabLabel } from '../src/ui/fileTabs.js';
 import { buildUniqueRelativePath } from '../src/io/fileIo.js';
 import { buildZipArchive } from '../src/utils/zipWriter.js';
@@ -895,6 +895,17 @@ test('AppStore viewMode switches Tree/Raw/Compare cleanly and RawView locates se
   assert.equal(slice.lines.length, 2);
   assert.ok(slice.lines[0].text.startsWith('00000080  44 49 43 4D'));
   assert.ok(slice.lines[0].text.includes('|DICM'));
+
+  // Configurable bytes-per-row (8 / 24 / 32 / 64) & column ruler alignment
+  const slice32 = formatHexSlice(serialized, 128, 64, 32);
+  assert.equal(slice32.lines.length, 2);
+  assert.equal(slice32.lines[0].offset, 128);
+  assert.equal(slice32.lines[1].offset, 160);
+  const slice8 = formatHexSlice(serialized, 128, 16, 8);
+  assert.equal(slice8.lines.length, 2);
+  assert.equal(slice8.lines[1].offset, 136);
+  const ruler32 = formatHexRuler(32);
+  assert.ok(ruler32.includes('00 01 02 03 04 05 06 07') && ruler32.includes('18 19 1A 1B 1C 1D 1E 1F'));
 
   // Unique relative path sanitization for batch folder export
   const used = new Set();
