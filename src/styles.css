@@ -499,14 +499,14 @@ code {
 .welcome-hero {
   position: relative;
   width: 100%;
-  min-height: min(620px, calc(100vh - 52px));
+  min-height: calc(100vh - 52px);
+  min-height: calc(100dvh - 52px);
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 36px 24px;
+  padding: 36px 24px 60px;
   overflow: hidden;
-  border-bottom: 1px solid var(--border);
 }
 
 /* Decorative live-themed editor workspace backdrop */
@@ -517,29 +517,69 @@ code {
   background: var(--bg-canvas);
   pointer-events: none;
   user-select: none;
-  filter: blur(1.6px) saturate(0.85);
-  opacity: 0.44;
-  transform: scale(1.005);
+  filter: blur(0.9px) saturate(0.95);
+  opacity: 0.72;
+  transform: scale(1.004);
   overflow: hidden;
 }
 
 .welcome-backdrop-scrim {
   position: absolute;
   inset: 0;
-  background: radial-gradient(
-    ellipse 78% 76% at 50% 48%,
-    rgba(11, 11, 13, 0.32) 0%,
-    rgba(11, 11, 13, 0.72) 72%,
-    var(--bg-canvas) 100%
-  );
+  background:
+    linear-gradient(
+      to bottom,
+      rgba(11, 11, 13, 0.14) 0%,
+      rgba(11, 11, 13, 0.24) 80%,
+      var(--bg-canvas) 100%
+    ),
+    radial-gradient(
+      ellipse 70% 64% at 50% 48%,
+      rgba(11, 11, 13, 0.28) 0%,
+      rgba(11, 11, 13, 0.48) 100%
+    );
 }
 [data-theme="light"] .welcome-backdrop-scrim {
-  background: radial-gradient(
-    ellipse 78% 76% at 50% 48%,
-    rgba(244, 244, 245, 0.34) 0%,
-    rgba(244, 244, 245, 0.78) 72%,
-    var(--bg-canvas) 100%
-  );
+  background:
+    linear-gradient(
+      to bottom,
+      rgba(244, 244, 245, 0.14) 0%,
+      rgba(244, 244, 245, 0.26) 80%,
+      var(--bg-canvas) 100%
+    ),
+    radial-gradient(
+      ellipse 70% 64% at 50% 48%,
+      rgba(244, 244, 245, 0.30) 0%,
+      rgba(244, 244, 245, 0.50) 100%
+    );
+}
+
+.welcome-scroll-cue {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-surface) 80%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.welcome-scroll-cue:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+  background: var(--bg-elevated);
 }
 
 .wb-sidebar {
@@ -838,11 +878,6 @@ code {
 }
 [data-theme="light"] .welcome-card {
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.12);
-}
-
-.welcome-card.drag-over {
-  border-color: var(--accent);
-  background: var(--accent-soft);
 }
 
 .welcome-icon {
@@ -2020,13 +2055,6 @@ code {
   padding: 10px 12px;
 }
 
-.vr-spec-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 9px;
-}
-
 .vr-spec-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2297,12 +2325,15 @@ code {
 .drag-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(13, 17, 23, 0.78);
+  background: rgba(11, 11, 13, 0.78);
   backdrop-filter: blur(4px);
   display: grid;
   place-items: center;
   z-index: 100;
   pointer-events: none;
+}
+[data-theme="light"] .drag-overlay {
+  background: rgba(244, 244, 245, 0.82);
 }
 
 .drag-overlay-box {
@@ -2876,12 +2907,6 @@ kbd {
 .file-row:hover .file-close-btn,
 .file-row.active .file-close-btn {
   opacity: 1;
-}
-
-/* Raw Modal */
-.modal-xl {
-  max-width: 960px;
-  height: 82vh;
 }
 
 /* ============================================================================
@@ -4152,7 +4177,7 @@ kbd {
   border-top: 1px solid var(--border-strong);
 }
 
-/* Top File Tab Bar in Raw mode */
+/* Top File Tab Bar in Terminal UI mode */
 :root[data-ui="raw"] .file-tabs-bar {
   height: 28px;
   background: var(--bg-canvas);
@@ -4193,7 +4218,7 @@ kbd {
   height: 6px;
 }
 
-/* Compare View in Raw mode */
+/* Compare View in Terminal UI mode */
 :root[data-ui="raw"] .compare-topbar {
   padding: 5px 10px;
   border-bottom: 1px solid var(--border-strong);
@@ -4317,8 +4342,8 @@ kbd {
   }
 
   .welcome-hero {
-    min-height: auto;
-    padding: 20px 14px;
+    min-height: calc(100dvh - 96px);
+    padding: 20px 14px 52px;
   }
 
   .wb-sidebar,

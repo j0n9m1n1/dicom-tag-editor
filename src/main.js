@@ -1,22 +1,20 @@
 /**
  * Main entry point for DICOM Tag Editor web app.
- * Coordinates multi-file & folder I/O (Drag & Drop, File System Access API, ZIP batch export),
- * Store, FileListPanel, TreeView, InspectorPanel, PixelPanel, Modals, Mobile Tabs, and Shortcuts.
+ * Coordinates Store, FileIoController, FileListPanel, FileTabsBar, TreeView,
+ * InspectorPanel, PixelPanel, RawView, CompareView, Modals, Mobile Tabs, and Shortcuts.
  */
 
-import { parseDicomBuffer } from './dicom/parser.js';
-import { writeDicomDocument } from './dicom/writer.js';
-import { generateSampleDicomBuffer } from './dicom/sampleGenerator.js';
-import { buildZipArchive } from './utils/zipWriter.js';
 import { AppStore } from './state/store.js';
+import { createFileIoController } from './io/fileIo.js';
 import { FileListPanel } from './ui/fileList.js';
 import { FileTabsBar } from './ui/fileTabs.js';
 import { TreeView } from './ui/treeView.js';
 import { InspectorPanel } from './ui/inspector.js';
 import { PixelPanel } from './ui/pixelPanel.js';
-import { CompareView, INTERNAL_FILE_DRAG_MIME } from './ui/compareView.js';
+import { CompareView } from './ui/compareView.js';
 import { RawView } from './ui/rawView.js';
 import { ModalManager } from './ui/modals.js';
+import { openPopupMenu, closePopupMenu } from './ui/popupMenu.js';
 import { icons, escapeHtml } from './ui/icons.js';
 import { t, getLang } from './i18n.js';
 
@@ -44,6 +42,7 @@ const btnSettings = document.getElementById('btn-settings');
 
 const btnWelcomeOpen = document.getElementById('btn-welcome-open');
 const btnWelcomeSample = document.getElementById('btn-welcome-sample');
+const btnWelcomeScroll = document.getElementById('btn-welcome-scroll');
 const welcomePwaBar = document.getElementById('welcome-pwa-bar');
 const btnWelcomeInstall = document.getElementById('btn-welcome-install');
 const fileInput = document.getElementById('file-input');
@@ -80,8 +79,6 @@ document.getElementById('welcome-pwa-icon').innerHTML = icons.download(14);
 document.getElementById('welcome-gh-link').innerHTML = `${icons.github(14)}<span>GitHub</span>`;
 document.getElementById('status-gh-link').innerHTML = `${icons.github(13)}<span>GitHub</span>`;
 
-let _fileInputAppendMode = true;
-let saveInProgress = false;
 let deferredInstallPrompt = null;
 let pwaJustInstalled = false;
 
@@ -212,7 +209,7 @@ const treeView = new TreeView(treeBody, store, {
 });
 
 const modals = new ModalManager(modalRoot, store, {
-  onSaveAs: () => saveDocumentAs(),
+  onSaveAs: () => fileIo.saveDocumentAs(),
   onJumpToNode: (id) => {
     if (store.viewMode !== 'tree') store.setViewMode('tree');
     store.setSearchQuery('');
@@ -230,9 +227,18 @@ const modals = new ModalManager(modalRoot, store, {
   onInstallPwa: () => triggerPwaInstall(),
 });
 
+const fileIo = createFileIoController({
+  store,
+  modals,
+  fileInput,
+  dragOverlay,
+  showToast,
+  onBusyChange: () => updateToolbarAndHeader(),
+});
+
 const fileListPanel = new FileListPanel(fileListPane, store, {
   onClearAll: () => goHomeWithConfirm(),
-  onSaveFile: (entry) => saveFileEntry(entry, false),
+  onSaveFile: (entry) => fileIo.saveFileEntry(entry, false),
   onToast: showToast,
   onSwitchError: (err, entry) =>
     modals.openFileError([{ fileName: entry?.name, size: entry?.size, error: err }]),
@@ -323,7 +329,7 @@ function updateToolbarAndHeader() {
   btnViewRaw.setAttribute('aria-pressed', String(inRaw));
   btnViewCompare.setAttribute('aria-pressed', String(inCompare));
 
-  const busy = saveInProgress || store.anonymizing;
+  const busy = fileIo.isBusy() || store.anonymizing;
   btnUndo.disabled = inCompare || !store.canUndo();
   btnRedo.disabled = inCompare || !store.canRedo();
   btnEditMenu.disabled = !hasDoc || busy;
@@ -428,7 +434,7 @@ store.subscribe((reason) => {
     return;
   }
   if (reason === 'document' || reason === 'compare' || reason === 'view' || reason === 'lang') {
-    closeToolbarMenu();
+    closePopupMenu();
   }
   if (reason === 'lang') {
     applyLanguage();
@@ -442,11 +448,11 @@ store.subscribe((reason) => {
   fileListPanel.render();
   fileTabs.render();
   if (store.viewMode === 'compare' && store.files.length >= 2) {
-    compareView.render();
+    compareView.render(reason);
     return;
   }
   if (store.viewMode === 'raw' && store.doc) {
-    rawView.render();
+    rawView.render(reason);
     return;
   }
   treeView.render(reason);
@@ -456,476 +462,6 @@ store.subscribe((reason) => {
 
 window.addEventListener('resize', () => {
   pixelPanel.sync(false);
-});
-
-// ============================================================================
-// Multi-File & Folder Open / Sample / Save / ZIP Export
-// ============================================================================
-async function loadSelectedFileItems(items, { append = true } = {}) {
-  if (!items || items.length === 0) {
-    showToast(t('toastNoDcmInDrop'), 'warn');
-    return;
-  }
-  // Natural sort by filename (so slice_2.dcm comes before slice_10.dcm)
-  items.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
-
-  try {
-    const res = await store.loadFileItems(items, { append });
-    if (res.stale) return;
-    if (res.alreadyOpenEntry) {
-      showToast(t('toastFileAlreadyOpen', { name: res.alreadyOpenEntry.name }), 'info');
-    } else if (res.wasAppended) {
-      showToast(t('toastFilesAdded', { count: res.addedCount, total: res.totalCount }), 'ok');
-    } else if (res.loadedCount > 1) {
-      showToast(t('toastFilesLoaded', { count: res.loadedCount }), 'ok');
-    } else if (store.doc) {
-      showToast(
-        t('toastLoaded', {
-          name: store.doc.fileName,
-          count: store.doc.datasetNodes.length + store.doc.metaNodes.length,
-        }),
-        'ok'
-      );
-    }
-    if (res.failedEntries?.length > 0) {
-      modals.openFileError(res.failedEntries);
-    }
-  } catch (err) {
-    if (err?.stale) return;
-    console.error(err);
-    const failures =
-      Array.isArray(err.failures) && err.failures.length > 0
-        ? err.failures
-        : [{ fileName: items[0]?.name, size: items[0]?.size, error: err }];
-    modals.openFileError(failures);
-  }
-}
-
-async function openFileDialog({ append = true } = {}) {
-  if (window.isSecureContext && typeof window.showOpenFilePicker === 'function') {
-    try {
-      const handles = await window.showOpenFilePicker({
-        multiple: true,
-        types: [
-          {
-            description: 'DICOM Files',
-            accept: { 'application/dicom': ['.dcm', '.dicom'] },
-          },
-        ],
-        excludeAcceptAllOption: false,
-      });
-      const items = [];
-      for (const handle of handles) {
-        const file = await handle.getFile();
-        items.push({
-          name: file.name,
-          size: file.size,
-          sourceFile: file,
-          fileHandle: handle,
-        });
-      }
-      await loadSelectedFileItems(items, { append });
-      return;
-    } catch (err) {
-      if (err.name === 'AbortError') return;
-    }
-  }
-  _fileInputAppendMode = append;
-  fileInput.value = '';
-  fileInput.click();
-}
-
-fileInput.addEventListener('change', async () => {
-  const files = Array.from(fileInput.files || []);
-  if (files.length === 0) return;
-  const items = files.map((f) => ({ name: f.name, size: f.size, sourceFile: f, fileHandle: null }));
-  await loadSelectedFileItems(items, { append: _fileInputAppendMode });
-});
-
-async function loadSampleDicom() {
-  try {
-    const buf = await generateSampleDicomBuffer();
-    const doc = await parseDicomBuffer(buf, 'sample_brain_ct.dcm');
-    const hadExisting = store.files.length > 0;
-    store.loadDocument(doc, null, { append: true });
-    if (hadExisting) {
-      showToast(t('toastFilesAdded', { count: 1, total: store.files.length }), 'ok');
-    } else {
-      showToast(
-        t('toastLoaded', {
-          name: doc.fileName,
-          count: doc.datasetNodes.length + doc.metaNodes.length,
-        }),
-        'ok'
-      );
-    }
-  } catch (err) {
-    console.error(err);
-    showToast(t('toastSampleErr', { msg: err.message }), 'error');
-  }
-}
-
-function countDocInvalid(doc) {
-  if (!doc) return 0;
-  let invalid = 0;
-  const walk = (nodes) => {
-    for (const n of nodes || []) {
-      if (n.status !== 'deleted' && n.validation && !n.validation.valid) invalid++;
-      if (n.isSequence && n.items) {
-        for (const item of n.items) walk(item.children);
-      }
-    }
-  };
-  walk(doc.metaNodes);
-  walk(doc.datasetNodes);
-  return invalid;
-}
-
-function confirmInvalidBeforeSave(doc) {
-  const invalid = countDocInvalid(doc);
-  if (invalid > 0) {
-    return window.confirm(t('confirmInvalidSave', { count: invalid }));
-  }
-  return true;
-}
-
-async function runSave(save) {
-  if (saveInProgress || store.anonymizing) return;
-  saveInProgress = true;
-  updateToolbarAndHeader();
-  try {
-    await save();
-  } catch (err) {
-    if (err.name !== 'AbortError') {
-      console.error(err);
-      showToast(t('toastSaveErr', { msg: err.message }), 'error');
-    }
-  } finally {
-    saveInProgress = false;
-    store.emit('edit');
-  }
-}
-
-async function writeToFile(handle, bytes) {
-  const writable = await handle.createWritable();
-  try {
-    await writable.write(bytes);
-    await writable.close();
-  } catch (err) {
-    await writable.abort().catch(() => {});
-    throw err;
-  }
-}
-
-function downloadBytes(bytes, type, name) {
-  const url = URL.createObjectURL(new Blob([bytes], { type }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = name;
-  document.body.appendChild(link);
-  try {
-    link.click();
-  } finally {
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-}
-
-async function pickSaveFile(suggestedName) {
-  if (!window.isSecureContext || typeof window.showSaveFilePicker !== 'function') return null;
-  try {
-    return await window.showSaveFilePicker({
-      suggestedName,
-      types: [{ description: 'DICOM File', accept: { 'application/dicom': ['.dcm'] } }],
-    });
-  } catch (err) {
-    if (err.name === 'AbortError') throw err;
-    return null;
-  }
-}
-
-async function saveFileEntry(entry, direct = false) {
-  if (saveInProgress || store.anonymizing || !entry) return;
-  if (!entry.doc) {
-    try {
-      await store.ensureEntryParsed(entry);
-    } catch (err) {
-      modals.openFileError([{ fileName: entry.name, size: entry.size, error: err }]);
-      return;
-    }
-  }
-  const { doc, name, fileHandle } = entry;
-  if (!doc || !confirmInvalidBeforeSave(doc)) return;
-  const suggestedName = `${name.split('/').at(-1).replace(/\.dcm$/i, '')}_edited.dcm`;
-
-  return runSave(async () => {
-    const directHandle = direct ? fileHandle : null;
-    let handle = directHandle || await pickSaveFile(suggestedName);
-    const revision = store.getDocumentRevision(doc);
-    const bytes = await writeDicomDocument(doc);
-
-    if (handle) {
-      try {
-        await writeToFile(handle, bytes);
-      } catch (err) {
-        showToast(t('toastDirectFail', { msg: err.message }), 'warn');
-        handle = null;
-      }
-    }
-
-    const savedName = handle?.name || (handle && directHandle ? name : suggestedName);
-    if (!handle) downloadBytes(bytes, 'application/dicom', savedName);
-    const file = handle ? { handle, name: savedName, size: bytes.length } : null;
-    const isCurrent = store.markSaved(doc, revision, file);
-    const message = handle ? (directHandle ? 'toastSavedDirect' : 'toastSavedAs') : 'toastDownloadStart';
-    showToast(t(message, { name: savedName, bytes: bytes.length.toLocaleString() }), 'ok');
-    if (!isCurrent) showToast(t('toastSavePending'), 'warn');
-  });
-}
-
-function saveActiveDocument(direct = false) {
-  return saveFileEntry(store.getActiveEntry(), direct);
-}
-
-function saveDocumentDirect() {
-  return saveActiveDocument(true);
-}
-
-function saveDocumentAs() {
-  return saveActiveDocument();
-}
-
-function buildUniqueRelativePath(rawName, usedPaths) {
-  const segments = String(rawName || 'file.dcm')
-    .replace(/\\/g, '/')
-    .split('/')
-    .map((seg) => seg.replace(/[<>:"|?*\x00-\x1f]/g, '_').trim())
-    .filter((seg) => seg && seg !== '.' && seg !== '..');
-  const clean = segments.length > 0 ? segments.join('/') : 'file.dcm';
-  if (!usedPaths.has(clean.toLowerCase())) {
-    usedPaths.add(clean.toLowerCase());
-    return clean;
-  }
-  const dot = clean.lastIndexOf('.');
-  const slash = clean.lastIndexOf('/');
-  const hasExt = dot > slash + 1;
-  const base = hasExt ? clean.slice(0, dot) : clean;
-  const ext = hasExt ? clean.slice(dot) : '';
-  let idx = 2;
-  while (usedPaths.has(`${base}_${idx}${ext}`.toLowerCase())) idx++;
-  const candidate = `${base}_${idx}${ext}`;
-  usedPaths.add(candidate.toLowerCase());
-  return candidate;
-}
-
-async function saveAllToFolder() {
-  if (!window.isSecureContext || typeof window.showDirectoryPicker !== 'function') return;
-  const files = store.files.slice();
-  if (files.length === 0) return;
-
-  return runSave(async () => {
-    const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    const usedPaths = new Set();
-    const savedDocs = [];
-    let writtenCount = 0;
-    let skipped = 0;
-
-    for (const entry of files) {
-      let dataBytes;
-      if (!entry.doc) {
-        try {
-          const buffer = entry.arrayBuffer || await entry.sourceFile.arrayBuffer();
-          await parseDicomBuffer(buffer, entry.name);
-          dataBytes = new Uint8Array(buffer);
-        } catch {
-          skipped++;
-          continue;
-        }
-      }
-      if (entry.doc) {
-        const { doc } = entry;
-        const revision = store.getDocumentRevision(doc);
-        dataBytes = await writeDicomDocument(doc);
-        savedDocs.push({ doc, revision });
-      }
-
-      const relPath = buildUniqueRelativePath(entry.name, usedPaths);
-      const parts = relPath.split('/');
-      const fileName = parts.pop();
-      let targetDir = dirHandle;
-      for (const dirSeg of parts) {
-        targetDir = await targetDir.getDirectoryHandle(dirSeg, { create: true });
-      }
-      const fh = await targetDir.getFileHandle(fileName, { create: true });
-      await writeToFile(fh, dataBytes);
-      writtenCount++;
-    }
-
-    if (writtenCount === 0) {
-      showToast(t('toastFolderNoDicom'), 'warn');
-      return;
-    }
-
-    let isCurrent = true;
-    for (const { doc, revision } of savedDocs) {
-      if (!store.markSaved(doc, revision)) isCurrent = false;
-    }
-    showToast(t('toastFolderSaveDone', { count: writtenCount, dir: dirHandle.name || 'folder' }), 'ok');
-    if (skipped) showToast(t('toastFolderSkipped', { count: skipped }), 'warn');
-    if (!isCurrent) showToast(t('toastSavePending'), 'warn');
-  });
-}
-
-async function saveAllAsZip() {
-  const files = store.files.slice();
-  if (files.length === 0) return;
-
-  return runSave(async () => {
-    const zipEntries = [];
-    const savedDocs = [];
-    let skipped = 0;
-    for (const entry of files) {
-      let dataBytes;
-      if (!entry.doc) {
-        try {
-          const buffer = entry.arrayBuffer || await entry.sourceFile.arrayBuffer();
-          await parseDicomBuffer(buffer, entry.name);
-          dataBytes = new Uint8Array(buffer);
-        } catch {
-          skipped++;
-          continue;
-        }
-      }
-      // If the file was opened while validation ran, export its live document.
-      if (entry.doc) {
-        const { doc } = entry;
-        const revision = store.getDocumentRevision(doc);
-        dataBytes = await writeDicomDocument(doc);
-        savedDocs.push({ doc, revision });
-      }
-      zipEntries.push({ name: entry.name, data: dataBytes });
-    }
-
-    if (zipEntries.length === 0) {
-      showToast(t('toastZipNoDicom'), 'warn');
-      return;
-    }
-
-    const zipBytes = buildZipArchive(zipEntries);
-    const zipName = 'dicom_edited_batch.zip';
-    downloadBytes(zipBytes, 'application/zip', zipName);
-    let isCurrent = true;
-    for (const { doc, revision } of savedDocs) {
-      if (!store.markSaved(doc, revision)) isCurrent = false;
-    }
-    showToast(t('toastZipDone', { count: zipEntries.length, name: zipName }), 'ok');
-    if (skipped) showToast(t('toastZipSkipped', { count: skipped }), 'warn');
-    if (!isCurrent) showToast(t('toastSavePending'), 'warn');
-  });
-}
-
-// ============================================================================
-// Multi-File & Folder Drag & Drop (Safe, Zero getAsFileSystemHandle)
-// ============================================================================
-function readEntryRecursive(entry, prefix = '') {
-  return new Promise((resolve) => {
-    if (entry.isFile) {
-      entry.file(
-        (file) => {
-          // Skip hidden OS junk files like .DS_Store / Thumbs.db / desktop.ini
-          if (/^(\.|thumbs\.db$|desktop\.ini$)/i.test(file.name)) {
-            resolve([]);
-            return;
-          }
-          resolve([{ name: prefix ? `${prefix}/${file.name}` : file.name, size: file.size, sourceFile: file, fileHandle: null }]);
-        },
-        () => resolve([])
-      );
-    } else if (entry.isDirectory) {
-      const reader = entry.createReader();
-      const collected = [];
-      const readBatch = () => {
-        reader.readEntries(
-          async (entries) => {
-            if (!entries || entries.length === 0) {
-              resolve(collected);
-              return;
-            }
-            for (const child of entries) {
-              const childPrefix = prefix ? `${prefix}/${entry.name}` : entry.name;
-              const sub = await readEntryRecursive(child, childPrefix);
-              collected.push(...sub);
-            }
-            readBatch();
-          },
-          () => resolve(collected)
-        );
-      };
-      readBatch();
-    } else {
-      resolve([]);
-    }
-  });
-}
-
-let dragDepth = 0;
-const isInternalFileDrag = (e) =>
-  Array.from(e.dataTransfer?.types || []).includes(INTERNAL_FILE_DRAG_MIME);
-
-window.addEventListener('dragenter', (e) => {
-  if (isInternalFileDrag(e)) return;
-  e.preventDefault();
-  dragDepth++;
-  dragOverlay.classList.remove('hidden');
-});
-
-window.addEventListener('dragover', (e) => {
-  if (isInternalFileDrag(e)) return;
-  e.preventDefault();
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-});
-
-window.addEventListener('dragleave', (e) => {
-  if (isInternalFileDrag(e)) return;
-  e.preventDefault();
-  dragDepth = Math.max(0, dragDepth - 1);
-  if (dragDepth === 0) dragOverlay.classList.add('hidden');
-});
-
-window.addEventListener('drop', (e) => {
-  if (isInternalFileDrag(e)) return;
-  e.preventDefault();
-  dragDepth = 0;
-  dragOverlay.classList.add('hidden');
-
-  // Synchronously capture entries/files within the drop event turn.
-  // Never call getAsFileSystemHandle() to avoid Chromium RESULT_CODE_KILLED_BAD_MESSAGE.
-  const dtItems = Array.from(e.dataTransfer?.items || []);
-  const entries = dtItems
-    .map((it) => (typeof it.webkitGetAsEntry === 'function' ? it.webkitGetAsEntry() : null))
-    .filter(Boolean);
-
-  const fallbackFiles = Array.from(e.dataTransfer?.files || []);
-
-  (async () => {
-    let items = [];
-    if (entries.length > 0 && entries.some((en) => en.isDirectory)) {
-      for (const en of entries) {
-        const found = await readEntryRecursive(en, '');
-        items.push(...found);
-      }
-    } else if (fallbackFiles.length > 0) {
-      items = fallbackFiles.map((f) => ({ name: f.name, size: f.size, sourceFile: f, fileHandle: null }));
-    }
-
-    if (items.length === 0) {
-      showToast(t('toastNoDcmInDrop'), 'warn');
-      return;
-    }
-
-    // Always append dropped files to the current workspace so unsaved work is preserved
-    await loadSelectedFileItems(items, { append: true });
-  })();
 });
 
 // ============================================================================
@@ -959,9 +495,12 @@ window.addEventListener('beforeunload', (e) => {
   }
 });
 
-btnOpen.addEventListener('click', () => openFileDialog());
-btnWelcomeOpen.addEventListener('click', () => openFileDialog());
-btnWelcomeSample.addEventListener('click', loadSampleDicom);
+btnOpen.addEventListener('click', () => fileIo.openFileDialog());
+btnWelcomeOpen.addEventListener('click', () => fileIo.openFileDialog());
+btnWelcomeSample.addEventListener('click', () => fileIo.loadSampleDicom());
+btnWelcomeScroll?.addEventListener('click', () => {
+  document.getElementById('welcome-guide-title')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
 btnWelcomeInstall.addEventListener('click', async () => {
   if (deferredInstallPrompt) {
     await triggerPwaInstall();
@@ -979,119 +518,39 @@ viewModeGroup.addEventListener('click', (e) => {
 // ============================================================================
 // Topbar Dropdown Menus (Edit & Save Split Button)
 // ============================================================================
-let activeToolbarMenu = null;
-
-function closeToolbarMenu() {
-  if (!activeToolbarMenu) return;
-  const { el, trigger, timer, onDismiss, onKeyDown } = activeToolbarMenu;
-  activeToolbarMenu = null;
-  if (timer !== null) clearTimeout(timer);
-  window.removeEventListener('keydown', onKeyDown, true);
-  window.removeEventListener('click', onDismiss);
-  window.removeEventListener('contextmenu', onDismiss);
-  window.removeEventListener('resize', onDismiss);
-  trigger.setAttribute('aria-expanded', 'false');
-  trigger.classList.remove('menu-open');
-  el.remove();
-}
-
-function openToolbarMenu(triggerEl, anchorEl, items) {
-  if (activeToolbarMenu?.trigger === triggerEl) {
-    closeToolbarMenu();
-    return;
-  }
-  closeToolbarMenu();
-
-  const menu = document.createElement('div');
-  menu.className = 'ctx-menu toolbar-menu';
-  menu.setAttribute('role', 'menu');
-
-  items.forEach((item) => {
-    if (item.sep) {
-      const sep = document.createElement('div');
-      sep.className = 'ctx-sep';
-      menu.appendChild(sep);
-      return;
-    }
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'ctx-item';
-    btn.disabled = Boolean(item.disabled);
-    if (item.title) btn.title = item.title;
-    btn.innerHTML = `
-      ${item.icon || ''}
-      <span class="ctx-item-label">${escapeHtml(item.label)}</span>
-      ${item.shortcut ? `<span class="ctx-shortcut">${escapeHtml(item.shortcut)}</span>` : ''}
-    `;
-    btn.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      closeToolbarMenu();
-      if (!item.disabled) item.action();
-    });
-    menu.appendChild(btn);
-  });
-
-  document.body.appendChild(menu);
-  const anchorRect = anchorEl.getBoundingClientRect();
-  const menuRect = menu.getBoundingClientRect();
-  const left = Math.max(8, Math.min(anchorRect.right - menuRect.width, window.innerWidth - menuRect.width - 8));
-  const top = Math.min(anchorRect.bottom + 4, Math.max(8, window.innerHeight - menuRect.height - 8));
-  menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
-
-  triggerEl.setAttribute('aria-expanded', 'true');
-  triggerEl.classList.add('menu-open');
-
-  const onDismiss = () => closeToolbarMenu();
-  const onKeyDown = (e) => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      e.stopImmediatePropagation();
-      closeToolbarMenu();
-    }
-  };
-
-  const state = { el: menu, trigger: triggerEl, timer: null, onDismiss, onKeyDown };
-  activeToolbarMenu = state;
-  window.addEventListener('keydown', onKeyDown, true);
-  state.timer = setTimeout(() => {
-    state.timer = null;
-    if (activeToolbarMenu !== state) return;
-    window.addEventListener('click', onDismiss);
-    window.addEventListener('contextmenu', onDismiss);
-    window.addEventListener('resize', onDismiss);
-  }, 0);
-}
-
 function openEditMenu() {
   const hasDoc = Boolean(store.doc);
   const fileCount = store.files.length;
   const inCompare = hasDoc && store.compareMode && fileCount >= 2;
-  const busy = saveInProgress || store.anonymizing;
+  const busy = fileIo.isBusy() || store.anonymizing;
 
-  openToolbarMenu(btnEditMenu, btnEditMenu, [
-    {
-      icon: icons.plus(14),
-      label: t('btnAddTag'),
-      disabled: !hasDoc || inCompare,
-      action: () => modals.openAddTag(null),
-    },
-    {
-      icon: icons.sliders(14),
-      label: t('fileListBatchEdit'),
-      shortcut: fileCount > 1 ? String(fileCount) : '',
-      disabled: fileCount < 1 || busy,
-      action: () => modals.openBatchEdit(),
-    },
-    { sep: true },
-    {
-      icon: icons.shield(14),
-      label: t('btnAnonymize'),
-      disabled: !hasDoc || inCompare || busy,
-      action: () => modals.openAnonymize(),
-    },
-  ]);
+  openPopupMenu({
+    triggerEl: btnEditMenu,
+    anchorEl: btnEditMenu,
+    className: 'toolbar-menu',
+    items: [
+      {
+        icon: icons.plus(14),
+        label: t('btnAddTag'),
+        disabled: !hasDoc || inCompare,
+        action: () => modals.openAddTag(null),
+      },
+      {
+        icon: icons.sliders(14),
+        label: t('fileListBatchEdit'),
+        shortcut: fileCount > 1 ? String(fileCount) : '',
+        disabled: fileCount < 1 || busy,
+        action: () => modals.openBatchEdit(),
+      },
+      { sep: true },
+      {
+        icon: icons.shield(14),
+        label: t('btnAnonymize'),
+        disabled: !hasDoc || inCompare || busy,
+        action: () => modals.openAnonymize(),
+      },
+    ],
+  });
 }
 
 function openSaveMenu() {
@@ -1099,49 +558,54 @@ function openSaveMenu() {
   const fileCount = store.files.length;
   const inCompare = hasDoc && store.compareMode && fileCount >= 2;
   const inRaw = hasDoc && store.viewMode === 'raw';
-  const busy = saveInProgress || store.anonymizing;
+  const busy = fileIo.isBusy() || store.anonymizing;
   const canDirectSave = hasDoc && Boolean(store.fileHandle);
   const canFolderSave = window.isSecureContext && typeof window.showDirectoryPicker === 'function';
 
-  openToolbarMenu(btnSaveMenu, saveSplitBtn, [
-    ...(inRaw
-      ? [{
-          icon: icons.code(14),
-          label: t('saveMenuExportRaw', { ext: rawView.getExportExtension() }),
-          action: () => rawView.exportCurrent(),
-        }, { sep: true }]
-      : []),
-    ...(canDirectSave
-      ? [{
-          icon: icons.save(14),
-          label: t('saveMenuOverwrite'),
-          shortcut: 'Ctrl+S',
-          disabled: inCompare || busy,
-          action: () => saveDocumentDirect(),
-        }]
-      : []),
-    {
-      icon: icons.download(14),
-      label: t('saveMenuSaveAs'),
-      shortcut: canDirectSave ? 'Ctrl+Shift+S' : 'Ctrl+S',
-      disabled: !hasDoc || inCompare || busy,
-      action: () => saveDocumentAs(),
-    },
-    { sep: true },
-    {
-      icon: icons.folderOpen(14),
-      label: t('saveMenuAllFolder', { n: fileCount }),
-      title: canFolderSave ? '' : t('saveMenuAllFolderUnsupported'),
-      disabled: fileCount < 2 || busy || !canFolderSave,
-      action: () => saveAllToFolder(),
-    },
-    {
-      icon: icons.archive(14),
-      label: t('saveMenuAllZip', { n: fileCount }),
-      disabled: fileCount < 2 || busy,
-      action: () => saveAllAsZip(),
-    },
-  ]);
+  openPopupMenu({
+    triggerEl: btnSaveMenu,
+    anchorEl: saveSplitBtn,
+    className: 'toolbar-menu',
+    items: [
+      ...(inRaw
+        ? [{
+            icon: icons.code(14),
+            label: t('saveMenuExportRaw', { ext: rawView.getExportExtension() }),
+            action: () => rawView.exportCurrent(),
+          }, { sep: true }]
+        : []),
+      ...(canDirectSave
+        ? [{
+            icon: icons.save(14),
+            label: t('saveMenuOverwrite'),
+            shortcut: 'Ctrl+S',
+            disabled: inCompare || busy,
+            action: () => fileIo.saveDocumentDirect(),
+          }]
+        : []),
+      {
+        icon: icons.download(14),
+        label: t('saveMenuSaveAs'),
+        shortcut: canDirectSave ? 'Ctrl+Shift+S' : 'Ctrl+S',
+        disabled: !hasDoc || inCompare || busy,
+        action: () => fileIo.saveDocumentAs(),
+      },
+      { sep: true },
+      {
+        icon: icons.folderOpen(14),
+        label: t('saveMenuAllFolder', { n: fileCount }),
+        title: canFolderSave ? '' : t('saveMenuAllFolderUnsupported'),
+        disabled: fileCount < 2 || busy || !canFolderSave,
+        action: () => fileIo.saveAllToFolder(),
+      },
+      {
+        icon: icons.archive(14),
+        label: t('saveMenuAllZip', { n: fileCount }),
+        disabled: fileCount < 2 || busy,
+        action: () => fileIo.saveAllAsZip(),
+      },
+    ],
+  });
 }
 
 btnUndo.addEventListener('click', () => store.undo());
@@ -1149,9 +613,9 @@ btnRedo.addEventListener('click', () => store.redo());
 btnEditMenu.addEventListener('click', () => openEditMenu());
 btnDiff.addEventListener('click', () => modals.openDiff());
 btnSaveMain.addEventListener('click', () => {
-  closeToolbarMenu();
-  if (store.fileHandle) saveDocumentDirect();
-  else saveDocumentAs();
+  closePopupMenu();
+  if (store.fileHandle) fileIo.saveDocumentDirect();
+  else fileIo.saveDocumentAs();
 });
 btnSaveMenu.addEventListener('click', () => openSaveMenu());
 btnSettings.addEventListener('click', () => modals.openSettings());
@@ -1194,7 +658,7 @@ window.addEventListener('keydown', (e) => {
     }
     if (modalRoot.classList.contains('hidden')) {
       e.preventDefault();
-      closeToolbarMenu();
+      closePopupMenu();
       modals.openSettings();
       return;
     }
@@ -1231,12 +695,12 @@ window.addEventListener('keydown', (e) => {
 
   if (key === 'o') {
     e.preventDefault();
-    openFileDialog();
+    fileIo.openFileDialog();
   } else if (key === 's' && store.doc) {
     e.preventDefault();
     if (store.compareMode) return;
-    if (e.shiftKey || !store.fileHandle) saveDocumentAs();
-    else saveDocumentDirect();
+    if (e.shiftKey || !store.fileHandle) fileIo.saveDocumentAs();
+    else fileIo.saveDocumentDirect();
   } else if (key === 'f' && store.doc) {
     e.preventDefault();
     if (store.compareMode) {
@@ -1367,36 +831,12 @@ inspector.render();
 pixelPanel.sync(true);
 
 // ============================================================================
-// PWA: Service Worker Registration & OS File Handler (launchQueue)
+// PWA: Service Worker Registration
 // ============================================================================
 if ('serviceWorker' in navigator && window.isSecureContext) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js', { scope: './' }).catch((err) => {
       console.warn('Service worker registration failed:', err);
     });
-  });
-}
-
-if ('launchQueue' in window && typeof window.launchQueue.setConsumer === 'function') {
-  window.launchQueue.setConsumer(async (launchParams) => {
-    if (!launchParams?.files?.length) return;
-    const items = [];
-    for (const handle of launchParams.files) {
-      if (handle.kind !== 'file') continue;
-      try {
-        const file = await handle.getFile();
-        items.push({
-          name: file.name,
-          size: file.size,
-          sourceFile: file,
-          fileHandle: handle,
-        });
-      } catch (err) {
-        console.warn('Failed to read launched file handle:', err);
-      }
-    }
-    if (items.length > 0) {
-      await loadSelectedFileItems(items, { append: true });
-    }
   });
 }

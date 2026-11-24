@@ -9,6 +9,7 @@ import { ALL_VR_CODES, getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
 import { parseTagString, searchDictionary, lookupTag, tagHex } from '../dicom/dictionary.js';
 import { formatByteSize } from '../dicom/parser.js';
 import { ANONYMIZE_PRESET_TAGS, getReadOnlyTagMessage } from '../state/store.js';
+import { copyTextToClipboard } from '../utils/uiHelpers.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLang, getLocalizedVrText } from '../i18n.js';
 
@@ -902,11 +903,8 @@ export class ModalManager {
 
     const reportText = reportLines.join('\n').trim();
     this.root.querySelector('#btn-copy-err-diag')?.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(reportText);
+      if (await copyTextToClipboard(reportText)) {
         this.callbacks.onToast?.(t('toastCopied'), 'ok');
-      } catch {
-        // ignore clipboard failure
       }
     });
   }

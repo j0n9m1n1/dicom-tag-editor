@@ -6,6 +6,8 @@
 import { getVrSpec, NUMERIC_VRS } from '../dicom/vrSpec.js';
 import { computeVm } from '../dicom/parser.js';
 import { canEditNodeValue, getReadOnlyTagMessage } from '../state/store.js';
+import { copyTextToClipboard } from '../utils/uiHelpers.js';
+import { openPopupMenu, closePopupMenu } from './popupMenu.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
 
@@ -25,40 +27,15 @@ export class TreeView {
     this.visibleRows = [];
     this.filterExpansion = new Map();
     this.inlineEditId = null;
-    this._ctxMenu = null;
 
     this.container.addEventListener('click', (e) => this._onClick(e));
     this.container.addEventListener('dblclick', (e) => this._onDblClick(e));
     this.container.addEventListener('keydown', (e) => this._onKeyDown(e));
     this.container.addEventListener('contextmenu', (e) => this._onContextMenu(e));
-    window.addEventListener('click', () => this._closeContextMenu());
-    window.addEventListener('contextmenu', (e) => {
-      if (!(e.target instanceof Node) || !this.container.contains(e.target)) this._closeContextMenu();
-    }, true);
-    window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') this._closeContextMenu();
-    });
-    this.container.addEventListener('scroll', () => this._closeContextMenu());
-  }
-
-  _closeContextMenu() {
-    if (this._ctxMenu) {
-      this._ctxMenu.remove();
-      this._ctxMenu = null;
-    }
   }
 
   async _copyText(str) {
-    try {
-      await navigator.clipboard.writeText(str);
-      this.callbacks.onToast?.(t('toastCopied'), 'ok');
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = str;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      ta.remove();
+    if (await copyTextToClipboard(str)) {
       this.callbacks.onToast?.(t('toastCopied'), 'ok');
     }
   }
@@ -70,46 +47,55 @@ export class TreeView {
     const info = this.store.findNodeInfo(id);
     if (!info) return;
     e.preventDefault();
-    this._closeContextMenu();
     this._selectRow(id);
 
-    const menu = document.createElement('div');
-    menu.className = 'ctx-menu';
-    menu.innerHTML = info.isSeqItem
-      ? this._itemContextMenu(info, this.visibleRows.find((row) => row.id === id))
-      : this._tagContextMenu(info.node);
+    const items = info.isSeqItem
+      ? this._buildItemContextItems(info, this.visibleRows.find((row) => row.id === id), id)
+      : this._buildTagContextItems(info.node, id);
 
-    document.body.appendChild(menu);
-    const rect = menu.getBoundingClientRect();
-    const x = Math.min(e.clientX, window.innerWidth - rect.width - 8);
-    const y = Math.min(e.clientY, window.innerHeight - rect.height - 8);
-    menu.style.left = `${Math.max(8, x)}px`;
-    menu.style.top = `${Math.max(8, y)}px`;
-
-    menu.addEventListener('click', (ev) => {
-      ev.stopPropagation();
-      const btn = ev.target.closest('[data-ctx]');
-      if (!btn || btn.disabled) return;
-      this._closeContextMenu();
-      const current = this.store.findNodeInfo(id);
-      if (!current) return;
-      if (current.isSeqItem) {
-        this._runItemContextAction(current, btn.dataset.ctx);
-      } else {
-        this._runTagContextAction(current.node, btn.dataset.ctx);
-      }
+    openPopupMenu({
+      x: e.clientX,
+      y: e.clientY,
+      scrollEl: this.container,
+      items,
     });
-
-    this._ctxMenu = menu;
   }
 
-  _itemContextMenu(info, row) {
-    const disabled = info.parentSeq.status === 'deleted' ? 'disabled' : '';
-    return `
-      ${row?.hasChildren ? `<button class="ctx-item" data-ctx="toggle-item">${row.isExpanded ? icons.chevronDown(13) : icons.chevronRight(13)} ${escapeHtml(t(row.isExpanded ? 'treeCollapseBranch' : 'treeExpandBranch'))}</button>` : ''}
-      <button class="ctx-item" data-ctx="add-tag-in-item" ${disabled}>${icons.plus(13)} ${escapeHtml(t('inspAddTagInItem'))}</button>
-      <button class="ctx-item ctx-danger" data-ctx="delete-item" ${disabled}>${icons.trash(13)} ${escapeHtml(t('inspDeleteSeqItem'))}</button>
-    `;
+  _buildItemContextItems(info, row, id) {
+    const disabled = info.parentSeq.status === 'deleted';
+    const items = [];
+    if (row?.hasChildren) {
+      items.push({
+        icon: row.isExpanded ? icons.chevronDown(13) : icons.chevronRight(13),
+        label: t(row.isExpanded ? 'treeCollapseBranch' : 'treeExpandBranch'),
+        action: () => {
+          const current = this.store.findNodeInfo(id);
+          if (current?.isSeqItem) this._runItemContextAction(current, 'toggle-item');
+        },
+      });
+    }
+    items.push(
+      {
+        icon: icons.plus(13),
+        label: t('inspAddTagInItem'),
+        disabled,
+        action: () => {
+          const current = this.store.findNodeInfo(id);
+          if (current?.isSeqItem) this._runItemContextAction(current, 'add-tag-in-item');
+        },
+      },
+      {
+        icon: icons.trash(13),
+        label: t('inspDeleteSeqItem'),
+        danger: true,
+        disabled,
+        action: () => {
+          const current = this.store.findNodeInfo(id);
+          if (current?.isSeqItem) this._runItemContextAction(current, 'delete-item');
+        },
+      }
+    );
+    return items;
   }
 
   _runItemContextAction(info, action) {
@@ -125,21 +111,62 @@ export class TreeView {
     }
   }
 
-  _tagContextMenu(node) {
+  _buildTagContextItems(node, id) {
     const canEdit = canEditNodeValue(node);
     const isDeleted = node.status === 'deleted';
     const canDelete = !getReadOnlyTagMessage(node.tag);
     const canRevert = canDelete && (node.status === 'modified' || node.status === 'added');
 
-    return `
-      <button class="ctx-item" data-ctx="copy-tag">${icons.copy(13)} ${escapeHtml(t('ctxCopyTag'))} <span class="muted mono">${node.formattedTag}</span></button>
-      ${!node.isSequence && !node.isBinary ? `<button class="ctx-item" data-ctx="copy-val">${icons.copy(13)} ${escapeHtml(t('ctxCopyValue'))}</button>` : ''}
-      <button class="ctx-item" data-ctx="copy-line">${icons.code(13)} ${escapeHtml(t('ctxCopyLine'))}</button>
-      <div class="ctx-sep"></div>
-      ${canEdit ? `<button class="ctx-item" data-ctx="edit">${escapeHtml(t('ctxEditInline'))}</button>` : ''}
-      ${canRevert ? `<button class="ctx-item" data-ctx="revert">${icons.rotateCcw(13)} ${escapeHtml(t('ctxRevert'))}</button>` : ''}
-      ${canDelete ? `<button class="ctx-item ${isDeleted ? '' : 'ctx-danger'}" data-ctx="delete">${isDeleted ? icons.rotateCcw(13) : icons.trash(13)} ${escapeHtml(isDeleted ? t('ctxRestore') : t('ctxDelete'))}</button>` : ''}
-    `;
+    const runAction = (action) => () => {
+      const current = this.store.findNodeInfo(id);
+      if (current && !current.isSeqItem) this._runTagContextAction(current.node, action);
+    };
+
+    const items = [
+      {
+        icon: icons.copy(13),
+        labelHtml: `${escapeHtml(t('ctxCopyTag'))} <span class="muted mono">${escapeHtml(node.formattedTag)}</span>`,
+        action: runAction('copy-tag'),
+      },
+    ];
+    if (!node.isSequence && !node.isBinary) {
+      items.push({
+        icon: icons.copy(13),
+        label: t('ctxCopyValue'),
+        action: runAction('copy-val'),
+      });
+    }
+    items.push({
+      icon: icons.code(13),
+      label: t('ctxCopyLine'),
+      action: runAction('copy-line'),
+    });
+
+    if (canEdit || canRevert || canDelete) {
+      items.push({ sep: true });
+    }
+    if (canEdit) {
+      items.push({
+        label: t('ctxEditInline'),
+        action: runAction('edit'),
+      });
+    }
+    if (canRevert) {
+      items.push({
+        icon: icons.rotateCcw(13),
+        label: t('ctxRevert'),
+        action: runAction('revert'),
+      });
+    }
+    if (canDelete) {
+      items.push({
+        icon: isDeleted ? icons.rotateCcw(13) : icons.trash(13),
+        label: isDeleted ? t('ctxRestore') : t('ctxDelete'),
+        danger: !isDeleted,
+        action: runAction('delete'),
+      });
+    }
+    return items;
   }
 
   _runTagContextAction(node, action) {
@@ -297,7 +324,7 @@ export class TreeView {
     if (reason === 'document') {
       this.inlineEditId = null;
     }
-    this._closeContextMenu();
+    closePopupMenu();
     this.container.setAttribute('aria-label', t('treeLabel'));
     if (!this.store.doc) {
       this.visibleRows = [];

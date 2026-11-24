@@ -20,6 +20,8 @@ const PRECACHE_URLS = [
   './src/main.js',
   './src/i18n.js',
   './src/state/store.js',
+  './src/io/fileIo.js',
+  './src/utils/uiHelpers.js',
   './src/utils/zipWriter.js',
   './src/dicom/charset.js',
   './src/dicom/dcmdump.js',
@@ -39,6 +41,7 @@ const PRECACHE_URLS = [
   './src/ui/inspector.js',
   './src/ui/modals.js',
   './src/ui/pixelPanel.js',
+  './src/ui/popupMenu.js',
   './src/ui/treeView.js',
 ];
 

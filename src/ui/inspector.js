@@ -15,6 +15,7 @@ import { hasNonAscii, isUtf8Charset, usesSpecificCharacterSet } from '../dicom/c
 import { computeVm, formatByteSize } from '../dicom/parser.js';
 import { generateDicomUid } from '../dicom/uid.js';
 import { getReadOnlyTagMessage } from '../state/store.js';
+import { copyTextToClipboard } from '../utils/uiHelpers.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLocalizedVrText } from '../i18n.js';
 
@@ -128,16 +129,7 @@ export class InspectorPanel {
   }
 
   async _copyText(str) {
-    try {
-      await navigator.clipboard.writeText(str);
-      this.callbacks.onToast?.(t('toastCopied'), 'ok');
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = str;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      ta.remove();
+    if (await copyTextToClipboard(str)) {
       this.callbacks.onToast?.(t('toastCopied'), 'ok');
     }
   }

@@ -558,8 +558,11 @@ export class CompareView {
     if (resizer) resizer.title = t('compareResizerHint');
   }
 
-  async render() {
+  async render(reason = 'state') {
     if (!this.store.compareMode || this.store.files.length < 2) {
+      return;
+    }
+    if (reason === 'layout' && this._shellBuilt) {
       return;
     }
     if (!this._shellBuilt) {
@@ -588,10 +591,10 @@ export class CompareView {
     selA.title = entryA ? `${entryA.name} — ${t('compareDropHint')}` : '';
     selB.title = entryB ? `${entryB.name} — ${t('compareDropHint')}` : '';
 
-    await this._renderComparison();
+    await this._renderComparison({ preserveScroll: reason === 'lang' || reason === 'edit' });
   }
 
-  async _renderComparison() {
+  async _renderComparison({ preserveScroll = false } = {}) {
     const token = ++this._renderToken;
     const files = this.store.files;
     const entryA = files.find((f) => f.id === this.store.compareFileAId);
@@ -600,6 +603,8 @@ export class CompareView {
     const bodyB = this.container.querySelector('#cmp-body-b');
     const summaryEl = this.container.querySelector('#cmp-summary');
     if (!entryA || !entryB || !bodyA || !bodyB) return;
+
+    const prevScrollTop = preserveScroll ? bodyA.scrollTop : 0;
 
     let docA, docB;
     try {
@@ -720,13 +725,13 @@ export class CompareView {
 
     bodyA.innerHTML = htmlA.join('');
     bodyB.innerHTML = htmlB.join('');
-    bodyA.scrollTop = 0;
-    bodyB.scrollTop = 0;
+    bodyA.scrollTop = prevScrollTop;
+    bodyB.scrollTop = prevScrollTop;
     this._updateNavStatus();
 
     const splitEl = this.container.querySelector('#compare-split');
     const active = document.activeElement;
-    if (splitEl && (!active || !this.container.contains(active) || !active.closest('input, select'))) {
+    if (!preserveScroll && splitEl && (!active || !this.container.contains(active) || !active.closest('input, select'))) {
       splitEl.focus({ preventScroll: true });
     }
   }

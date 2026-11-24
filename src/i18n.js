@@ -44,6 +44,7 @@ const MESSAGES = {
     welcomeDesc: '모든 파싱·편집·저장은 <strong>내 브라우저 안에서 100% 로컬로 처리</strong>되며,<br/>외부 서버로 의료 영상이나 환자 정보가 전송되지 않습니다.',
     welcomeBtnOpen: 'DICOM 파일 열기 (.dcm)',
     welcomeBtnSample: '샘플 CT DICOM으로 바로 체험',
+    welcomeScrollGuide: '기능 소개 · FAQ',
     seoGuideTitle: '브라우저에서 바로 쓰는 100% 로컬 DICOM 태그 편집기 · 비교 도구',
     seoGuideLead: '별도 설치나 서버 업로드 없이 DICOM 메타데이터(File Meta 0002, Main Dataset, 중첩 SQ) 조회·수정, 두 파일 나란히 비교, 익명화, dcmdump 내보내기, PixelData W/L 프리뷰까지 한 번에 처리합니다.',
     seoCard1Title: '표준 PS3.6 5,041+ 태그 & VR 검증',
@@ -272,6 +273,7 @@ const MESSAGES = {
     rawExitBtn: '닫기',
     rawHexSerializeErr: '바이너리 직렬화 실패: {msg}',
     toastHexPageCopied: 'Hex {page}/{total} 페이지를 복사했습니다.',
+    toastHexPageExported: '대용량 파일(2MB 초과)은 현재 Hex {page}/{total} 페이지만 내보냈습니다.',
     toastCopied: '클립보드에 복사되었습니다.',
 
     // Multi-file, Batch Edit & ZIP
@@ -487,6 +489,7 @@ const MESSAGES = {
     welcomeDesc: 'All parsing, editing, and saving run <strong>100% locally in your browser</strong>.<br/>No medical images or patient data ever leave your machine.',
     welcomeBtnOpen: 'Open DICOM File (.dcm)',
     welcomeBtnSample: 'Try with Sample CT DICOM',
+    welcomeScrollGuide: 'Features & FAQ',
     seoGuideTitle: '100% Local Online DICOM Tag Editor, Metadata Viewer & Compare Tool',
     seoGuideLead: 'Inspect and edit DICOM File Meta (0002), Main Dataset, and nested SQ sequences right in your browser with zero upload. Includes side-by-side compare, PHI anonymization, dcmdump/JSON export, and PixelData Window/Level preview.',
     seoCard1Title: '5,041+ PS3.6 Tags & Live VR Validation',
@@ -715,6 +718,7 @@ const MESSAGES = {
     rawExitBtn: 'Close',
     rawHexSerializeErr: 'Binary serialization failed: {msg}',
     toastHexPageCopied: 'Copied Hex page {page}/{total}.',
+    toastHexPageExported: 'File exceeds 2 MB — exported current Hex page {page}/{total}.',
     toastCopied: 'Copied to clipboard.',
 
     // Multi-file, Batch Edit & ZIP

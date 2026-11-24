@@ -55,7 +55,7 @@
         "inLanguage": ["ko", "en"],
         "isAccessibleForFree": true,
         "screenshot": "https://dcm.tyty.uk/og-image.png",
-        "dateModified": "2026-11-23",
+        "dateModified": "2026-11-24",
         "license": "https://opensource.org/licenses/MIT",
         "sameAs": "https://github.com/j0n9m1n1/dicom-tag-editor",
         "offers": {
@@ -72,8 +72,8 @@
           "Byte-preserving round-trip DICOM saving without re-encoding untouched PixelData",
           "Batch PHI anonymization preset with private tag stripping, UID regeneration, Undo/Redo, and Diff review",
           "Interactive PixelData preview with Window Center/Width, CT presets, RLE/JPEG Baseline decoding, and multi-frame stepping",
-          "DCMTK dcmdump text and DICOM JSON viewer/export",
-          "Installable offline Desktop PWA with OS .dcm/.dicom file association, Modern/Raw UI modes, and Korean/English switching"
+          "DCMTK dcmdump text, DICOM JSON, and Binary Hex dump viewer/export",
+          "Installable offline Desktop PWA with OS .dcm/.dicom file association, Modern/Terminal UI modes, and Korean/English switching"
         ]
       },
       {
@@ -189,7 +189,7 @@
         <div class="welcome-backdrop" aria-hidden="true">
           <div class="wb-sidebar">
             <div class="wb-panel-head">
-              <span>Open Files (2)</span>
+              <span>Open Files (4)</span>
               <span class="wb-mini-btn">Close All</span>
             </div>
             <div class="wb-file-item active">
@@ -206,12 +206,27 @@
                 <div class="wb-file-sub">132.4 KB · CT</div>
               </div>
             </div>
+            <div class="wb-file-item">
+              <span class="wb-file-num">3</span>
+              <div class="wb-file-meta">
+                <div class="wb-file-name">IM0003_BRAIN_CT.dcm</div>
+                <div class="wb-file-sub">132.4 KB · CT</div>
+              </div>
+            </div>
+            <div class="wb-file-item">
+              <span class="wb-file-num">4</span>
+              <div class="wb-file-meta">
+                <div class="wb-file-name">SR0001_REPORT.dcm</div>
+                <div class="wb-file-sub">14.2 KB · SR</div>
+              </div>
+            </div>
           </div>
 
           <div class="wb-center">
             <div class="wb-tabs">
               <div class="wb-tab active">IM0001_BRAIN_CT.dcm</div>
               <div class="wb-tab">IM0002_BRAIN_CT.dcm</div>
+              <div class="wb-tab">IM0003_BRAIN_CT.dcm</div>
             </div>
             <div class="wb-summary">
               <span class="wb-pill">Explicit VR Little Endian</span>
@@ -233,19 +248,37 @@
             <div class="wb-rows">
               <div class="wb-sec">File Meta Information (Group 0002)</div>
               <div class="wb-row"><span>(0002,0000)</span><span>FileMetaInformationGroupLength</span><span class="vr-pill vr-cat-number">UL</span><span>4</span><span>192</span></div>
+              <div class="wb-row"><span>(0002,0002)</span><span>MediaStorageSOPClassUID</span><span class="vr-pill vr-cat-string">UI</span><span>26</span><span>1.2.840.10008.5.1.4.1.1.2</span></div>
               <div class="wb-row"><span>(0002,0010)</span><span>TransferSyntaxUID</span><span class="vr-pill vr-cat-string">UI</span><span>20</span><span>1.2.840.10008.1.2.1</span></div>
               <div class="wb-row"><span>(0002,0013)</span><span>ImplementationVersionName</span><span class="vr-pill vr-cat-string">SH</span><span>16</span><span>DCM_TAG_EDITOR</span></div>
               <div class="wb-sec">Main Dataset</div>
               <div class="wb-row"><span>(0008,0005)</span><span>SpecificCharacterSet</span><span class="vr-pill vr-cat-string">CS</span><span>10</span><span>ISO_IR 192</span></div>
+              <div class="wb-row"><span>(0008,0016)</span><span>SOPClassUID</span><span class="vr-pill vr-cat-string">UI</span><span>26</span><span>1.2.840.10008.5.1.4.1.1.2</span></div>
+              <div class="wb-row"><span>(0008,0018)</span><span>SOPInstanceUID</span><span class="vr-pill vr-cat-string">UI</span><span>42</span><span>1.2.840.113619.2.55.3.283116.1.1</span></div>
               <div class="wb-row"><span>(0008,0020)</span><span>StudyDate</span><span class="vr-pill vr-cat-date">DA</span><span>8</span><span>20261124</span></div>
+              <div class="wb-row"><span>(0008,0030)</span><span>StudyTime</span><span class="vr-pill vr-cat-date">TM</span><span>6</span><span>093000</span></div>
               <div class="wb-row"><span>(0008,0060)</span><span>Modality</span><span class="vr-pill vr-cat-string">CS</span><span>2</span><span>CT</span></div>
+              <div class="wb-row"><span>(0008,0070)</span><span>Manufacturer</span><span class="vr-pill vr-cat-string">LO</span><span>16</span><span>DICOM_SIMULATOR</span></div>
+              <div class="wb-row"><span>(0008,1030)</span><span>StudyDescription</span><span class="vr-pill vr-cat-string">LO</span><span>18</span><span>BRAIN CT PHANTOM</span></div>
               <div class="wb-row selected"><span>(0010,0010)</span><span>PatientName</span><span class="vr-pill vr-cat-string">PN</span><span>18</span><span>BRAIN^PHANTOM=뇌^팬텀</span></div>
               <div class="wb-row"><span>(0010,0020)</span><span>PatientID</span><span class="vr-pill vr-cat-string">LO</span><span>12</span><span>CT-2026-001</span></div>
+              <div class="wb-row"><span>(0010,0030)</span><span>PatientBirthDate</span><span class="vr-pill vr-cat-date">DA</span><span>8</span><span>19850115</span></div>
+              <div class="wb-row"><span>(0010,0040)</span><span>PatientSex</span><span class="vr-pill vr-cat-string">CS</span><span>2</span><span>O</span></div>
+              <div class="wb-row"><span>(0018,0050)</span><span>SliceThickness</span><span class="vr-pill vr-cat-number">DS</span><span>4</span><span>5.0</span></div>
+              <div class="wb-row"><span>(0018,0060)</span><span>KVP</span><span class="vr-pill vr-cat-number">DS</span><span>4</span><span>120</span></div>
               <div class="wb-row"><span>(0020,000D)</span><span>StudyInstanceUID</span><span class="vr-pill vr-cat-string">UI</span><span>38</span><span>1.2.840.113619.2.55.3.283116</span></div>
+              <div class="wb-row"><span>(0020,000E)</span><span>SeriesInstanceUID</span><span class="vr-pill vr-cat-string">UI</span><span>40</span><span>1.2.840.113619.2.55.3.283116.1</span></div>
+              <div class="wb-row"><span>(0020,0013)</span><span>InstanceNumber</span><span class="vr-pill vr-cat-number">IS</span><span>2</span><span>1</span></div>
+              <div class="wb-row"><span>(0028,0002)</span><span>SamplesPerPixel</span><span class="vr-pill vr-cat-number">US</span><span>2</span><span>1</span></div>
+              <div class="wb-row"><span>(0028,0004)</span><span>PhotometricInterpretation</span><span class="vr-pill vr-cat-string">CS</span><span>12</span><span>MONOCHROME2</span></div>
               <div class="wb-row"><span>(0028,0010)</span><span>Rows</span><span class="vr-pill vr-cat-number">US</span><span>2</span><span>256</span></div>
               <div class="wb-row"><span>(0028,0011)</span><span>Columns</span><span class="vr-pill vr-cat-number">US</span><span>2</span><span>256</span></div>
+              <div class="wb-row"><span>(0028,0100)</span><span>BitsAllocated</span><span class="vr-pill vr-cat-number">US</span><span>2</span><span>16</span></div>
+              <div class="wb-row"><span>(0028,0101)</span><span>BitsStored</span><span class="vr-pill vr-cat-number">US</span><span>2</span><span>16</span></div>
               <div class="wb-row"><span>(0028,1050)</span><span>WindowCenter</span><span class="vr-pill vr-cat-number">DS</span><span>2</span><span>40</span></div>
               <div class="wb-row"><span>(0028,1051)</span><span>WindowWidth</span><span class="vr-pill vr-cat-number">DS</span><span>2</span><span>80</span></div>
+              <div class="wb-row"><span>(0028,1052)</span><span>RescaleIntercept</span><span class="vr-pill vr-cat-number">DS</span><span>6</span><span>-1024</span></div>
+              <div class="wb-row"><span>(0028,1053)</span><span>RescaleSlope</span><span class="vr-pill vr-cat-number">DS</span><span>2</span><span>1</span></div>
               <div class="wb-row"><span>(7FE0,0010)</span><span>PixelData</span><span class="vr-pill vr-cat-binary">OW</span><span>131072</span><span>[Binary OW: 128.0 KB]</span></div>
             </div>
           </div>
@@ -306,6 +339,11 @@
             <a class="gh-link" href="https://github.com/j0n9m1n1/dicom-tag-editor" target="_blank" rel="noopener noreferrer" id="welcome-gh-link" title="GitHub Repository"></a>
           </footer>
         </div>
+
+        <button type="button" class="welcome-scroll-cue" id="btn-welcome-scroll">
+          <span data-i18n="welcomeScrollGuide">기능 소개 · FAQ</span>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
       </div>
 
       <!-- Clean below-the-fold product overview & FAQ (hidden when a file is open) -->

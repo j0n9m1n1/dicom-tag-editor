@@ -8,6 +8,8 @@
  */
 
 import { countDocChanges } from '../state/store.js';
+import { confirmAndCloseFile, confirmAndCloseFiles } from '../utils/uiHelpers.js';
+import { openPopupMenu, closePopupMenu } from './popupMenu.js';
 import { INTERNAL_FILE_DRAG_MIME } from './compareView.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
@@ -39,18 +41,6 @@ export class FileTabsBar {
 
     this._lastActiveKey = null;
     this._dragFileId = null;
-    this._ctxMenuEl = null;
-    this._ctxTimer = null;
-    this._ctxScrollEl = null;
-    this._boundDismissCtx = () => this._closeContextMenu();
-    this._boundKeyDownCtx = (e) => {
-      if (e.key === 'Escape' && this._ctxMenuEl) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        this._closeContextMenu();
-      }
-    };
     this._boundClearDrag = () => this._clearDragState();
 
     this.container.addEventListener('click', (e) => this._onClick(e));
@@ -75,7 +65,7 @@ export class FileTabsBar {
   }
 
   render() {
-    this._closeContextMenu();
+    closePopupMenu();
     this._clearDragState();
 
     const prevScrollLeft = this.container.querySelector('#file-tabs-scroll')?.scrollLeft || 0;
@@ -164,26 +154,8 @@ export class FileTabsBar {
       return;
     }
     if (this.store.activeFileId) {
-      await this._closeFileEntry(this.store.activeFileId);
+      await confirmAndCloseFile(this.store, this.store.activeFileId);
     }
-  }
-
-  async _closeFileEntry(fileId) {
-    const entry = this.store.files.find((f) => f.id === fileId);
-    if (!entry) return;
-    if (countDocChanges(entry.doc) && !window.confirm(t('confirmCloseFileDirty', { name: entry.name }))) {
-      return;
-    }
-    await this.store.removeFile(entry.id);
-  }
-
-  async _closeMultipleEntries(entries) {
-    if (!entries || entries.length === 0) return;
-    const dirtyCount = entries.filter((entry) => entry.doc && countDocChanges(entry.doc) > 0).length;
-    if (dirtyCount > 0 && !window.confirm(t('confirmCloseMultiDirty', { count: dirtyCount }))) {
-      return;
-    }
-    await this.store.removeFiles(entries.map((e) => e.id));
   }
 
   async _activateFileTab(fileId) {
@@ -237,7 +209,7 @@ export class FileTabsBar {
     const closeBtn = e.target.closest('[data-tab-close]');
     if (closeBtn) {
       e.stopPropagation();
-      await this._closeFileEntry(closeBtn.dataset.tabClose);
+      await confirmAndCloseFile(this.store, closeBtn.dataset.tabClose);
       return;
     }
 
@@ -251,7 +223,7 @@ export class FileTabsBar {
     const tab = e.target.closest('.file-tab[data-file-id]');
     if (!tab) return;
     e.preventDefault();
-    await this._closeFileEntry(tab.dataset.fileId);
+    await confirmAndCloseFile(this.store, tab.dataset.fileId);
   }
 
   _onDragStart(e) {
@@ -334,92 +306,33 @@ export class FileTabsBar {
     const hasOthers = files.length >= 2;
     const hasRight = idx < files.length - 1;
 
-    this._openContextMenu(x, y, [
-      ...(canCompareWithActive
-        ? [{
-            label: t('tabCtxCompareWithActive'),
-            action: () => this.store.enterCompareMode(this.store.activeFileId, fileId),
-          }, { sep: true }]
-        : []),
-      {
-        label: t('tabCtxClose'),
-        action: () => this._closeFileEntry(fileId),
-      },
-      {
-        label: t('tabCtxCloseOthers'),
-        disabled: !hasOthers,
-        action: () => this._closeMultipleEntries(files.filter((f) => f.id !== fileId)),
-      },
-      {
-        label: t('tabCtxCloseRight'),
-        disabled: !hasRight,
-        action: () => this._closeMultipleEntries(files.slice(idx + 1)),
-      },
-    ]);
-  }
-
-  _openContextMenu(x, y, items) {
-    this._closeContextMenu();
-    const menu = document.createElement('div');
-    menu.className = 'ctx-menu';
-    menu.setAttribute('role', 'menu');
-
-    items.forEach((item, idx) => {
-      if (item.sep) {
-        const sep = document.createElement('div');
-        sep.className = 'ctx-sep';
-        menu.appendChild(sep);
-        return;
-      }
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'ctx-item';
-      btn.textContent = item.label;
-      btn.disabled = Boolean(item.disabled);
-      btn.dataset.idx = String(idx);
-      btn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        this._closeContextMenu();
-        if (!item.disabled) item.action();
-      });
-      menu.appendChild(btn);
+    openPopupMenu({
+      x,
+      y,
+      scrollEl: this.container.querySelector('#file-tabs-scroll'),
+      items: [
+        ...(canCompareWithActive
+          ? [{
+              icon: icons.compare(13),
+              label: t('tabCtxCompareWithActive'),
+              action: () => this.store.enterCompareMode(this.store.activeFileId, fileId),
+            }, { sep: true }]
+          : []),
+        {
+          label: t('tabCtxClose'),
+          action: () => confirmAndCloseFile(this.store, fileId),
+        },
+        {
+          label: t('tabCtxCloseOthers'),
+          disabled: !hasOthers,
+          action: () => confirmAndCloseFiles(this.store, files.filter((f) => f.id !== fileId)),
+        },
+        {
+          label: t('tabCtxCloseRight'),
+          disabled: !hasRight,
+          action: () => confirmAndCloseFiles(this.store, files.slice(idx + 1)),
+        },
+      ],
     });
-
-    document.body.appendChild(menu);
-    const rect = menu.getBoundingClientRect();
-    const left = Math.min(x, Math.max(8, window.innerWidth - rect.width - 8));
-    const top = Math.min(y, Math.max(8, window.innerHeight - rect.height - 8));
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-
-    this._ctxMenuEl = menu;
-    this._ctxScrollEl = this.container.querySelector('#file-tabs-scroll');
-    window.addEventListener('keydown', this._boundKeyDownCtx, true);
-    this._ctxScrollEl?.addEventListener('scroll', this._boundDismissCtx, { passive: true });
-    this._ctxTimer = setTimeout(() => {
-      this._ctxTimer = null;
-      if (this._ctxMenuEl !== menu) return;
-      window.addEventListener('click', this._boundDismissCtx);
-      window.addEventListener('contextmenu', this._boundDismissCtx);
-      window.addEventListener('resize', this._boundDismissCtx);
-    }, 0);
-  }
-
-  _closeContextMenu() {
-    if (this._ctxTimer !== null) {
-      clearTimeout(this._ctxTimer);
-      this._ctxTimer = null;
-    }
-    window.removeEventListener('keydown', this._boundKeyDownCtx, true);
-    window.removeEventListener('click', this._boundDismissCtx);
-    window.removeEventListener('contextmenu', this._boundDismissCtx);
-    window.removeEventListener('resize', this._boundDismissCtx);
-    if (this._ctxScrollEl) {
-      this._ctxScrollEl.removeEventListener('scroll', this._boundDismissCtx);
-      this._ctxScrollEl = null;
-    }
-    if (!this._ctxMenuEl) return;
-    this._ctxMenuEl.remove();
-    this._ctxMenuEl = null;
   }
 }

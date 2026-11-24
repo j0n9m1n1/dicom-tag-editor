@@ -6,6 +6,8 @@
 
 import { countDocChanges } from '../state/store.js';
 import { formatByteSize } from '../dicom/parser.js';
+import { copyTextToClipboard, confirmAndCloseFile, confirmAndCloseFiles } from '../utils/uiHelpers.js';
+import { openPopupMenu, closePopupMenu } from './popupMenu.js';
 import { INTERNAL_FILE_DRAG_MIME } from './compareView.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
@@ -26,19 +28,6 @@ export class FileListPanel {
     this.store = store;
     this.callbacks = callbacks || {};
 
-    this._ctxMenuEl = null;
-    this._ctxTimer = null;
-    this._ctxScrollEl = null;
-    this._boundDismissCtx = () => this._closeContextMenu();
-    this._boundKeyDownCtx = (e) => {
-      if (e.key === 'Escape' && this._ctxMenuEl) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        this._closeContextMenu();
-      }
-    };
-
     this.container.addEventListener('click', (e) => this._onClick(e));
     this.container.addEventListener('contextmenu', (e) => this._onContextMenu(e));
     this.container.addEventListener('dragstart', (e) => this._onDragStart(e));
@@ -52,7 +41,7 @@ export class FileListPanel {
   }
 
   render() {
-    this._closeContextMenu();
+    closePopupMenu();
     const prevScrollTop = this.container.querySelector('.filelist-scroll')?.scrollTop || 0;
     const files = this.store.files || [];
     const show = this.store.showFileList && files.length > 0;
@@ -109,36 +98,9 @@ export class FileListPanel {
   }
 
   async _copyText(str) {
-    try {
-      await navigator.clipboard.writeText(str);
-      this.callbacks.onToast?.(t('toastCopied'), 'ok');
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = str;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      ta.remove();
+    if (await copyTextToClipboard(str)) {
       this.callbacks.onToast?.(t('toastCopied'), 'ok');
     }
-  }
-
-  async _closeFileEntry(fileId) {
-    const entry = this.store.files.find((f) => f.id === fileId);
-    if (!entry) return;
-    if (countDocChanges(entry.doc) && !window.confirm(t('confirmCloseFileDirty', { name: entry.name }))) {
-      return;
-    }
-    await this.store.removeFile(entry.id);
-  }
-
-  async _closeMultipleEntries(entries) {
-    if (!entries || entries.length === 0) return;
-    const dirtyCount = entries.filter((entry) => entry.doc && countDocChanges(entry.doc) > 0).length;
-    if (dirtyCount > 0 && !window.confirm(t('confirmCloseMultiDirty', { count: dirtyCount }))) {
-      return;
-    }
-    await this.store.removeFiles(entries.map((e) => e.id));
   }
 
   async _onClick(e) {
@@ -156,7 +118,7 @@ export class FileListPanel {
     const removeBtn = e.target.closest('[data-remove-file]');
     if (removeBtn) {
       e.stopPropagation();
-      await this._closeFileEntry(removeBtn.dataset.removeFile);
+      await confirmAndCloseFile(this.store, removeBtn.dataset.removeFile);
       return;
     }
 
@@ -234,84 +196,25 @@ export class FileListPanel {
       { sep: true },
       {
         label: t('tabCtxClose'),
-        action: () => this._closeFileEntry(fileId),
+        action: () => confirmAndCloseFile(this.store, fileId),
       },
       {
         label: t('tabCtxCloseOthers'),
         disabled: !hasOthers,
-        action: () => this._closeMultipleEntries(files.filter((f) => f.id !== fileId)),
+        action: () => confirmAndCloseFiles(this.store, files.filter((f) => f.id !== fileId)),
       },
       {
         label: t('fileCtxCloseBelow'),
         disabled: !hasBelow,
-        action: () => this._closeMultipleEntries(files.slice(idx + 1)),
+        action: () => confirmAndCloseFiles(this.store, files.slice(idx + 1)),
       }
     );
 
-    this._openContextMenu(x, y, items);
-  }
-
-  _openContextMenu(x, y, items) {
-    this._closeContextMenu();
-    const menu = document.createElement('div');
-    menu.className = 'ctx-menu';
-    menu.setAttribute('role', 'menu');
-
-    items.forEach((item) => {
-      if (item.sep) {
-        const sep = document.createElement('div');
-        sep.className = 'ctx-sep';
-        menu.appendChild(sep);
-        return;
-      }
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'ctx-item';
-      btn.disabled = Boolean(item.disabled);
-      btn.innerHTML = `${item.icon || ''}<span class="ctx-item-label">${escapeHtml(item.label)}</span>`;
-      btn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        this._closeContextMenu();
-        if (!item.disabled) item.action();
-      });
-      menu.appendChild(btn);
+    openPopupMenu({
+      x,
+      y,
+      items,
+      scrollEl: this.container.querySelector('.filelist-scroll'),
     });
-
-    document.body.appendChild(menu);
-    const rect = menu.getBoundingClientRect();
-    const left = Math.max(8, Math.min(x, window.innerWidth - rect.width - 8));
-    const top = Math.max(8, Math.min(y, window.innerHeight - rect.height - 8));
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-
-    this._ctxMenuEl = menu;
-    this._ctxScrollEl = this.container.querySelector('.filelist-scroll');
-    window.addEventListener('keydown', this._boundKeyDownCtx, true);
-    this._ctxScrollEl?.addEventListener('scroll', this._boundDismissCtx, { passive: true });
-    this._ctxTimer = setTimeout(() => {
-      this._ctxTimer = null;
-      if (this._ctxMenuEl !== menu) return;
-      window.addEventListener('click', this._boundDismissCtx);
-      window.addEventListener('contextmenu', this._boundDismissCtx);
-      window.addEventListener('resize', this._boundDismissCtx);
-    }, 0);
-  }
-
-  _closeContextMenu() {
-    if (this._ctxTimer !== null) {
-      clearTimeout(this._ctxTimer);
-      this._ctxTimer = null;
-    }
-    window.removeEventListener('keydown', this._boundKeyDownCtx, true);
-    window.removeEventListener('click', this._boundDismissCtx);
-    window.removeEventListener('contextmenu', this._boundDismissCtx);
-    window.removeEventListener('resize', this._boundDismissCtx);
-    if (this._ctxScrollEl) {
-      this._ctxScrollEl.removeEventListener('scroll', this._boundDismissCtx);
-      this._ctxScrollEl = null;
-    }
-    if (!this._ctxMenuEl) return;
-    this._ctxMenuEl.remove();
-    this._ctxMenuEl = null;
   }
 }

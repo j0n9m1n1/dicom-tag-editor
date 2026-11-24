@@ -11,6 +11,7 @@ import { DICOM_DICTIONARY, lookupTag, lookupUidName, searchDictionary } from '..
 import { buildCompareRows } from '../src/ui/compareView.js';
 import { formatHexSlice, findSerializedLandmarks } from '../src/ui/rawView.js';
 import { formatTabLabel } from '../src/ui/fileTabs.js';
+import { buildUniqueRelativePath } from '../src/io/fileIo.js';
 import { buildZipArchive } from '../src/utils/zipWriter.js';
 import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges } from '../src/state/store.js';
 
@@ -894,4 +895,10 @@ test('AppStore viewMode switches Tree/Raw/Compare cleanly and RawView locates se
   assert.equal(slice.lines.length, 2);
   assert.ok(slice.lines[0].text.startsWith('00000080  44 49 43 4D'));
   assert.ok(slice.lines[0].text.includes('|DICM'));
+
+  // Unique relative path sanitization for batch folder export
+  const used = new Set();
+  assert.equal(buildUniqueRelativePath('../study\\img:01.dcm', used), 'study/img_01.dcm');
+  assert.equal(buildUniqueRelativePath('study/IMG_01.dcm', used), 'study/IMG_01_2.dcm');
+  assert.equal(buildUniqueRelativePath('', used), 'file.dcm');
 });

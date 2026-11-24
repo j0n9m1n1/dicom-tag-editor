@@ -8,6 +8,7 @@ import { formatDcmDump, formatDicomJson } from '../dicom/dcmdump.js';
 import { writeDicomDocument } from '../dicom/writer.js';
 import { formatByteSize } from '../dicom/parser.js';
 import { VR_32BIT_LENGTH } from '../dicom/vrSpec.js';
+import { copyTextToClipboard, downloadBlobBytes } from '../utils/uiHelpers.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
 
@@ -426,25 +427,32 @@ export class RawView {
     if (closeBtn) closeBtn.innerHTML = `${icons.x(13)}<span>${escapeHtml(t('rawExitBtn'))}</span>`;
   }
 
-  async render() {
+  async render(reason = 'state') {
     if (this.store.viewMode !== 'raw' || !this.store.doc) {
+      return;
+    }
+    if (reason === 'layout' && this._shellBuilt) {
       return;
     }
     if (!this._shellBuilt) {
       this._buildShell();
     }
     this._syncLabels();
+    if (reason === 'lang') {
+      return;
+    }
 
-    if (this._lastDocRef !== this.store.doc) {
+    const docChanged = this._lastDocRef !== this.store.doc;
+    if (docChanged) {
       this._lastDocRef = this.store.doc;
       this.hexPage = 0;
       this.hexHighlightOffset = -1;
     }
 
-    await this._renderContent();
+    await this._renderContent({ preserveScroll: !docChanged && reason === 'edit' });
   }
 
-  async _renderContent() {
+  async _renderContent({ preserveScroll = false } = {}) {
     const isHex = this.mode === 'hex';
     this.container.querySelectorAll('[data-raw-fmt]').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.rawFmt === this.mode);
@@ -453,9 +461,9 @@ export class RawView {
     this.container.querySelector('#raw-hex-controls')?.classList.toggle('hidden', !isHex);
 
     if (isHex) {
-      await this._renderHexContent();
+      await this._renderHexContent({ preserveScroll });
     } else {
-      this._renderTextContent();
+      this._renderTextContent({ preserveScroll });
     }
   }
 
@@ -467,9 +475,11 @@ export class RawView {
       : formatDcmDump(doc, { includeDeleted: this.includeDeleted });
   }
 
-  _renderTextContent() {
+  _renderTextContent({ preserveScroll = false } = {}) {
     const preEl = this.container.querySelector('#raw-inline-pre');
+    const bodyEl = this.container.querySelector('#raw-inline-body');
     if (!preEl || !this.store.doc) return;
+    const prevScrollTop = preserveScroll && bodyEl ? bodyEl.scrollTop : 0;
     preEl.classList.remove('raw-hex-pre');
 
     const text = this._getCurrentText();
@@ -479,6 +489,7 @@ export class RawView {
 
     if (!q) {
       preEl.textContent = text;
+      if (bodyEl && preserveScroll) bodyEl.scrollTop = prevScrollTop;
       this._updateMatchNav();
       return;
     }
@@ -510,6 +521,7 @@ export class RawView {
 
     this.matchCount = count;
     preEl.innerHTML = parts.join('');
+    if (bodyEl && preserveScroll) bodyEl.scrollTop = prevScrollTop;
     if (count > 0) {
       this._setActiveMatch(0, false);
     } else {
@@ -581,7 +593,7 @@ export class RawView {
     return Math.max(1, Math.ceil(len / HEX_PAGE_SIZE));
   }
 
-  async _renderHexContent() {
+  async _renderHexContent({ preserveScroll = false } = {}) {
     const token = ++this._renderToken;
     const preEl = this.container.querySelector('#raw-inline-pre');
     if (!preEl) return;
@@ -594,7 +606,7 @@ export class RawView {
       const totalPages = this._getHexTotalPages();
       if (this.hexPage >= totalPages) this.hexPage = totalPages - 1;
       this._renderHexLandmarks(cache.landmarks);
-      this._renderHexPage();
+      this._renderHexPage(false, preserveScroll);
     } catch (err) {
       if (token !== this._renderToken || this.store.viewMode !== 'raw' || this.mode !== 'hex') return;
       preEl.classList.remove('raw-hex-pre');
@@ -628,7 +640,7 @@ export class RawView {
     this._renderHexPage(true);
   }
 
-  _renderHexPage(scrollToHighlight = false) {
+  _renderHexPage(scrollToHighlight = false, preserveScroll = false) {
     const cache = this._hexCache;
     const preEl = this.container.querySelector('#raw-inline-pre');
     const bodyEl = this.container.querySelector('#raw-inline-body');
@@ -638,6 +650,7 @@ export class RawView {
     const sizeEl = this.container.querySelector('#raw-hex-size');
     if (!cache || !preEl) return;
 
+    const prevScrollTop = preserveScroll && bodyEl ? bodyEl.scrollTop : 0;
     const { bytes } = cache;
     const totalPages = this._getHexTotalPages();
     const startOffset = this.hexPage * HEX_PAGE_SIZE;
@@ -663,7 +676,7 @@ export class RawView {
       const row = preEl.querySelector(`[data-hex-row="${this.hexHighlightOffset}"]`);
       row?.scrollIntoView({ block: 'center', inline: 'nearest' });
     } else if (bodyEl) {
-      bodyEl.scrollTop = 0;
+      bodyEl.scrollTop = preserveScroll ? prevScrollTop : 0;
     }
   }
 
@@ -681,22 +694,14 @@ export class RawView {
       text = this._getCurrentText();
     }
 
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      ta.remove();
+    if (await copyTextToClipboard(text)) {
+      this.callbacks.onToast?.(
+        isHexPageOnly
+          ? t('toastHexPageCopied', { page: this.hexPage + 1, total: this._getHexTotalPages() })
+          : t('toastCopied'),
+        'ok'
+      );
     }
-    this.callbacks.onToast?.(
-      isHexPageOnly
-        ? t('toastHexPageCopied', { page: this.hexPage + 1, total: this._getHexTotalPages() })
-        : t('toastCopied'),
-      'ok'
-    );
   }
 
   async exportCurrent() {
@@ -708,6 +713,7 @@ export class RawView {
     let ext = 'txt';
     let suffix = this.mode;
     let mime = 'text/plain;charset=utf-8';
+    let isPartialHex = false;
 
     if (this.mode === 'hex') {
       const cache = await this._ensureHexSerialized().catch((err) => {
@@ -715,12 +721,12 @@ export class RawView {
         return null;
       });
       if (!cache) return;
-      const isPartial = cache.bytes.length > MAX_FULL_HEX_EXPORT_BYTES;
-      const slice = isPartial
+      isPartialHex = cache.bytes.length > MAX_FULL_HEX_EXPORT_BYTES;
+      const slice = isPartialHex
         ? formatHexSlice(cache.bytes, this.hexPage * HEX_PAGE_SIZE, HEX_PAGE_SIZE)
         : formatHexSlice(cache.bytes, 0, cache.bytes.length);
       const header = `# DICOM Hex Dump: ${doc.fileName} (${cache.bytes.length.toLocaleString()} bytes)` +
-        (isPartial ? ` [Page ${this.hexPage + 1}/${this._getHexTotalPages()}: 0x${slice.startOffset.toString(16).toUpperCase()} - 0x${slice.endOffset.toString(16).toUpperCase()}]` : '');
+        (isPartialHex ? ` [Page ${this.hexPage + 1}/${this._getHexTotalPages()}: 0x${slice.startOffset.toString(16).toUpperCase()} - 0x${slice.endOffset.toString(16).toUpperCase()}]` : '');
       content = `${header}\n\n${slice.text}\n`;
       ext = 'txt';
       suffix = 'hex';
@@ -735,17 +741,12 @@ export class RawView {
       suffix = 'dcmdump';
     }
 
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${base}_${suffix}.${ext}`;
-    document.body.appendChild(a);
-    try {
-      a.click();
-    } finally {
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadBlobBytes(content, mime, `${base}_${suffix}.${ext}`);
+    if (isPartialHex) {
+      this.callbacks.onToast?.(
+        t('toastHexPageExported', { page: this.hexPage + 1, total: this._getHexTotalPages() }),
+        'info'
+      );
     }
   }
 }
