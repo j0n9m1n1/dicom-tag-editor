@@ -353,7 +353,7 @@ const MESSAGES = {
     modalAnonDisclaimer: '주의: 태그 익명화는 영상 픽셀 자체에 새겨진 텍스트(Burned-in Annotation)나 비표준/중첩 태그 내 잔여 정보를 완전히 제거하지 못할 수 있습니다. 개인정보보호법·HIPAA·GDPR 준수 여부는 최종 저장 전 직접 확인하세요.',
 
     // Settings Dialog & Pixel Accordion
-    btnSettingsTitle: '설정 (언어 · 테마 · UI · 단축키)',
+    btnSettingsTitle: '설정 (언어 · 테마 · UI · 단축키 · Ctrl+,)',
     modalSettingsTitle: '설정 (Settings)',
     modalSettingsSubtitle: '언어, 화면 테마, UI 스타일 및 에디터 단축키를 관리합니다.',
     settingsLangLabel: '언어 (Language)',
@@ -373,6 +373,7 @@ const MESSAGES = {
     shortcutUndoRedo: '실행 취소 / 다시 실행',
     shortcutInline: '선택 태그 인라인 편집',
     shortcutDelete: '선택 태그 삭제 토글',
+    shortcutSettings: '설정 열기 / 닫기',
     pixelToggleHint: '클릭하여 Pixel Preview 접기/펼치기',
     brandHomeTitle: '첫 화면으로 돌아가기',
     confirmGoHomeDirty: '저장하지 않은 변경 사항이 {count}건 있습니다.\n첫 화면으로 돌아가면 열린 파일과 수정 내용이 모두 초기화됩니다. 계속하시겠습니까?',
@@ -787,7 +788,7 @@ const MESSAGES = {
     modalAnonDisclaimer: 'Notice: Tag anonymization does not remove burned-in text within pixel data (Burned-in Annotation) and may not cover non-standard or nested private attributes. Users are solely responsible for verifying compliance with HIPAA, GDPR, or local privacy laws.',
 
     // Settings Dialog & Pixel Accordion
-    btnSettingsTitle: 'Settings (Language · Theme · UI · Shortcuts)',
+    btnSettingsTitle: 'Settings (Language · Theme · UI · Shortcuts · Ctrl+,)',
     modalSettingsTitle: 'Settings',
     modalSettingsSubtitle: 'Configure language, appearance theme, UI style, and review shortcuts.',
     settingsLangLabel: 'Language',
@@ -807,6 +808,7 @@ const MESSAGES = {
     shortcutUndoRedo: 'Undo / Redo',
     shortcutInline: 'Inline edit selected tag',
     shortcutDelete: 'Toggle delete selected tag',
+    shortcutSettings: 'Open / close Settings',
     pixelToggleHint: 'Click to collapse or expand Pixel Preview',
     brandHomeTitle: 'Return to welcome screen',
     confirmGoHomeDirty: 'You have {count} unsaved change(s).\nReturning to the home screen will discard all loaded files and edits. Continue?',

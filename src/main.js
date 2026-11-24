@@ -1153,7 +1153,23 @@ btnCollapseAll.addEventListener('click', () => store.collapseAll());
 
 // Global keyboard shortcuts
 window.addEventListener('keydown', (e) => {
-  if (e.defaultPrevented || !modalRoot.classList.contains('hidden')) return;
+  if (e.defaultPrevented) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && !e.altKey && !e.shiftKey && (e.code === 'Comma' || e.key === ',')) {
+    if (e.repeat) return;
+    if (modals.isSettingsOpen()) {
+      e.preventDefault();
+      modals.close();
+      return;
+    }
+    if (modalRoot.classList.contains('hidden')) {
+      e.preventDefault();
+      closeToolbarMenu();
+      modals.openSettings();
+      return;
+    }
+  }
+  if (!modalRoot.classList.contains('hidden')) return;
   if (e.key === 'Escape' && store.compareMode && !e.target?.closest?.('input, textarea, select')) {
     e.preventDefault();
     store.exitCompareMode();
@@ -1180,7 +1196,6 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
-  const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
   const key = e.key.toLowerCase();
 

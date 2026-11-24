@@ -42,6 +42,10 @@ export class ModalManager {
     this.root.innerHTML = '';
   }
 
+  isSettingsOpen() {
+    return !this.root.classList.contains('hidden') && Boolean(this.root.querySelector('[data-modal-kind="settings"]'));
+  }
+
   /**
    * Open Add Tag modal. Optionally targets a specific Sequence Item.
    */
@@ -718,7 +722,7 @@ export class ModalManager {
     }
 
     this.root.innerHTML = `
-      <div class="modal-card modal-sm" role="dialog" aria-modal="true">
+      <div class="modal-card modal-sm" data-modal-kind="settings" role="dialog" aria-modal="true">
         <div class="modal-header">
           <div>
             <h3>${escapeHtml(t('modalSettingsTitle'))}</h3>
@@ -767,6 +771,7 @@ export class ModalManager {
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutUndoRedo'))}</span><kbd>Ctrl + Z / Y</kbd></div>
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutInline'))}</span><kbd>F2</kbd></div>
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutDelete'))}</span><kbd>Delete</kbd></div>
+              <div class="shortcut-item"><span>${escapeHtml(t('shortcutSettings'))}</span><kbd>Ctrl + ,</kbd></div>
             </div>
           </div>
 

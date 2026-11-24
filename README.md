@@ -62,6 +62,7 @@ All parsing, editing, VR validation, multi-file comparison, anonymization, pixel
 | `←` `→` | Collapse / Expand sequence nodes |
 | `F2` / Double-click | Inline edit selected tag value |
 | `Delete` | Toggle pending delete on selected tag |
+| `Ctrl + ,` | Open / toggle Settings |
 | `Esc` | Close modal or exit Compare view |
 
 ---
