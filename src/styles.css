@@ -337,25 +337,30 @@ code {
   border: 1px solid var(--border);
   flex-shrink: 0;
 }
-.view-mode-btn {
-  border: none;
+.view-mode-group .view-mode-btn {
+  border: 1px solid transparent;
   background: transparent;
-  color: var(--text-secondary);
-  padding: 3px 8px;
-  font-size: 11.5px;
+  color: var(--text-muted);
+  padding: 4px 9px;
+  font-size: 12px;
+  font-weight: 500;
 }
-.view-mode-btn:hover:not(:disabled) {
+.view-mode-group .view-mode-btn:hover:not(:disabled) {
   background: var(--bg-hover);
+  border-color: transparent;
   color: var(--text-primary);
 }
-.view-mode-btn.active {
+.view-mode-group .view-mode-btn.active,
+.view-mode-group .view-mode-btn.active:hover:not(:disabled) {
   background: var(--accent);
+  border-color: var(--accent);
   color: var(--accent-fg);
   font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
 }
-.view-mode-btn.active:hover:not(:disabled) {
-  background: var(--accent-hover);
-  color: var(--accent-fg);
+.view-mode-group .view-mode-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .split-btn {
@@ -4158,11 +4163,29 @@ kbd {
   border: 1px solid var(--border-strong);
   background: var(--bg-canvas);
 }
-:root[data-ui="raw"] .view-mode-btn {
+:root[data-ui="raw"] .view-mode-group .view-mode-btn {
+  padding: 2px 7px;
+  font-size: 11px;
+  border: none;
   border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  box-shadow: none;
 }
-:root[data-ui="raw"] .view-mode-btn:last-child {
+:root[data-ui="raw"] .view-mode-group .view-mode-btn:last-child {
   border-right: none;
+}
+:root[data-ui="raw"] .view-mode-group .view-mode-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+:root[data-ui="raw"] .view-mode-group .view-mode-btn.active,
+:root[data-ui="raw"] .view-mode-group .view-mode-btn.active:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+  font-weight: 700;
 }
 
 :root[data-ui="raw"] .raw-inline-topbar {
