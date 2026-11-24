@@ -163,13 +163,14 @@
         <button class="btn btn-sm" id="btn-undo" disabled title="실행 취소 (Ctrl+Z)"></button>
         <button class="btn btn-sm" id="btn-redo" disabled title="다시 실행 (Ctrl+Y)"></button>
         <div class="toolbar-sep"></div>
-        <button class="btn btn-sm" id="btn-add-tag" disabled title="새 DICOM 태그 추가"></button>
-        <button class="btn btn-sm" id="btn-anonymize" disabled title="개인정보 일괄 익명화 프리셋"></button>
+        <button type="button" class="btn btn-sm btn-dropdown" id="btn-edit-menu" disabled aria-haspopup="menu" aria-expanded="false" title="태그 추가 · 일괄 수정 · 개인정보 익명화"></button>
         <button class="btn btn-sm" id="btn-diff" disabled title="변경 내역 비교 (Diff)"></button>
         <button class="btn btn-sm" id="btn-raw" disabled title="Raw 텍스트(dcmdump) / JSON 보기"></button>
         <div class="toolbar-sep"></div>
-        <button class="btn btn-sm hidden" id="btn-save-direct" disabled title="열려있는 원본 파일에 덮어쓰기 (Ctrl+S)"></button>
-        <button class="btn btn-sm btn-primary" id="btn-save-as" disabled title="수정된 DICOM 파일 저장 (Ctrl+S)"></button>
+        <div class="split-btn" id="save-split-btn">
+          <button type="button" class="btn btn-sm btn-primary split-btn-main" id="btn-save-main" disabled title="수정된 DICOM 파일 저장 (Ctrl+S)"></button>
+          <button type="button" class="btn btn-sm btn-primary split-btn-caret" id="btn-save-menu" disabled aria-haspopup="menu" aria-expanded="false" title="저장 옵션"></button>
+        </div>
         <div class="toolbar-sep"></div>
         <button class="btn-icon" id="btn-settings" title="설정 (언어 · 테마 · 단축키)"></button>
       </div>

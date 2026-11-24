@@ -29,7 +29,7 @@ All parsing, editing, VR validation, multi-file comparison, anonymization, pixel
 - **VS Code-Style Multi-File Tabs & Collapsible Explorer**
   - Open multiple `.dcm` files or **drag & drop an entire directory** (with lazy parsing and independent per-file Undo/Redo stacks)
   - **Top File Tab Bar:** Middle-truncated DICOM UID filenames (`1.2.840…0001.dcm`), unsaved dots, mouse-wheel horizontal scroll, drag-to-reorder tabs, right-click tab menu (`Compare with Active`, `Close Others`, `Close to the Right`), and middle-click / `Alt+W` close
-  - **Collapsible `Open Files` Sidebar:** Keep collapsed for maximum workspace width, or expand for bulk series navigation, **Batch Edit**, **Batch Anonymize**, and zero-dependency **Save All as ZIP**
+  - **Collapsible `Open Files` Sidebar & Unified Topbar Menus:** Keep collapsed for maximum workspace width, or expand for bulk series navigation with right-click file actions (`Compare`, `Assign A/B`, `Copy Filename`, `Save File As`, `Close Others/Below`) and `Close All`; access **Add Tag / Batch Edit / Anonymize** under `Edit ▾` and **Overwrite / Save As / Save All to Folder / Save All as ZIP** under `Save | ▾`
 - **WinMerge-Style Inline Side-by-Side Compare**
   - Inline split workspace (`File A | Draggable Resizer | File B`) with 4 content-sized columns (`Tag | Keyword | VR | Value`)
   - Structured DICOM order (`File Meta 0002` → `Main Dataset` → nested `SQ` children), synchronized scroll/hover/selection, keyboard navigation (`↑↓`, `PageUp/PageDown`, `Home/End`), `Show differences only`, search, Prev/Next diff stepper, and compact diff stat chips

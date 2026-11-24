@@ -31,12 +31,12 @@ const btnFiles = document.getElementById('btn-files');
 const btnCompare = document.getElementById('btn-compare');
 const btnUndo = document.getElementById('btn-undo');
 const btnRedo = document.getElementById('btn-redo');
-const btnAddTag = document.getElementById('btn-add-tag');
-const btnAnonymize = document.getElementById('btn-anonymize');
+const btnEditMenu = document.getElementById('btn-edit-menu');
 const btnDiff = document.getElementById('btn-diff');
 const btnRaw = document.getElementById('btn-raw');
-const btnSaveDirect = document.getElementById('btn-save-direct');
-const btnSaveAs = document.getElementById('btn-save-as');
+const saveSplitBtn = document.getElementById('save-split-btn');
+const btnSaveMain = document.getElementById('btn-save-main');
+const btnSaveMenu = document.getElementById('btn-save-menu');
 const btnSettings = document.getElementById('btn-settings');
 
 const btnWelcomeOpen = document.getElementById('btn-welcome-open');
@@ -158,18 +158,16 @@ function applyLanguage() {
   btnUndo.title = t('btnUndoTitle');
   btnRedo.innerHTML = `${icons.redo(15)}`;
   btnRedo.title = t('btnRedoTitle');
-  btnAddTag.innerHTML = `${icons.plus(15)}<span>${t('btnAddTag')}</span>`;
-  btnAddTag.title = t('btnAddTagTitle');
-  btnAnonymize.innerHTML = `${icons.shield(15)}<span>${t('btnAnonymize')}</span>`;
-  btnAnonymize.title = t('btnAnonymizeTitle');
+  btnEditMenu.innerHTML = `${icons.edit(15)}<span>${t('btnEdit')}</span>${icons.chevronDown(12)}`;
+  btnEditMenu.title = t('btnEditTitle');
   btnDiff.innerHTML = `${icons.diff(15)}<span>${t('btnDiff')}</span>`;
   btnDiff.title = t('btnDiffTitle');
   btnRaw.innerHTML = `${icons.code(15)}<span>${t('btnRaw')}</span>`;
   btnRaw.title = t('btnRawTitle');
-  btnSaveDirect.innerHTML = `${icons.save(15)}<span>${t('btnSaveDirect')}</span>`;
-  btnSaveDirect.title = t('btnSaveDirectTitle');
-  btnSaveAs.innerHTML = `${icons.download(15)}<span>${t('btnSaveAs')}</span>`;
-  btnSaveAs.title = t('btnSaveAsTitle');
+  btnSaveMain.innerHTML = `${icons.save(15)}<span>${t('btnSave')}</span>`;
+  btnSaveMain.title = store.fileHandle ? t('btnSaveDirectTitle') : t('btnSaveAsTitle');
+  btnSaveMenu.innerHTML = icons.chevronDown(13);
+  btnSaveMenu.title = t('btnSaveMenuTitle');
   btnSettings.innerHTML = icons.settings(17);
   btnSettings.title = t('btnSettingsTitle');
 
@@ -228,8 +226,8 @@ const modals = new ModalManager(modalRoot, store, {
 
 const fileListPanel = new FileListPanel(fileListPane, store, {
   onClearAll: () => goHomeWithConfirm(),
-  onBatchEdit: () => modals.openBatchEdit(),
-  onSaveZip: () => saveAllAsZip(),
+  onSaveFile: (entry) => saveFileEntry(entry, false),
+  onToast: showToast,
   onSwitchError: (err, entry) =>
     modals.openFileError([{ fileName: entry?.name, size: entry?.size, error: err }]),
 });
@@ -307,17 +305,15 @@ function updateToolbarAndHeader() {
   btnCompare.setAttribute('aria-pressed', String(inCompare));
   btnCompare.title = fileCount >= 2 ? t('btnCompareTitle') : t('btnCompareNeedTwoTitle');
 
+  const busy = saveInProgress || store.anonymizing;
   btnUndo.disabled = inCompare || !store.canUndo();
   btnRedo.disabled = inCompare || !store.canRedo();
-  btnAddTag.disabled = !hasDoc || inCompare;
-  btnAnonymize.disabled = !hasDoc || inCompare || store.anonymizing || saveInProgress;
+  btnEditMenu.disabled = !hasDoc || busy;
   btnDiff.disabled = !hasDoc || inCompare;
   btnRaw.disabled = !hasDoc || inCompare;
-  btnSaveAs.disabled = !hasDoc || inCompare || saveInProgress || store.anonymizing;
-
-  const canDirectSave = hasDoc && Boolean(store.fileHandle);
-  btnSaveDirect.classList.toggle('hidden', !canDirectSave);
-  btnSaveDirect.disabled = !canDirectSave || inCompare || saveInProgress || store.anonymizing;
+  btnSaveMain.disabled = !hasDoc || inCompare || busy;
+  btnSaveMain.title = store.fileHandle ? t('btnSaveDirectTitle') : t('btnSaveAsTitle');
+  btnSaveMenu.disabled = !hasDoc || busy || (inCompare && fileCount < 2);
 
   if (!hasDoc) {
     summaryStrip.classList.add('hidden');
@@ -413,6 +409,9 @@ store.subscribe((reason) => {
     treeView.render(reason);
     inspector.render(reason);
     return;
+  }
+  if (reason === 'document' || reason === 'compare' || reason === 'lang') {
+    closeToolbarMenu();
   }
   if (reason === 'lang') {
     applyLanguage();
@@ -544,10 +543,26 @@ async function loadSampleDicom() {
   }
 }
 
-function confirmInvalidBeforeSave() {
-  const stats = store.getStatsAndDiff();
-  if (stats.invalid > 0) {
-    return window.confirm(t('confirmInvalidSave', { count: stats.invalid }));
+function countDocInvalid(doc) {
+  if (!doc) return 0;
+  let invalid = 0;
+  const walk = (nodes) => {
+    for (const n of nodes || []) {
+      if (n.status !== 'deleted' && n.validation && !n.validation.valid) invalid++;
+      if (n.isSequence && n.items) {
+        for (const item of n.items) walk(item.children);
+      }
+    }
+  };
+  walk(doc.metaNodes);
+  walk(doc.datasetNodes);
+  return invalid;
+}
+
+function confirmInvalidBeforeSave(doc) {
+  const invalid = countDocInvalid(doc);
+  if (invalid > 0) {
+    return window.confirm(t('confirmInvalidSave', { count: invalid }));
   }
   return true;
 }
@@ -607,10 +622,18 @@ async function pickSaveFile(suggestedName) {
   }
 }
 
-async function saveActiveDocument(direct = false) {
-  const entry = store.getActiveEntry();
-  if (saveInProgress || store.anonymizing || !entry?.doc || !confirmInvalidBeforeSave()) return;
+async function saveFileEntry(entry, direct = false) {
+  if (saveInProgress || store.anonymizing || !entry) return;
+  if (!entry.doc) {
+    try {
+      await store.ensureEntryParsed(entry);
+    } catch (err) {
+      modals.openFileError([{ fileName: entry.name, size: entry.size, error: err }]);
+      return;
+    }
+  }
   const { doc, name, fileHandle } = entry;
+  if (!doc || !confirmInvalidBeforeSave(doc)) return;
   const suggestedName = `${name.split('/').at(-1).replace(/\.dcm$/i, '')}_edited.dcm`;
 
   return runSave(async () => {
@@ -638,12 +661,97 @@ async function saveActiveDocument(direct = false) {
   });
 }
 
+function saveActiveDocument(direct = false) {
+  return saveFileEntry(store.getActiveEntry(), direct);
+}
+
 function saveDocumentDirect() {
   return saveActiveDocument(true);
 }
 
 function saveDocumentAs() {
   return saveActiveDocument();
+}
+
+function buildUniqueRelativePath(rawName, usedPaths) {
+  const segments = String(rawName || 'file.dcm')
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((seg) => seg.replace(/[<>:"|?*\x00-\x1f]/g, '_').trim())
+    .filter((seg) => seg && seg !== '.' && seg !== '..');
+  const clean = segments.length > 0 ? segments.join('/') : 'file.dcm';
+  if (!usedPaths.has(clean.toLowerCase())) {
+    usedPaths.add(clean.toLowerCase());
+    return clean;
+  }
+  const dot = clean.lastIndexOf('.');
+  const slash = clean.lastIndexOf('/');
+  const hasExt = dot > slash + 1;
+  const base = hasExt ? clean.slice(0, dot) : clean;
+  const ext = hasExt ? clean.slice(dot) : '';
+  let idx = 2;
+  while (usedPaths.has(`${base}_${idx}${ext}`.toLowerCase())) idx++;
+  const candidate = `${base}_${idx}${ext}`;
+  usedPaths.add(candidate.toLowerCase());
+  return candidate;
+}
+
+async function saveAllToFolder() {
+  if (!window.isSecureContext || typeof window.showDirectoryPicker !== 'function') return;
+  const files = store.files.slice();
+  if (files.length === 0) return;
+
+  return runSave(async () => {
+    const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    const usedPaths = new Set();
+    const savedDocs = [];
+    let writtenCount = 0;
+    let skipped = 0;
+
+    for (const entry of files) {
+      let dataBytes;
+      if (!entry.doc) {
+        try {
+          const buffer = entry.arrayBuffer || await entry.sourceFile.arrayBuffer();
+          await parseDicomBuffer(buffer, entry.name);
+          dataBytes = new Uint8Array(buffer);
+        } catch {
+          skipped++;
+          continue;
+        }
+      }
+      if (entry.doc) {
+        const { doc } = entry;
+        const revision = store.getDocumentRevision(doc);
+        dataBytes = await writeDicomDocument(doc);
+        savedDocs.push({ doc, revision });
+      }
+
+      const relPath = buildUniqueRelativePath(entry.name, usedPaths);
+      const parts = relPath.split('/');
+      const fileName = parts.pop();
+      let targetDir = dirHandle;
+      for (const dirSeg of parts) {
+        targetDir = await targetDir.getDirectoryHandle(dirSeg, { create: true });
+      }
+      const fh = await targetDir.getFileHandle(fileName, { create: true });
+      await writeToFile(fh, dataBytes);
+      writtenCount++;
+    }
+
+    if (writtenCount === 0) {
+      showToast(t('toastFolderNoDicom'), 'warn');
+      return;
+    }
+
+    let isCurrent = true;
+    for (const { doc, revision } of savedDocs) {
+      if (!store.markSaved(doc, revision)) isCurrent = false;
+    }
+    showToast(t('toastFolderSaveDone', { count: writtenCount, dir: dirHandle.name || 'folder' }), 'ok');
+    if (skipped) showToast(t('toastFolderSkipped', { count: skipped }), 'warn');
+    if (!isCurrent) showToast(t('toastSavePending'), 'warn');
+  });
 }
 
 async function saveAllAsZip() {
@@ -845,14 +953,177 @@ btnCompare.addEventListener('click', () => {
   else store.enterCompareMode();
 });
 
+// ============================================================================
+// Topbar Dropdown Menus (Edit & Save Split Button)
+// ============================================================================
+let activeToolbarMenu = null;
+
+function closeToolbarMenu() {
+  if (!activeToolbarMenu) return;
+  const { el, trigger, timer, onDismiss, onKeyDown } = activeToolbarMenu;
+  activeToolbarMenu = null;
+  if (timer !== null) clearTimeout(timer);
+  window.removeEventListener('keydown', onKeyDown, true);
+  window.removeEventListener('click', onDismiss);
+  window.removeEventListener('contextmenu', onDismiss);
+  window.removeEventListener('resize', onDismiss);
+  trigger.setAttribute('aria-expanded', 'false');
+  trigger.classList.remove('menu-open');
+  el.remove();
+}
+
+function openToolbarMenu(triggerEl, anchorEl, items) {
+  if (activeToolbarMenu?.trigger === triggerEl) {
+    closeToolbarMenu();
+    return;
+  }
+  closeToolbarMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu toolbar-menu';
+  menu.setAttribute('role', 'menu');
+
+  items.forEach((item) => {
+    if (item.sep) {
+      const sep = document.createElement('div');
+      sep.className = 'ctx-sep';
+      menu.appendChild(sep);
+      return;
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'ctx-item';
+    btn.disabled = Boolean(item.disabled);
+    if (item.title) btn.title = item.title;
+    btn.innerHTML = `
+      ${item.icon || ''}
+      <span class="ctx-item-label">${escapeHtml(item.label)}</span>
+      ${item.shortcut ? `<span class="ctx-shortcut">${escapeHtml(item.shortcut)}</span>` : ''}
+    `;
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      closeToolbarMenu();
+      if (!item.disabled) item.action();
+    });
+    menu.appendChild(btn);
+  });
+
+  document.body.appendChild(menu);
+  const anchorRect = anchorEl.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const left = Math.max(8, Math.min(anchorRect.right - menuRect.width, window.innerWidth - menuRect.width - 8));
+  const top = Math.min(anchorRect.bottom + 4, Math.max(8, window.innerHeight - menuRect.height - 8));
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+
+  triggerEl.setAttribute('aria-expanded', 'true');
+  triggerEl.classList.add('menu-open');
+
+  const onDismiss = () => closeToolbarMenu();
+  const onKeyDown = (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      closeToolbarMenu();
+    }
+  };
+
+  const state = { el: menu, trigger: triggerEl, timer: null, onDismiss, onKeyDown };
+  activeToolbarMenu = state;
+  window.addEventListener('keydown', onKeyDown, true);
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    if (activeToolbarMenu !== state) return;
+    window.addEventListener('click', onDismiss);
+    window.addEventListener('contextmenu', onDismiss);
+    window.addEventListener('resize', onDismiss);
+  }, 0);
+}
+
+function openEditMenu() {
+  const hasDoc = Boolean(store.doc);
+  const fileCount = store.files.length;
+  const inCompare = hasDoc && store.compareMode && fileCount >= 2;
+  const busy = saveInProgress || store.anonymizing;
+
+  openToolbarMenu(btnEditMenu, btnEditMenu, [
+    {
+      icon: icons.plus(14),
+      label: t('btnAddTag'),
+      disabled: !hasDoc || inCompare,
+      action: () => modals.openAddTag(null),
+    },
+    {
+      icon: icons.sliders(14),
+      label: t('fileListBatchEdit'),
+      shortcut: fileCount > 1 ? String(fileCount) : '',
+      disabled: fileCount < 1 || busy,
+      action: () => modals.openBatchEdit(),
+    },
+    { sep: true },
+    {
+      icon: icons.shield(14),
+      label: t('btnAnonymize'),
+      disabled: !hasDoc || inCompare || busy,
+      action: () => modals.openAnonymize(),
+    },
+  ]);
+}
+
+function openSaveMenu() {
+  const hasDoc = Boolean(store.doc);
+  const fileCount = store.files.length;
+  const inCompare = hasDoc && store.compareMode && fileCount >= 2;
+  const busy = saveInProgress || store.anonymizing;
+  const canDirectSave = hasDoc && Boolean(store.fileHandle);
+  const canFolderSave = window.isSecureContext && typeof window.showDirectoryPicker === 'function';
+
+  openToolbarMenu(btnSaveMenu, saveSplitBtn, [
+    ...(canDirectSave
+      ? [{
+          icon: icons.save(14),
+          label: t('saveMenuOverwrite'),
+          shortcut: 'Ctrl+S',
+          disabled: inCompare || busy,
+          action: () => saveDocumentDirect(),
+        }]
+      : []),
+    {
+      icon: icons.download(14),
+      label: t('saveMenuSaveAs'),
+      shortcut: canDirectSave ? 'Ctrl+Shift+S' : 'Ctrl+S',
+      disabled: !hasDoc || inCompare || busy,
+      action: () => saveDocumentAs(),
+    },
+    { sep: true },
+    {
+      icon: icons.folderOpen(14),
+      label: t('saveMenuAllFolder', { n: fileCount }),
+      title: canFolderSave ? '' : t('saveMenuAllFolderUnsupported'),
+      disabled: fileCount < 2 || busy || !canFolderSave,
+      action: () => saveAllToFolder(),
+    },
+    {
+      icon: icons.archive(14),
+      label: t('saveMenuAllZip', { n: fileCount }),
+      disabled: fileCount < 2 || busy,
+      action: () => saveAllAsZip(),
+    },
+  ]);
+}
+
 btnUndo.addEventListener('click', () => store.undo());
 btnRedo.addEventListener('click', () => store.redo());
-btnAddTag.addEventListener('click', () => modals.openAddTag(null));
-btnAnonymize.addEventListener('click', () => modals.openAnonymize());
+btnEditMenu.addEventListener('click', () => openEditMenu());
 btnDiff.addEventListener('click', () => modals.openDiff());
 btnRaw.addEventListener('click', () => modals.openRawView());
-btnSaveDirect.addEventListener('click', saveDocumentDirect);
-btnSaveAs.addEventListener('click', saveDocumentAs);
+btnSaveMain.addEventListener('click', () => {
+  closeToolbarMenu();
+  if (store.fileHandle) saveDocumentDirect();
+  else saveDocumentAs();
+});
+btnSaveMenu.addEventListener('click', () => openSaveMenu());
 btnSettings.addEventListener('click', () => modals.openSettings());
 
 mobileNav.addEventListener('click', (e) => {
