@@ -15,10 +15,10 @@ export class FileListPanel {
    * @param {HTMLElement} container
    * @param {import('../state/store.js').AppStore} store
    * @param {{
-   *   onAddFiles: () => void,
+   *   onClearAll: () => void,
    *   onBatchEdit: () => void,
    *   onSaveZip: () => void,
-   *   onSwitchError: (err: Error) => void,
+   *   onSwitchError: (err: Error, entry?: any) => void,
    * }} callbacks
    */
   constructor(container, store, callbacks) {
@@ -81,12 +81,10 @@ export class FileListPanel {
       <div class="filelist-header">
         <span class="filelist-title">${icons.files(14)} ${escapeHtml(t('fileListTitle', { n: files.length }))}</span>
         <div class="filelist-header-btns">
-          <button class="btn btn-xs" data-fl-action="add" title="${escapeHtml(t('fileListAddTitle'))}">${icons.plus(12)} ${escapeHtml(t('fileListAdd'))}</button>
           <button class="btn-icon filelist-clear-btn" data-fl-action="clear-all" title="${escapeHtml(t('fileListClearAllTitle'))}">${icons.trash(13)}</button>
         </div>
       </div>
-      <div class="filelist-actions filelist-actions-3">
-        <button class="btn btn-xs ${this.store.compareMode ? 'btn-active' : ''}" data-fl-action="compare" title="${escapeHtml(t('btnCompareTitle'))}" ${files.length < 2 ? 'disabled' : ''}>${icons.diff(12)} ${escapeHtml(t('btnCompare'))}</button>
+      <div class="filelist-actions">
         <button class="btn btn-xs" data-fl-action="batch-edit" title="${escapeHtml(t('fileListBatchEditTitle'))}" ${files.length < 1 ? 'disabled' : ''}>${icons.sliders(12)} ${escapeHtml(t('fileListBatchEdit'))}</button>
         <button class="btn btn-xs btn-primary" data-fl-action="save-zip" title="${escapeHtml(t('fileListSaveZipTitle'))}" ${this.store.anonymizing ? 'disabled' : ''}>${icons.archive(12)} ${escapeHtml(t('fileListSaveZip'))}</button>
       </div>
@@ -102,9 +100,7 @@ export class FileListPanel {
     const actBtn = e.target.closest('[data-fl-action]');
     if (actBtn) {
       const act = actBtn.dataset.flAction;
-      if (act === 'add') this.callbacks.onAddFiles?.();
-      else if (act === 'clear-all') this.callbacks.onClearAll?.();
-      else if (act === 'compare') this.callbacks.onCompare?.();
+      if (act === 'clear-all') this.callbacks.onClearAll?.();
       else if (act === 'batch-edit') this.callbacks.onBatchEdit?.();
       else if (act === 'save-zip') this.callbacks.onSaveZip?.();
       return;

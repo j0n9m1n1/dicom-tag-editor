@@ -802,47 +802,6 @@ code {
   color: var(--text-primary);
 }
 
-.file-tabs-actions {
-  display: inline-flex;
-  align-items: stretch;
-  flex-shrink: 0;
-  border-left: 1px solid var(--border);
-  background: var(--bg-elevated);
-}
-
-.file-tab-compare {
-  border-right: 1px solid var(--border);
-  max-width: none;
-  min-width: 0;
-  padding: 0 7px 0 10px;
-  font-family: var(--font-sans);
-}
-
-.file-tab-action-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 9px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-family: inherit;
-  font-size: 11.5px;
-  font-weight: 500;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.12s, color 0.12s;
-}
-.file-tab-action-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.file-tab-add-btn {
-  padding: 0 9px;
-  border-left: 1px solid var(--border);
-}
-
 .tree-pane {
   flex: 1;
   min-width: 360px;
@@ -2424,11 +2383,16 @@ kbd {
 
 .filelist-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   padding: 7px 10px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-elevated);
+}
+.filelist-actions .btn {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .filelist-scroll {
@@ -2696,13 +2660,6 @@ kbd {
 }
 
 /* WinMerge-style Split Compare Workspace */
-.btn-active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-fg);
-  font-weight: 600;
-}
-
 .compare-pane {
   flex: 1;
   min-width: 0;
@@ -3027,21 +2984,6 @@ kbd {
   font-size: 12.5px;
 }
 
-/* Filelist 2-row action grid (Compare | Batch Edit / full-width Save ZIP) */
-.filelist-actions-3 {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-.filelist-actions-3 .btn {
-  padding: 5px 6px;
-  font-size: 11.5px;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.filelist-actions-3 .btn-primary {
-  grid-column: 1 / -1;
-}
-
 .welcome-disclaimer {
   margin-top: 20px;
   padding-top: 14px;
@@ -3246,15 +3188,13 @@ kbd {
   border-color: var(--accent);
 }
 
-:root[data-ui="raw"] .btn-primary,
-:root[data-ui="raw"] .btn-active {
+:root[data-ui="raw"] .btn-primary {
   background: var(--accent);
   color: var(--accent-fg);
   border-color: var(--accent);
 }
 
-:root[data-ui="raw"] .btn-primary:hover:not(:disabled),
-:root[data-ui="raw"] .btn-active:hover:not(:disabled) {
+:root[data-ui="raw"] .btn-primary:hover:not(:disabled) {
   background: transparent;
   color: var(--text-primary);
   border-color: var(--border-strong);
@@ -3697,19 +3637,6 @@ kbd {
   border-radius: 0;
   width: 6px;
   height: 6px;
-}
-
-:root[data-ui="raw"] .file-tabs-actions {
-  background: var(--bg-canvas);
-  border-left: 1px solid var(--border-strong);
-}
-
-:root[data-ui="raw"] .file-tab-action-btn {
-  font-size: 11px;
-}
-
-:root[data-ui="raw"] .file-tab-add-btn {
-  border-left: 1px solid var(--border);
 }
 
 /* Compare View in Raw mode */

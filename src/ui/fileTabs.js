@@ -5,7 +5,6 @@
  *  - See dirty (unsaved) dots, error indicators, and middle-truncated DICOM filenames
  *  - Close via × or middle-click, reorder via drag-and-drop, or drag directly onto Compare A/B
  *  - Right-click for context actions (Compare with Active, Close, Close Others, Close to the Right)
- *  - Toggle / return to the Compare workspace via the pinned Compare tab on the right
  */
 
 import { countDocChanges } from '../state/store.js';
@@ -30,8 +29,6 @@ export class FileTabsBar {
    * @param {HTMLElement} container
    * @param {import('../state/store.js').AppStore} store
    * @param {{
-   *   onAddFiles?: () => void,
-   *   onCompare?: () => void,
    *   onSwitchError?: (err: Error, entry: any) => void,
    * }} callbacks
    */
@@ -133,35 +130,7 @@ export class FileTabsBar {
       })
       .join('');
 
-    const compareTabHtml = files.length >= 2
-      ? inCompare
-        ? `
-          <div class="file-tab file-tab-compare active" role="tab" tabindex="0" aria-selected="true" data-tab-action="compare" title="${escapeHtml(t('tabCompareTitle'))}">
-            ${icons.diff(13)}
-            <span class="file-tab-label">${escapeHtml(t('tabCompareLabel'))}</span>
-            <button type="button"
-                    class="file-tab-close"
-                    data-tab-action="close-compare"
-                    title="${escapeHtml(t('tabCloseCompareTitle'))}"
-                    aria-label="${escapeHtml(t('tabCloseCompareTitle'))}">${icons.x(12)}</button>
-          </div>
-        `
-        : `
-          <button type="button" class="file-tab-action-btn" data-tab-action="compare" title="${escapeHtml(t('tabCompareTitle'))}">
-            ${icons.diff(13)}<span>${escapeHtml(t('tabCompareLabel'))}</span>
-          </button>
-        `
-      : '';
-
-    this.container.innerHTML = `
-      <div class="file-tabs-scroll" id="file-tabs-scroll">${tabsHtml}</div>
-      <div class="file-tabs-actions">
-        ${compareTabHtml}
-        <button type="button" class="file-tab-action-btn file-tab-add-btn" data-tab-action="add" title="${escapeHtml(t('tabAddFileTitle'))}" aria-label="${escapeHtml(t('tabAddFileTitle'))}">
-          ${icons.plus(13)}
-        </button>
-      </div>
-    `;
+    this.container.innerHTML = `<div class="file-tabs-scroll" id="file-tabs-scroll">${tabsHtml}</div>`;
 
     // Preserve horizontal scroll position across edits/filters before scrolling newly active tab into view
     const scrollEl = this.container.querySelector('#file-tabs-scroll');
@@ -253,8 +222,6 @@ export class FileTabsBar {
         const fid = tab.dataset.fileId;
         await this._activateFileTab(fid);
         this.container.querySelector(`.file-tab[data-file-id="${fid}"]`)?.focus();
-      } else if (tab.dataset.tabAction === 'compare' && !this.store.compareMode) {
-        this.callbacks.onCompare?.();
       }
       return;
     }
@@ -267,23 +234,6 @@ export class FileTabsBar {
   }
 
   async _onClick(e) {
-    const closeCompareBtn = e.target.closest('[data-tab-action="close-compare"]');
-    if (closeCompareBtn) {
-      e.stopPropagation();
-      this.store.exitCompareMode();
-      return;
-    }
-
-    const actionBtn = e.target.closest('[data-tab-action]');
-    if (actionBtn) {
-      const act = actionBtn.dataset.tabAction;
-      if (act === 'add') this.callbacks.onAddFiles?.();
-      else if (act === 'compare') {
-        if (!this.store.compareMode) this.callbacks.onCompare?.();
-      }
-      return;
-    }
-
     const closeBtn = e.target.closest('[data-tab-close]');
     if (closeBtn) {
       e.stopPropagation();
@@ -298,12 +248,6 @@ export class FileTabsBar {
 
   async _onAuxClick(e) {
     if (e.button !== 1) return;
-    const compareTab = e.target.closest('.file-tab-compare');
-    if (compareTab) {
-      e.preventDefault();
-      this.store.exitCompareMode();
-      return;
-    }
     const tab = e.target.closest('.file-tab[data-file-id]');
     if (!tab) return;
     e.preventDefault();

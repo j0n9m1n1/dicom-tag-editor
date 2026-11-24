@@ -28,6 +28,7 @@ const editorView = document.getElementById('editor-view');
 
 const btnOpen = document.getElementById('btn-open');
 const btnFiles = document.getElementById('btn-files');
+const btnCompare = document.getElementById('btn-compare');
 const btnUndo = document.getElementById('btn-undo');
 const btnRedo = document.getElementById('btn-redo');
 const btnAddTag = document.getElementById('btn-add-tag');
@@ -151,6 +152,8 @@ function applyLanguage() {
   btnOpen.title = t('btnOpenTitle');
   btnFiles.innerHTML = `${icons.files(15)}<span>${t('btnFiles')} (${store.files.length})</span>`;
   btnFiles.title = t('btnFilesTitle');
+  btnCompare.innerHTML = `${icons.compare(15)}<span>${t('btnCompare')}</span>`;
+  btnCompare.title = store.files.length >= 2 ? t('btnCompareTitle') : t('btnCompareNeedTwoTitle');
   btnUndo.innerHTML = `${icons.undo(15)}`;
   btnUndo.title = t('btnUndoTitle');
   btnRedo.innerHTML = `${icons.redo(15)}`;
@@ -224,9 +227,7 @@ const modals = new ModalManager(modalRoot, store, {
 });
 
 const fileListPanel = new FileListPanel(fileListPane, store, {
-  onAddFiles: () => openFileDialog(),
   onClearAll: () => goHomeWithConfirm(),
-  onCompare: () => (store.compareMode ? store.exitCompareMode() : store.enterCompareMode()),
   onBatchEdit: () => modals.openBatchEdit(),
   onSaveZip: () => saveAllAsZip(),
   onSwitchError: (err, entry) =>
@@ -234,8 +235,6 @@ const fileListPanel = new FileListPanel(fileListPane, store, {
 });
 
 const fileTabs = new FileTabsBar(fileTabsBar, store, {
-  onAddFiles: () => openFileDialog(),
-  onCompare: () => store.enterCompareMode(),
   onSwitchError: (err, entry) =>
     modals.openFileError([{ fileName: entry?.name, size: entry?.size, error: err }]),
 });
@@ -297,10 +296,16 @@ function updateToolbarAndHeader() {
     tab.classList.toggle('active', isActiveMobTab);
   });
 
-  // Files toggle button on desktop
+  // Files & Compare toggle buttons in topbar
   btnFiles.classList.toggle('hidden', !hasDoc);
   btnFiles.innerHTML = `${icons.files(15)}<span>${t('btnFiles')} (${fileCount})</span>`;
   btnFiles.classList.toggle('btn-primary', store.showFileList && hasDoc);
+
+  btnCompare.classList.toggle('hidden', !hasDoc);
+  btnCompare.disabled = !hasDoc || fileCount < 2;
+  btnCompare.classList.toggle('btn-primary', inCompare);
+  btnCompare.setAttribute('aria-pressed', String(inCompare));
+  btnCompare.title = fileCount >= 2 ? t('btnCompareTitle') : t('btnCompareNeedTwoTitle');
 
   btnUndo.disabled = inCompare || !store.canUndo();
   btnRedo.disabled = inCompare || !store.canRedo();
@@ -835,6 +840,10 @@ btnWelcomeInstall.addEventListener('click', async () => {
   }
 });
 btnFiles.addEventListener('click', () => store.toggleFileList());
+btnCompare.addEventListener('click', () => {
+  if (store.compareMode) store.exitCompareMode();
+  else store.enterCompareMode();
+});
 
 btnUndo.addEventListener('click', () => store.undo());
 btnRedo.addEventListener('click', () => store.redo());
