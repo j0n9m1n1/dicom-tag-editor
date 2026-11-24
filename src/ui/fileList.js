@@ -95,7 +95,10 @@ export class FileListPanel {
     this.container.innerHTML = `
       <div class="filelist-header">
         <span class="filelist-title">${icons.files(14)} ${escapeHtml(t('fileListTitle', { n: files.length }))}</span>
-        <button type="button" class="btn btn-xs filelist-close-all-btn" data-fl-action="clear-all" title="${escapeHtml(t('fileListClearAllTitle'))}">${escapeHtml(t('fileListCloseAll'))}</button>
+        <div class="filelist-header-actions">
+          <button type="button" class="btn btn-xs filelist-close-all-btn" data-fl-action="clear-all" title="${escapeHtml(t('fileListClearAllTitle'))}">${escapeHtml(t('fileListCloseAll'))}</button>
+          <button type="button" class="btn-icon filelist-hide-btn" data-fl-action="hide-panel" title="${escapeHtml(t('fileListHideTitle'))}" aria-label="${escapeHtml(t('fileListHideTitle'))}">${icons.panelLeftClose(15)}</button>
+        </div>
       </div>
       <div class="filelist-scroll">${itemsHtml}</div>
     `;
@@ -141,8 +144,11 @@ export class FileListPanel {
   async _onClick(e) {
     const actBtn = e.target.closest('[data-fl-action]');
     if (actBtn) {
-      if (actBtn.dataset.flAction === 'clear-all') {
+      const act = actBtn.dataset.flAction;
+      if (act === 'clear-all') {
         this.callbacks.onClearAll?.();
+      } else if (act === 'hide-panel') {
+        this.store.toggleFileList();
       }
       return;
     }

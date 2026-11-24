@@ -2389,6 +2389,13 @@ kbd {
   border-bottom: 1px solid var(--border);
 }
 
+.filelist-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .filelist-close-all-btn {
   color: var(--text-muted);
   flex-shrink: 0;
@@ -2397,6 +2404,16 @@ kbd {
   color: var(--st-del-color);
   border-color: rgba(244, 63, 94, 0.35);
   background: var(--st-del-bg);
+}
+
+.filelist-hide-btn {
+  width: 24px;
+  height: 24px;
+  color: var(--text-muted);
+}
+.filelist-hide-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .filelist-title {
@@ -3782,7 +3799,8 @@ kbd {
 
   .brand-sub,
   .toolbar-sep,
-  #btn-files {
+  #btn-files,
+  .filelist-hide-btn {
     display: none !important;
   }
 
