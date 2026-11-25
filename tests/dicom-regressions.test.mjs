@@ -1119,7 +1119,8 @@ test('SR parser decodes CONTAINER/TEXT/CODE/NUM/PNAME/IMAGE/SCOORD and AppStore 
   assert.equal(children[2].valueText, '14.5 mm');
   assert.equal(children[3].valueText, 'KIM^MIN');
   assert.equal(children[4].valueText, '2.25.99999');
-  assert.equal(children[5].valueText, 'POLYLINE (2 pts)');
+  assert.equal(children[5].valueText, 'POLYLINE');
+  assert.equal(children[5].valueDetail, '2 pt(s) [10.0, 20.0, 30.0, 40.0]');
 
   const md = formatSrMarkdown(parsedSr, srDoc.fileName);
   assert.ok(md.includes('# Diagnostic Imaging Report'));
@@ -1144,10 +1145,10 @@ test('SR parser decodes CONTAINER/TEXT/CODE/NUM/PNAME/IMAGE/SCOORD and AppStore 
 
 test('PHI spec, Date Shifting, upgraded Anonymizer, QA check, and transparent .dcm.gz open work end-to-end', async () => {
   // 1) Date shifting & PHI tag metadata
-  assert.equal(shiftDicomDateValue('20261125', -365, 'DA'), '20251125');
-  assert.equal(shiftDicomDateValue('20240229', 1, 'DA'), '20240301');
-  assert.equal(shiftDicomDateValue('20261125103000.123+0900', -10, 'DT'), '20261115103000.123+0900');
-  assert.equal(shiftDicomDateValue('20260101\\20260110', 5, 'DA'), '20260106\\20260115');
+  assert.equal(shiftDicomDateValue('20261125', 'DA', -365), '20251125');
+  assert.equal(shiftDicomDateValue('20240229', 'DA', 1), '20240301');
+  assert.equal(shiftDicomDateValue('20261125103000.123+0900', 'DT', -10), '20261115103000.123+0900');
+  assert.equal(shiftDicomDateValue('20260101\\20260110', 'DA', 5), '20260106\\20260115');
   assert.equal(getPhiTagInfo('00100010')?.action, 'Z');
   assert.equal(isPhiNode({ tag: '00100020', isSequence: false }), true);
   assert.equal(isPhiNode({ tag: '00280010', isSequence: false }), false);
@@ -1210,7 +1211,7 @@ test('PHI spec, Date Shifting, upgraded Anonymizer, QA check, and transparent .d
     dateShiftDays: -365,
   });
   assert.ok(count > 0);
-  assert.equal(studyDate.value, shiftDicomDateValue(origDate, -365, 'DA'));
+  assert.equal(studyDate.value, shiftDicomDateValue(origDate, 'DA', -365));
   assert.equal(cleanDoc.datasetNodes.find((n) => n.tag === '00120062')?.value, 'YES');
   assert.equal(
     cleanDoc.datasetNodes.find((n) => n.tag === '00120063')?.value,
