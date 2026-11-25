@@ -26,6 +26,7 @@ const PRECACHE_URLS = [
   './src/dicom/charset.js',
   './src/dicom/dcmdump.js',
   './src/dicom/dictionary.js',
+  './src/dicom/jpegLossless.js',
   './src/dicom/standardDict.js',
   './src/dicom/parser.js',
   './src/dicom/phiSpec.js',

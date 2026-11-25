@@ -4,6 +4,7 @@
  *  - Uncompressed Grayscale (8/16-bit signed/unsigned, MONOCHROME1 & MONOCHROME2)
  *  - Uncompressed Color (RGB, YBR_FULL, YBR_FULL_422)
  *  - RLE Lossless (1.2.840.10008.1.2.5)
+ *  - JPEG Lossless Process 14 / First-Order Prediction (1.2.840.10008.1.2.4.57 / .70) via pure JS decoder
  *  - JPEG Baseline / Extended (1.2.840.10008.1.2.4.50 / .51) via browser native decoder
  *  - Multi-frame stepping, Rescale Slope/Intercept, interactive Window/Level & Invert
  *
@@ -11,6 +12,7 @@
  * can be plugged in later without touching the tag editor core.
  */
 
+import { decodeJpegLossless } from './jpegLossless.js';
 import { t } from '../i18n.js';
 
 function findTagValue(nodes, tagHex) {
@@ -158,6 +160,50 @@ function decodeRleFrame(fragment, rows, cols, samplesPerPixel, bitsAllocated) {
   return out;
 }
 
+function concatFragments(frags) {
+  if (frags.length === 1) return frags[0];
+  let total = 0;
+  for (const f of frags) total += f.length;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const f of frags) {
+    out.set(f, off);
+    off += f.length;
+  }
+  return out;
+}
+
+/**
+ * Extract the encapsulated byte stream for a given frame index, handling
+ * single-frame multi-fragment streams, 1:1 multi-frame streams, and Basic Offset Tables.
+ */
+function extractEncapsulatedFrameBytes(pixelNode, numberOfFrames, frameIndex) {
+  const frags = pixelNode.fragments || [];
+  if (frags.length === 0) return null;
+  if (numberOfFrames <= 1) {
+    return concatFragments(frags);
+  }
+  if (frags.length === numberOfFrames) {
+    return frags[Math.min(frameIndex, frags.length - 1)];
+  }
+  const bot = pixelNode.basicOffsetTable;
+  if (bot && bot.length >= numberOfFrames * 4) {
+    const view = new DataView(bot.buffer, bot.byteOffset, bot.byteLength);
+    const startOff = view.getUint32(frameIndex * 4, true);
+    const endOff = frameIndex + 1 < numberOfFrames ? view.getUint32((frameIndex + 1) * 4, true) : Infinity;
+    const selected = [];
+    let cursor = 0;
+    for (const f of frags) {
+      if (cursor >= startOff && cursor < endOff) {
+        selected.push(f);
+      }
+      cursor += 8 + f.length; // each fragment item has an 8-byte (FFFE,E000)+length header
+    }
+    if (selected.length > 0) return concatFragments(selected);
+  }
+  return frags[Math.min(frameIndex, frags.length - 1)];
+}
+
 /**
  * Decode a single frame into either:
  *  - { kind: 'scalar', width, height, values: Float32Array, min, max, autoWC, autoWW }
@@ -175,14 +221,13 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
 
   // 1) Compressed formats
   if (meta.compressed) {
-    const frags = meta.pixelNode.fragments || [];
-    if (frags.length === 0) {
+    const frag = extractEncapsulatedFrameBytes(meta.pixelNode, meta.numberOfFrames || 1, frameIndex);
+    if (!frag || frag.length === 0) {
       return { kind: 'unsupported', reason: t('pixelErrNoFrag'), codec: meta.codec };
     }
 
     // JPEG Baseline / Extended via browser native decoder
     if (meta.codec === 'jpeg-baseline') {
-      const frag = frags[Math.min(frameIndex, frags.length - 1)];
       try {
         const blob = new Blob([frag], { type: 'image/jpeg' });
         const bitmap = await createImageBitmap(blob);
@@ -196,9 +241,43 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
       }
     }
 
+    // JPEG Lossless (Process 14 / First-Order Prediction, .57 / .70) via pure JS decoder
+    if (meta.codec === 'jpeg-lossless') {
+      try {
+        const decoded = decodeJpegLossless(frag, {
+          rows: meta.rows,
+          cols: meta.cols,
+          bitsAllocated: meta.bitsAllocated,
+        });
+        const bitsAllocated = decoded.bytesPerSample * 8;
+        const bitsStored = Math.min(bitsAllocated, meta.bitsStored || decoded.precision);
+        const highBit = decoded.precision <= bitsStored ? bitsStored - 1 : Math.min(bitsAllocated - 1, meta.highBit);
+        return decodeUncompressedBytes(
+          decoded.data,
+          {
+            ...meta,
+            rows: decoded.height,
+            cols: decoded.width,
+            samplesPerPixel: decoded.numComponents,
+            bitsAllocated,
+            bitsStored,
+            highBit,
+            littleEndian: true,
+            planarConfig: 0,
+          },
+          0
+        );
+      } catch {
+        return {
+          kind: 'unsupported',
+          reason: t('pixelErrJpeg', { ts: meta.transferSyntaxName }),
+          codec: meta.codec,
+        };
+      }
+    }
+
     // RLE Lossless
     if (meta.codec === 'rle') {
-      const frag = frags[Math.min(frameIndex, frags.length - 1)];
       try {
         const raw = decodeRleFrame(frag, meta.rows, meta.cols, meta.samplesPerPixel, meta.bitsAllocated);
         return decodeUncompressedBytes(raw, { ...meta, littleEndian: true, planarConfig: 0 }, 0);
@@ -211,7 +290,7 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
       }
     }
 
-    // Other codecs (JPEG2000, JPEG-LS, JPEG Lossless, HTJ2K)
+    // Other codecs (JPEG2000, JPEG-LS, HTJ2K)
     return {
       kind: 'unsupported',
       reason: t('pixelErrCodec', { ts: meta.transferSyntaxName }),

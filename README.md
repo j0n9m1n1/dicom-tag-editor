@@ -49,7 +49,7 @@ All parsing, editing, VR validation, multi-file comparison, anonymization, pixel
   - Built-in **File Open Error Diagnostics** modal inspecting Part 10 `DICM` header, detected non-DICOM signatures, failure offset, and hex preview
 - **Collapsible Pixel Preview Dock & Full-Pane `Pixel` View Mode**
   - Switch to full-pane **`Pixel`** mode from the topbar (`Tree | Pixel | Raw | Compare`) or expand directly from the dock header to inspect high-res slices and burned-in PHI text
-  - Supports uncompressed Grayscale (8/16-bit signed/unsigned, `MONOCHROME1/2`, Rescale Slope/Intercept), RGB, `YBR_FULL`, `YBR_FULL_422`, **RLE Lossless**, **JPEG Baseline**, multi-frame stepping, and 1-click **PNG export**
+  - Supports uncompressed Grayscale (8/16-bit signed/unsigned, `MONOCHROME1/2`, Rescale Slope/Intercept), RGB, `YBR_FULL`, `YBR_FULL_422`, **RLE Lossless**, **JPEG Lossless (`.57` / `.70`)**, **JPEG Baseline**, multi-frame stepping, and 1-click **PNG export**
   - Interactive mouse/touch drag Window Center/Width (`WC/WW`), CT presets (`Brain`, `Soft`, `Lung`, `Bone`), wheel zoom, `Shift+Drag` pan, Invert, and live cursor `(X, Y)` + pixel/HU readout
 - **Dual UI Styles (`Modern` / `Raw`), Bilingual UI & Mobile Support**
   - Instant **English (`EN`) / Korean (`KO`)**, **Dark / Light** theme, and **Modern / Raw (terminal wireframe)** UI switching via Settings (`⚙`)

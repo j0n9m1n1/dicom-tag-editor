@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { deflateRawSync, gzipSync, inflateRawSync } from 'node:zlib';
 import { parseDicomBuffer } from '../src/dicom/parser.js';
+import { decodeJpegLossless } from '../src/dicom/jpegLossless.js';
 import { getPhiTagInfo, isPhiNode, shiftDicomDateValue } from '../src/dicom/phiSpec.js';
 import { decodePixelFrame, extractPixelMeta } from '../src/dicom/pixelRenderer.js';
 import { runDicomQaCheck } from '../src/dicom/qaChecker.js';
@@ -1370,4 +1371,161 @@ test('Post-feature audit fixes: .dcm.gz markSaved handle retention, SR viewMode 
   const pxTag = cmpA.datasetNodes.find((n) => n.tag === '7FE00010');
   pxStore.toggleDeleteNode(pxTag.id);
   assert.equal(pxStore.viewMode, 'tree');
+});
+
+test('JPEG Lossless (.57 / .70) pure-JS decoder round-trips 16-bit signed CT (incl. SSSS=16), SV 4, RGB, and multi-fragment streams', async () => {
+  // Minimal ITU-T T.81 JPEG Lossless encoder for test vectors (canonical 5-bit fixed-length Huffman for SSSS 0..16)
+  const encodeJpegLossless = (samples, width, height, precision, numComponents = 1, sv = 1) => {
+    const out = [0xff, 0xd8]; // SOI
+
+    // DHT: 17 symbols (0..16): 15 codes of length 4 (0..14) + 2 codes of length 5 (15, 16)
+    const bits = [0, 0, 0, 15, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    const syms = Array.from({ length: 17 }, (_, i) => i);
+    const dhtLen = 2 + 1 + 16 + syms.length;
+    out.push(0xff, 0xc4, dhtLen >> 8, dhtLen & 0xff, 0x00, ...bits, ...syms);
+
+    const codeOf = new Map();
+    const lenOf = new Map();
+    let c = 0;
+    let k = 0;
+    for (let l = 1; l <= 16; l++) {
+      for (let j = 0; j < bits[l - 1]; j++) {
+        codeOf.set(syms[k], c);
+        lenOf.set(syms[k], l);
+        c++;
+        k++;
+      }
+      c <<= 1;
+    }
+
+    // SOF3
+    const sofLen = 8 + numComponents * 3;
+    out.push(0xff, 0xc3, sofLen >> 8, sofLen & 0xff, precision, height >> 8, height & 0xff, width >> 8, width & 0xff, numComponents);
+    for (let ci = 0; ci < numComponents; ci++) {
+      out.push(ci + 1, 0x11, 0x00);
+    }
+
+    // SOS
+    const sosLen = 6 + numComponents * 2;
+    out.push(0xff, 0xda, sosLen >> 8, sosLen & 0xff, numComponents);
+    for (let ci = 0; ci < numComponents; ci++) {
+      out.push(ci + 1, 0x00);
+    }
+    out.push(sv, 0x00, 0x00);
+
+    // Entropy stream with 0xFF00 byte stuffing
+    let bitBuf = 0;
+    let bitCnt = 0;
+    const putBits = (val, n) => {
+      for (let i = n - 1; i >= 0; i--) {
+        bitBuf = (bitBuf << 1) | ((val >>> i) & 1);
+        bitCnt++;
+        if (bitCnt === 8) {
+          out.push(bitBuf & 0xff);
+          if ((bitBuf & 0xff) === 0xff) out.push(0x00);
+          bitBuf = 0;
+          bitCnt = 0;
+        }
+      }
+    };
+
+    const initPred = 1 << (precision - 1);
+    const rowStride = width * numComponents;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        for (let ci = 0; ci < numComponents; ci++) {
+          const idx = (y * width + x) * numComponents + ci;
+          let pred;
+          if (y === 0 && x === 0) pred = initPred;
+          else if (x === 0) pred = samples[idx - rowStride];
+          else if (y === 0) pred = samples[idx - numComponents];
+          else {
+            const ra = samples[idx - numComponents];
+            const rb = samples[idx - rowStride];
+            const rc = samples[idx - rowStride - numComponents];
+            pred = sv === 4 ? ra + rb - rc : ra;
+          }
+          let diff = (samples[idx] - pred) & 0xffff;
+          if (diff >= 32768) diff -= 65536; // signed [-32768, 32767]
+          if (diff === 0) {
+            putBits(codeOf.get(0), lenOf.get(0));
+          } else if (diff === -32768) {
+            putBits(codeOf.get(16), lenOf.get(16)); // 0 extra bits!
+          } else {
+            const abs = Math.abs(diff);
+            const s = 32 - Math.clz32(abs);
+            putBits(codeOf.get(s), lenOf.get(s));
+            const enc = diff > 0 ? diff : diff + ((1 << s) - 1);
+            putBits(enc, s);
+          }
+        }
+      }
+    }
+    if (bitCnt > 0) {
+      putBits((1 << (8 - bitCnt)) - 1, 8 - bitCnt);
+    }
+    out.push(0xff, 0xd9); // EOI
+    return Uint8Array.from(out);
+  };
+
+  // 1) 16-bit signed grayscale (.70 SV=1) including extreme -32768 diff (SSSS=16) + split across 2 fragments
+  const graySamples = [0, 32768, 65535, 1024, 500, 65000, 12345, 0, 4095, 2048, 32767, 65500];
+  const jlsGray = encodeJpegLossless(graySamples, 4, 3, 16, 1, 1);
+  const splitAt = Math.floor(jlsGray.length / 2);
+  const decodedGray = await decodePixelFrame({
+    rows: 3,
+    cols: 4,
+    samplesPerPixel: 1,
+    photometric: 'MONOCHROME2',
+    numberOfFrames: 1,
+    bitsAllocated: 16,
+    bitsStored: 16,
+    highBit: 15,
+    pixelRepresentation: 1,
+    rescaleSlope: 1,
+    rescaleIntercept: 0,
+    compressed: true,
+    codec: 'jpeg-lossless',
+    transferSyntaxName: 'JPEG Lossless, Non-Hierarchical, First-Order Prediction',
+    pixelNode: { fragments: [jlsGray.slice(0, splitAt), jlsGray.slice(splitAt)] },
+  });
+  assert.equal(decodedGray.kind, 'scalar');
+  const expectedSigned = graySamples.map((v) => (v >= 32768 ? v - 65536 : v));
+  assert.deepEqual(Array.from(decodedGray.values), expectedSigned);
+
+  // 2) 12-bit grayscale with SV=4 (.57)
+  const sv4Samples = [100, 150, 220, 180, 120, 175, 250, 210, 90, 140, 200, 195];
+  const jlsSv4 = encodeJpegLossless(sv4Samples, 4, 3, 12, 1, 4);
+  const rawSv4 = decodeJpegLossless(jlsSv4, { rows: 3, cols: 4, bitsAllocated: 16 });
+  const sv4Out = [];
+  for (let i = 0; i < sv4Samples.length; i++) {
+    sv4Out.push(rawSv4.data[i * 2] | (rawSv4.data[i * 2 + 1] << 8));
+  }
+  assert.deepEqual(sv4Out, sv4Samples);
+
+  // 3) 8-bit 3-component interleaved RGB (.70)
+  const rgbSamples = [255, 0, 10, 128, 64, 32, 0, 255, 128, 10, 20, 30];
+  const jlsRgb = encodeJpegLossless(rgbSamples, 2, 2, 8, 3, 1);
+  const decodedRgb = await decodePixelFrame({
+    rows: 2,
+    cols: 2,
+    samplesPerPixel: 3,
+    photometric: 'RGB',
+    numberOfFrames: 1,
+    bitsAllocated: 8,
+    bitsStored: 8,
+    highBit: 7,
+    pixelRepresentation: 0,
+    rescaleSlope: 1,
+    rescaleIntercept: 0,
+    compressed: true,
+    codec: 'jpeg-lossless',
+    transferSyntaxName: 'JPEG Lossless, Non-Hierarchical, First-Order Prediction',
+    pixelNode: { fragments: [jlsRgb] },
+  });
+  assert.equal(decodedRgb.kind, 'rgb');
+  assert.deepEqual(
+    Array.from(decodedRgb.rgba),
+    [255, 0, 10, 255, 128, 64, 32, 255, 0, 255, 128, 255, 10, 20, 30, 255]
+  );
 });
