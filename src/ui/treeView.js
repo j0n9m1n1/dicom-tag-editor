@@ -188,16 +188,26 @@ export class TreeView {
     }
   }
 
-  _matchesQuery(node, q, qHex) {
-    if (!q) return true;
-    return (
-      (qHex !== '' && node.tag.toLowerCase().includes(qHex)) ||
-      node.formattedTag.toLowerCase().includes(q) ||
-      (node.keyword && node.keyword.toLowerCase().includes(q)) ||
-      (node.name && node.name.toLowerCase().includes(q)) ||
-      (node.vr && node.vr.toLowerCase() === q) ||
-      (!node.isBinary && !node.isSequence && (node.value || '').toLowerCase().includes(q))
-    );
+  _matchesQuery(node, tokens) {
+    if (!tokens || tokens.length === 0) return true;
+    const tagLower = node.tag.toLowerCase();
+    const hay = [
+      node.formattedTag,
+      node.keyword || '',
+      node.name || '',
+      node.vr || '',
+      !node.isBinary && !node.isSequence ? (node.value || '') : '',
+    ]
+      .join(' ')
+      .toLowerCase();
+    return tokens.every((tok) => {
+      if (hay.includes(tok)) return true;
+      if (/^[0-9a-f(),]+$/.test(tok)) {
+        const hexTok = tok.replace(/[^0-9a-f]/g, '');
+        if (hexTok && tagLower.includes(hexTok)) return true;
+      }
+      return false;
+    });
   }
 
   _matchesFilterMode(node, mode) {
@@ -222,25 +232,26 @@ export class TreeView {
   /**
    * Recursively filter nodes; keep parent SQ if any descendant matches.
    */
-  _filterTree(nodes, q, qHex, mode) {
+  _filterTree(nodes, tokens, mode) {
     const out = [];
+    const hasQuery = tokens.length > 0;
     for (const node of nodes || []) {
-      const selfMatches = this._matchesQuery(node, q, qHex) && this._matchesFilterMode(node, mode);
+      const selfMatches = this._matchesQuery(node, tokens) && this._matchesFilterMode(node, mode);
       if (node.isSequence) {
         const filteredItems = [];
         let descendantMatch = false;
         for (let i = 0; i < (node.items || []).length; i++) {
           const item = node.items[i];
-          const children = this._filterTree(item.children, q, qHex, mode);
+          const children = this._filterTree(item.children, tokens, mode);
           if (children.length > 0) {
             descendantMatch = true;
             filteredItems.push({ item, index: i, children });
-          } else if (selfMatches && !q && (mode === 'all' || mode === 'sequence')) {
+          } else if (selfMatches && !hasQuery && (mode === 'all' || mode === 'sequence')) {
             filteredItems.push({ item, index: i, children: [] });
           }
         }
         if (selfMatches || descendantMatch) {
-          out.push({ node, filteredItems, forceExpand: Boolean((q || mode !== 'all') && descendantMatch) });
+          out.push({ node, filteredItems, forceExpand: Boolean((hasQuery || mode !== 'all') && descendantMatch) });
         }
       } else if (selfMatches) {
         out.push({ node, filteredItems: null, forceExpand: false });
@@ -254,10 +265,9 @@ export class TreeView {
     if (!doc) return [];
 
     const q = this.store.searchQuery.trim().toLowerCase();
-    const isTagLike = /^[0-9a-f(),\s]+$/.test(q);
-    const qHex = isTagLike ? q.replace(/[^0-9a-f]/g, '') : '';
+    const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
     const mode = this.store.filterMode;
-    const filtering = Boolean(q || mode !== 'all');
+    const filtering = Boolean(tokens.length > 0 || mode !== 'all');
     const rows = [];
     const expanded = (id, hasChildren, autoExpand) => hasChildren && (
       (filtering ? this.filterExpansion.get(id) : undefined) ?? (autoExpand || this.store.expandedIds.has(id))
@@ -292,8 +302,8 @@ export class TreeView {
       }
     };
 
-    const metaEntries = this._filterTree(doc.metaNodes, q, qHex, mode);
-    const mainEntries = this._filterTree(doc.datasetNodes, q, qHex, mode);
+    const metaEntries = this._filterTree(doc.metaNodes, tokens, mode);
+    const mainEntries = this._filterTree(doc.datasetNodes, tokens, mode);
 
     if (doc.hasPart10Header && (metaEntries.length > 0 || (!q && (mode === 'all' || mode === 'meta')))) {
       pushSection('meta', t('sectionMeta'), metaEntries);

@@ -1338,4 +1338,16 @@ test('Post-feature audit fixes: .dcm.gz markSaved handle retention, SR viewMode 
   const parsedNan = extractSrDocument(nanSr);
   assert.equal(parsedNan.items[0].valueDetail.includes('NaN'), false);
   assert.ok(parsedNan.items[0].valueDetail.includes('abc, 12.5'));
+
+  // 5) Compare multi-token search tracks hiddenEqualMatches when diffOnly hides matching identical tags
+  const cmpA = await parseDicomBuffer(sampleBuf, 'cmp_a.dcm');
+  const cmpB = await parseDicomBuffer(sampleBuf, 'cmp_b.dcm');
+  const hiddenRes = buildCompareRows(cmpA, cmpB, { diffOnly: true, searchQuery: 'study uid' });
+  assert.equal(hiddenRes.rows.length, 0);
+  assert.equal(hiddenRes.hiddenEqualMatches, 1);
+  const shownRes = buildCompareRows(cmpA, cmpB, { diffOnly: false, searchQuery: 'study uid' });
+  assert.equal(shownRes.hiddenEqualMatches, 0);
+  assert.equal(shownRes.rows.length, 1);
+  assert.equal(shownRes.rows[0].a?.tag, '(0020,000D)');
+  assert.equal(shownRes.rows[0].b?.tag, '(0020,000D)');
 });

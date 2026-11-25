@@ -84,28 +84,37 @@ export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = ''
   const allKeys = Array.from(new Set([...mapA.keys(), ...mapB.keys()])).sort();
 
   const q = (searchQuery || '').trim().toLowerCase();
-  const isTagLike = /^[0-9a-f(),\s]+$/.test(q);
-  const qHex = isTagLike ? q.replace(/[^0-9a-f]/g, '') : '';
+  const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
 
   let changed = 0;
   let onlyA = 0;
   let onlyB = 0;
+  let hiddenEqualMatches = 0;
   const rows = [];
 
   const matchesSearch = (a, b) => {
-    if (!q) return true;
+    if (tokens.length === 0) return true;
     const items = [a, b].filter(Boolean);
     return items.some((it) => {
       const tagHexStr = it.tag.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
-      return (
-        (qHex !== '' && tagHexStr.includes(qHex)) ||
-        it.tag.toLowerCase().includes(q) ||
-        it.path.toLowerCase().includes(q) ||
-        (it.keyword && it.keyword.toLowerCase().includes(q)) ||
-        (it.name && it.name.toLowerCase().includes(q)) ||
-        (it.vr && it.vr.toLowerCase() === q) ||
-        (!it.isBinary && (it.value || '').toLowerCase().includes(q))
-      );
+      const hay = [
+        it.tag,
+        it.path,
+        it.keyword || '',
+        it.name || '',
+        it.vr || '',
+        !it.isBinary ? (it.value || '') : '',
+      ]
+        .join(' ')
+        .toLowerCase();
+      return tokens.every((tok) => {
+        if (hay.includes(tok)) return true;
+        if (/^[0-9a-f(),]+$/.test(tok)) {
+          const hexTok = tok.replace(/[^0-9a-f]/g, '');
+          if (hexTok && tagHexStr.includes(hexTok)) return true;
+        }
+        return false;
+      });
     });
   };
 
@@ -136,7 +145,10 @@ export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = ''
     const rowObj = { kind, section, a, b };
     entryByKey.set(k, rowObj);
 
-    if (diffOnly && kind === 'equal') continue;
+    if (diffOnly && kind === 'equal') {
+      if (tokens.length > 0 && matchesSearch(a, b)) hiddenEqualMatches++;
+      continue;
+    }
     if (!matchesSearch(a, b)) continue;
 
     // Include ancestor SQ rows as structural context when nested children match under diffOnly/search
@@ -163,6 +175,7 @@ export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = ''
     onlyA,
     onlyB,
     diffs: changed + onlyA + onlyB,
+    hiddenEqualMatches,
   };
 }
 
@@ -207,12 +220,17 @@ export class CompareView {
       const bodyA = this.container.querySelector('#cmp-body-a');
       const bodyB = this.container.querySelector('#cmp-body-b');
       const summaryEl = this.container.querySelector('#cmp-summary');
+      const hiddenBanner = this.container.querySelector('#cmp-hidden-banner');
       if (searchInp) searchInp.value = '';
       if (clearBtn) clearBtn.classList.add('hidden');
       if (diffCb) diffCb.checked = true;
       if (bodyA) bodyA.innerHTML = '';
       if (bodyB) bodyB.innerHTML = '';
       if (summaryEl) summaryEl.innerHTML = '';
+      if (hiddenBanner) {
+        hiddenBanner.classList.add('hidden');
+        hiddenBanner.innerHTML = '';
+      }
       this._updateNavStatus();
     }
   }
@@ -239,6 +257,7 @@ export class CompareView {
         <div class="compare-stats" id="cmp-summary"></div>
         <button type="button" class="btn btn-sm compare-close-btn" id="btn-cmp-close"></button>
       </div>
+      <div class="compare-hidden-banner hidden" id="cmp-hidden-banner"></div>
 
       <div class="compare-split" id="compare-split" tabindex="0">
         <div class="compare-side" data-side="a">
@@ -290,6 +309,14 @@ export class CompareView {
     const bodyB = this.container.querySelector('#cmp-body-b');
     const resizer = this.container.querySelector('#compare-resizer');
     const splitEl = this.container.querySelector('#compare-split');
+    const hiddenBanner = this.container.querySelector('#cmp-hidden-banner');
+
+    hiddenBanner.addEventListener('click', (e) => {
+      if (!e.target.closest('#btn-cmp-show-all')) return;
+      this.diffOnly = false;
+      diffCb.checked = false;
+      this._renderComparison();
+    });
 
     searchInp.addEventListener('input', () => {
       this.searchQuery = searchInp.value;
@@ -626,8 +653,22 @@ export class CompareView {
       diffOnly: this.diffOnly,
       searchQuery: this.searchQuery,
     });
-    const { rows, total, changed, onlyA, onlyB, diffs: totalDiffs } = result;
+    const { rows, total, changed, onlyA, onlyB, diffs: totalDiffs, hiddenEqualMatches } = result;
     const q = this.searchQuery.trim();
+    const hiddenBanner = this.container.querySelector('#cmp-hidden-banner');
+    if (hiddenBanner) {
+      if (this.diffOnly && q && hiddenEqualMatches > 0) {
+        hiddenBanner.innerHTML = `
+          ${icons.alertCircle(14)}
+          <span>${escapeHtml(t('compareHiddenEqualHint', { n: hiddenEqualMatches }))}</span>
+          <button type="button" class="btn btn-xs" id="btn-cmp-show-all">${escapeHtml(t('compareShowAllBtn'))}</button>
+        `;
+        hiddenBanner.classList.remove('hidden');
+      } else {
+        hiddenBanner.classList.add('hidden');
+        hiddenBanner.innerHTML = '';
+      }
+    }
 
     if (summaryEl) {
       summaryEl.title = t('modalCompareSummary', {

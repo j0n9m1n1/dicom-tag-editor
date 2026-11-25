@@ -3838,6 +3838,25 @@ kbd {
   flex-shrink: 0;
 }
 
+.compare-hidden-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--st-mod-bg);
+  border-bottom: 1px solid var(--border);
+  color: var(--st-mod-color);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.compare-hidden-banner svg {
+  flex-shrink: 0;
+}
+.compare-hidden-banner .btn {
+  margin-left: auto;
+}
+
 @media (max-width: 1100px) {
   .compare-topbar {
     flex-wrap: wrap;
@@ -3936,7 +3955,7 @@ kbd {
 .compare-col-header,
 .cmp-row {
   display: grid;
-  grid-template-columns: minmax(90px, 112px) minmax(48px, 0.9fr) 40px minmax(52px, 1.3fr);
+  grid-template-columns: minmax(106px, 136px) minmax(52px, 0.9fr) 40px minmax(64px, 1.3fr);
   align-items: center;
   gap: 0;
 }
@@ -4006,10 +4025,18 @@ kbd {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
   display: flex;
   align-items: center;
   gap: 4px;
+}
+.cmp-cell .val-text,
+.cmp-cell .val-binary,
+.cmp-cell .val-seq,
+.cmp-cell .tag-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cmp-depth-mark {
