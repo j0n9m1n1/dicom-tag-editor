@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { deflateRawSync, inflateRawSync } from 'node:zlib';
+import { deflateRawSync, gzipSync, inflateRawSync } from 'node:zlib';
 import { parseDicomBuffer } from '../src/dicom/parser.js';
+import { getPhiTagInfo, isPhiNode, shiftDicomDateValue } from '../src/dicom/phiSpec.js';
 import { decodePixelFrame, extractPixelMeta } from '../src/dicom/pixelRenderer.js';
+import { runDicomQaCheck } from '../src/dicom/qaChecker.js';
 import { generateSampleDicomBuffer } from '../src/dicom/sampleGenerator.js';
+import { extractSrDocument, formatSrMarkdown, isSrDocument } from '../src/dicom/srParser.js';
 import { writeDicomDocument, encodeBinaryNumeric } from '../src/dicom/writer.js';
 import { validateVrValue } from '../src/dicom/vrSpec.js';
 import { formatDicomJson } from '../src/dicom/dcmdump.js';
@@ -992,4 +995,230 @@ test('Audit regressions: binary numeric encoding, Group 0002 placement guards, C
   const zipAscii = Buffer.from(zipBytes).toString('latin1');
   assert.ok(zipAscii.includes('study.1/IM0001_2'));
   assert.ok(!zipAscii.includes('study_2.1/IM0001'));
+});
+
+test('SR parser decodes CONTAINER/TEXT/CODE/NUM/PNAME/IMAGE/SCOORD and AppStore manages SR view mode', async () => {
+  const mkNode = (tag, vr, value, opts = {}) => ({
+    id: `sr_${tag}_${Math.random().toString(36).slice(2, 7)}`,
+    tag,
+    formattedTag: `(${tag.slice(0, 4)},${tag.slice(4, 8)})`,
+    vr,
+    value,
+    isSequence: Boolean(opts.isSequence),
+    isBinary: Boolean(opts.isBinary),
+    items: opts.items || [],
+    status: 'unchanged',
+  });
+  const mkItem = (children) => ({ id: `item_${Math.random().toString(36).slice(2, 7)}`, children });
+  const codeSeq = (tag, value, scheme, meaning) =>
+    mkNode(tag, 'SQ', '', {
+      isSequence: true,
+      items: [mkItem([
+        mkNode('00080100', 'SH', value),
+        mkNode('00080102', 'SH', scheme),
+        mkNode('00080104', 'LO', meaning),
+      ])],
+    });
+
+  const srDoc = {
+    fileName: 'report_sr.dcm',
+    hasPart10Header: true,
+    metaNodes: [
+      mkNode('00020002', 'UI', '1.2.840.10008.5.1.4.1.1.88.22'),
+      mkNode('00020003', 'UI', '2.25.8801'),
+      mkNode('00020010', 'UI', explicitLittleEndian),
+    ],
+    datasetNodes: [
+      mkNode('00080016', 'UI', '1.2.840.10008.5.1.4.1.1.88.22'),
+      mkNode('00080018', 'UI', '2.25.8801'),
+      mkNode('00080023', 'DA', '20261125'),
+      mkNode('00080033', 'TM', '101500'),
+      mkNode('00080060', 'CS', 'SR'),
+      mkNode('00100010', 'PN', 'DOE^JANE'),
+      mkNode('00100020', 'LO', 'SR-001'),
+      mkNode('0020000D', 'UI', '2.25.8800'),
+      mkNode('0020000E', 'UI', '2.25.8800.1'),
+      mkNode('0040A491', 'CS', 'COMPLETE'),
+      mkNode('0040A493', 'CS', 'VERIFIED'),
+      codeSeq('0040A043', '18748-4', 'LN', 'Diagnostic Imaging Report'),
+      mkNode('0040A730', 'SQ', '', {
+        isSequence: true,
+        items: [
+          mkItem([
+            mkNode('0040A010', 'CS', 'CONTAINS'),
+            mkNode('0040A040', 'CS', 'CONTAINER'),
+            codeSeq('0040A043', '121070', 'DCM', 'Findings'),
+            mkNode('0040A730', 'SQ', '', {
+              isSequence: true,
+              items: [
+                mkItem([
+                  mkNode('0040A010', 'CS', 'CONTAINS'),
+                  mkNode('0040A040', 'CS', 'TEXT'),
+                  codeSeq('0040A043', '121071', 'DCM', 'Finding'),
+                  mkNode('0040A160', 'UT', 'No acute intracranial hemorrhage.'),
+                ]),
+                mkItem([
+                  mkNode('0040A010', 'CS', 'CONTAINS'),
+                  mkNode('0040A040', 'CS', 'CODE'),
+                  codeSeq('0040A043', 'G-C171', 'SRT', 'Laterality'),
+                  codeSeq('0040A168', 'G-A100', 'SRT', 'Right'),
+                ]),
+                mkItem([
+                  mkNode('0040A010', 'CS', 'CONTAINS'),
+                  mkNode('0040A040', 'CS', 'NUM'),
+                  codeSeq('0040A043', '410668003', 'SCT', 'Diameter'),
+                  mkNode('0040A300', 'SQ', '', {
+                    isSequence: true,
+                    items: [mkItem([
+                      mkNode('0040A30A', 'DS', '14.5'),
+                      codeSeq('004008EA', 'mm', 'UCUM', 'millimeter'),
+                    ])],
+                  }),
+                ]),
+                mkItem([
+                  mkNode('0040A010', 'CS', 'HAS OBS CONTEXT'),
+                  mkNode('0040A040', 'CS', 'PNAME'),
+                  codeSeq('0040A043', '121008', 'DCM', 'Person Observer Name'),
+                  mkNode('0040A123', 'PN', 'KIM^MIN'),
+                ]),
+                mkItem([
+                  mkNode('0040A010', 'CS', 'INFERRED FROM'),
+                  mkNode('0040A040', 'CS', 'IMAGE'),
+                  mkNode('00081199', 'SQ', '', {
+                    isSequence: true,
+                    items: [mkItem([
+                      mkNode('00081150', 'UI', '1.2.840.10008.5.1.4.1.1.2'),
+                      mkNode('00081155', 'UI', '2.25.99999'),
+                    ])],
+                  }),
+                ]),
+                mkItem([
+                  mkNode('0040A010', 'CS', 'INFERRED FROM'),
+                  mkNode('0040A040', 'CS', 'SCOORD'),
+                  mkNode('00700023', 'CS', 'POLYLINE'),
+                  mkNode('00700022', 'FL', '10\\20\\30\\40'),
+                ]),
+              ],
+            }),
+          ]),
+        ],
+      }),
+    ],
+  };
+
+  assert.equal(isSrDocument(srDoc), true);
+  const parsedSr = extractSrDocument(srDoc);
+  assert.equal(parsedSr.title, 'Diagnostic Imaging Report');
+  assert.equal(parsedSr.completionFlag, 'COMPLETE');
+  assert.equal(parsedSr.verificationFlag, 'VERIFIED');
+  assert.equal(parsedSr.totalCount, 7);
+
+  const children = parsedSr.items[0].children;
+  assert.equal(children[0].valueText, 'No acute intracranial hemorrhage.');
+  assert.equal(children[1].valueText, 'Right');
+  assert.equal(children[2].valueText, '14.5 mm');
+  assert.equal(children[3].valueText, 'KIM^MIN');
+  assert.equal(children[4].valueText, '2.25.99999');
+  assert.equal(children[5].valueText, 'POLYLINE (2 pts)');
+
+  const md = formatSrMarkdown(parsedSr, srDoc.fileName);
+  assert.ok(md.includes('# Diagnostic Imaging Report'));
+  assert.ok(md.includes('14.5 mm'));
+  assert.ok(md.includes('No acute intracranial hemorrhage.'));
+
+  // Store SR view mode switches on SR doc and falls back to Tree on non-SR CT doc
+  const ctDoc = await parseDicomBuffer(await generateSampleDicomBuffer(), 'ct.dcm');
+  assert.equal(isSrDocument(ctDoc), false);
+  const store = new AppStore();
+  store.loadDocument(srDoc);
+  store.setViewMode('sr');
+  assert.equal(store.viewMode, 'sr');
+  store.loadDocument(ctDoc, null, { append: true });
+  assert.equal(store.viewMode, 'tree');
+  await store.switchToFile(store.files[0].id);
+  store.setViewMode('sr');
+  assert.equal(store.viewMode, 'sr');
+  await store.switchToFile(store.files[1].id);
+  assert.equal(store.viewMode, 'tree');
+});
+
+test('PHI spec, Date Shifting, upgraded Anonymizer, QA check, and transparent .dcm.gz open work end-to-end', async () => {
+  // 1) Date shifting & PHI tag metadata
+  assert.equal(shiftDicomDateValue('20261125', -365, 'DA'), '20251125');
+  assert.equal(shiftDicomDateValue('20240229', 1, 'DA'), '20240301');
+  assert.equal(shiftDicomDateValue('20261125103000.123+0900', -10, 'DT'), '20261115103000.123+0900');
+  assert.equal(shiftDicomDateValue('20260101\\20260110', 5, 'DA'), '20260106\\20260115');
+  assert.equal(getPhiTagInfo('00100010')?.action, 'Z');
+  assert.equal(isPhiNode({ tag: '00100020', isSequence: false }), true);
+  assert.equal(isPhiNode({ tag: '00280010', isSequence: false }), false);
+
+  // 2) Transparent .dcm.gz decompression + fileHandle cleared on gzipped source
+  const sampleBuf = await generateSampleDicomBuffer();
+  const gzBytes = gzipSync(Buffer.from(sampleBuf));
+  const gzDoc = await parseDicomBuffer(gzBytes.buffer.slice(gzBytes.byteOffset, gzBytes.byteOffset + gzBytes.byteLength), 'brain_ct.dcm.gz');
+  assert.equal(gzDoc.wasGzipped, true);
+  assert.equal(gzDoc.fileName, 'brain_ct.dcm');
+  assert.equal(gzDoc.datasetNodes.find((n) => n.tag === '00080060')?.value, 'CT');
+
+  const gzStore = new AppStore();
+  await gzStore.loadFileItems([{
+    name: 'brain_ct.dcm.gz',
+    size: gzBytes.byteLength,
+    arrayBuffer: gzBytes.buffer.slice(gzBytes.byteOffset, gzBytes.byteOffset + gzBytes.byteLength),
+    fileHandle: { kind: 'file', name: 'brain_ct.dcm.gz' },
+  }]);
+  assert.equal(gzStore.files[0].fileHandle, null);
+
+  // 3) QA conformance checker: clean sample has 0 errors / 0 warnings / phiCount > 0
+  const cleanDoc = await parseDicomBuffer(sampleBuf, 'clean.dcm');
+  const cleanQa = runDicomQaCheck(cleanDoc);
+  assert.equal(cleanQa.errors.length, 0);
+  assert.equal(cleanQa.warnings.length, 0);
+  assert.ok(cleanQa.phiCount > 0);
+
+  // Introducing VR error & Meta/Main UID mismatch triggers deterministic QA errors
+  const store = new AppStore();
+  store.loadDocument(cleanDoc);
+  const studyDate = cleanDoc.datasetNodes.find((n) => n.tag === '00080020');
+  const origDate = studyDate.value;
+  store.updateNodeValue(studyDate.id, 'NOT_A_DATE');
+  cleanDoc.metaNodes.find((n) => n.tag === '00020003').value = '2.25.0000';
+  const badQa = runDicomQaCheck(cleanDoc);
+  assert.ok(badQa.errors.some((e) => e.code === 'qaVrError'));
+  assert.ok(badQa.errors.some((e) => e.code === 'qaMetaSopInstMismatch'));
+  store.undo();
+  cleanDoc.metaNodes.find((n) => n.tag === '00020003').value = cleanDoc.datasetNodes.find((n) => n.tag === '00080018').value;
+
+  // 4) Anonymize preview + Date Shifting + (0012,0063) DeidentificationMethod + full Undo
+  const preview = store.previewAnonymization(ANONYMIZE_PRESET_TAGS.slice(0, 3), {
+    markDeidentified: true,
+    methodText: 'Basic Application Level Confidentiality Profile',
+    shiftDates: true,
+    dateShiftDays: -365,
+    stripPrivate: true,
+    regenerateUids: true,
+  });
+  assert.ok(preview.tagChanges > 0);
+  assert.ok(preview.dateShifts > 0);
+  assert.ok(preview.privateDeletes > 0);
+  assert.ok(preview.uidChanges > 0);
+
+  const count = store.applyAnonymization(ANONYMIZE_PRESET_TAGS.slice(0, 3), {
+    markDeidentified: true,
+    methodText: 'Basic Application Level Confidentiality Profile',
+    shiftDates: true,
+    dateShiftDays: -365,
+  });
+  assert.ok(count > 0);
+  assert.equal(studyDate.value, shiftDicomDateValue(origDate, -365, 'DA'));
+  assert.equal(cleanDoc.datasetNodes.find((n) => n.tag === '00120062')?.value, 'YES');
+  assert.equal(
+    cleanDoc.datasetNodes.find((n) => n.tag === '00120063')?.value,
+    'Basic Application Level Confidentiality Profile'
+  );
+
+  store.undo();
+  assert.equal(studyDate.value, origDate);
+  assert.equal(cleanDoc.datasetNodes.find((n) => n.tag === '00120062'), undefined);
+  assert.equal(cleanDoc.datasetNodes.find((n) => n.tag === '00120063'), undefined);
 });

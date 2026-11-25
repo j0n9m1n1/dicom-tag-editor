@@ -5,6 +5,7 @@
  */
 
 import { AppStore } from './state/store.js';
+import { isSrDocument } from './dicom/srParser.js';
 import { createFileIoController } from './io/fileIo.js';
 import { FileListPanel } from './ui/fileList.js';
 import { FileTabsBar } from './ui/fileTabs.js';
@@ -13,6 +14,7 @@ import { InspectorPanel } from './ui/inspector.js';
 import { PixelPanel } from './ui/pixelPanel.js';
 import { CompareView } from './ui/compareView.js';
 import { RawView } from './ui/rawView.js';
+import { SrView } from './ui/srView.js';
 import { ModalManager } from './ui/modals.js';
 import { openPopupMenu, closePopupMenu } from './ui/popupMenu.js';
 import { icons, escapeHtml } from './ui/icons.js';
@@ -29,6 +31,7 @@ const btnOpen = document.getElementById('btn-open');
 const btnFiles = document.getElementById('btn-files');
 const viewModeGroup = document.getElementById('view-mode-group');
 const btnViewTree = document.getElementById('btn-view-tree');
+const btnViewSr = document.getElementById('btn-view-sr');
 const btnViewRaw = document.getElementById('btn-view-raw');
 const btnViewCompare = document.getElementById('btn-view-compare');
 const btnUndo = document.getElementById('btn-undo');
@@ -52,6 +55,7 @@ const btnSearchClear = document.getElementById('btn-search-clear');
 const filterChips = document.getElementById('filter-chips');
 const cntModified = document.getElementById('cnt-modified');
 const cntInvalid = document.getElementById('cnt-invalid');
+const cntPhi = document.getElementById('cnt-phi');
 const btnExpandAll = document.getElementById('btn-expand-all');
 const btnCollapseAll = document.getElementById('btn-collapse-all');
 const statusCounts = document.getElementById('status-counts');
@@ -61,6 +65,7 @@ const fileTabsBar = document.getElementById('file-tabs-bar');
 const treePane = document.getElementById('tree-pane');
 const resizer = document.getElementById('pane-resizer');
 const sidePane = document.getElementById('side-pane');
+const srPane = document.getElementById('sr-pane');
 const rawPane = document.getElementById('raw-pane');
 const comparePane = document.getElementById('compare-pane');
 const summaryStrip = document.getElementById('summary-strip');
@@ -155,6 +160,8 @@ function applyLanguage() {
   btnFiles.title = t('btnFilesTitle');
   btnViewTree.innerHTML = `${icons.tree(14)}<span>${t('viewModeTree')}</span>`;
   btnViewTree.title = t('viewModeTreeTitle');
+  btnViewSr.innerHTML = `${icons.fileText(14)}<span>${t('viewModeSr')}</span>`;
+  btnViewSr.title = t('viewModeSrTitle');
   btnViewRaw.innerHTML = `${icons.code(14)}<span>${t('viewModeRaw')}</span>`;
   btnViewRaw.title = t('viewModeRawTitle');
   btnViewCompare.innerHTML = `${icons.compare(14)}<span>${t('btnCompare')}</span>`;
@@ -208,17 +215,19 @@ const treeView = new TreeView(treeBody, store, {
   onOpenAddTagForItem: openAddTagForItem,
 });
 
+function jumpToNode(id) {
+  if (store.viewMode !== 'tree') store.setViewMode('tree');
+  store.setSearchQuery('');
+  store.setFilterMode('all');
+  store.expandAll();
+  store.selectNode(id);
+  store.setMobileTab('tree');
+  treeView.scrollToNode(id);
+}
+
 const modals = new ModalManager(modalRoot, store, {
   onSaveAs: () => fileIo.saveDocumentAs(),
-  onJumpToNode: (id) => {
-    if (store.viewMode !== 'tree') store.setViewMode('tree');
-    store.setSearchQuery('');
-    store.setFilterMode('all');
-    store.expandAll();
-    store.selectNode(id);
-    store.setMobileTab('tree');
-    treeView.scrollToNode(id);
-  },
+  onJumpToNode: jumpToNode,
   onToast: showToast,
   getPwaState: () => ({
     canInstall: Boolean(deferredInstallPrompt),
@@ -255,6 +264,7 @@ const inspector = new InspectorPanel(inspectorContainer, store, {
 });
 
 const pixelPanel = new PixelPanel(pixelContainer, store);
+const srView = new SrView(srPane, store, { onJumpToNode: jumpToNode, onToast: showToast });
 const rawView = new RawView(rawPane, store, { onToast: showToast });
 const compareView = new CompareView(comparePane, store);
 
@@ -290,21 +300,25 @@ function updateToolbarAndHeader() {
   editorView.classList.toggle('hidden', !hasDoc);
   mobileNav.classList.toggle('hidden', !hasDoc);
 
+  const isSr = hasDoc && isSrDocument(store.doc);
   const inCompare = hasDoc && store.viewMode === 'compare' && fileCount >= 2;
+  const inSr = isSr && store.viewMode === 'sr';
   const inRaw = hasDoc && store.viewMode === 'raw';
-  const inTree = hasDoc && !inCompare && !inRaw;
+  const inTree = hasDoc && !inCompare && !inSr && !inRaw;
   editorView.classList.toggle('compare-active', inCompare);
+  editorView.classList.toggle('sr-active', inSr);
   editorView.classList.toggle('raw-active', inRaw);
   treePane.classList.toggle('hidden', !inTree);
   resizer.classList.toggle('hidden', !inTree);
   sidePane.classList.toggle('hidden', !inTree);
+  srPane.classList.toggle('hidden', !inSr);
   rawPane.classList.toggle('hidden', !inRaw);
   comparePane.classList.toggle('hidden', !inCompare);
 
   // Sync mobile tab state on editor view & bottom nav
   editorView.setAttribute('data-mobile-tab', store.mobileTab);
   mobFilesCount.textContent = String(fileCount);
-  const isSpecialView = inCompare || inRaw;
+  const isSpecialView = inCompare || inSr || inRaw;
   mobileNav.querySelectorAll('.mob-tab').forEach((tab) => {
     const isActiveMobTab = isSpecialView
       ? store.mobileTab === 'files' && tab.dataset.mobTab === 'files'
@@ -319,13 +333,17 @@ function updateToolbarAndHeader() {
 
   viewModeGroup.classList.toggle('hidden', !hasDoc);
   btnViewTree.disabled = !hasDoc;
+  btnViewSr.classList.toggle('hidden', !isSr);
+  btnViewSr.disabled = !isSr;
   btnViewRaw.disabled = !hasDoc;
   btnViewCompare.disabled = !hasDoc || fileCount < 2;
   btnViewCompare.title = fileCount >= 2 ? t('btnCompareTitle') : t('btnCompareNeedTwoTitle');
   btnViewTree.classList.toggle('active', inTree);
+  btnViewSr.classList.toggle('active', inSr);
   btnViewRaw.classList.toggle('active', inRaw);
   btnViewCompare.classList.toggle('active', inCompare);
   btnViewTree.setAttribute('aria-pressed', String(inTree));
+  btnViewSr.setAttribute('aria-pressed', String(inSr));
   btnViewRaw.setAttribute('aria-pressed', String(inRaw));
   btnViewCompare.setAttribute('aria-pressed', String(inCompare));
 
@@ -403,6 +421,7 @@ function updateToolbarAndHeader() {
 
   cntModified.textContent = String(totalChanges);
   cntInvalid.textContent = String(stats.invalid);
+  cntPhi.textContent = String(stats.phiCount);
 
   statusCounts.textContent =
     t('statusCounts', { total: stats.total, sq: stats.sequenceCount, priv: stats.privateCount }) +
@@ -443,12 +462,17 @@ store.subscribe((reason) => {
     lastWorkspaceVersion = store.workspaceVersion;
     compareView.reset();
     rawView.reset();
+    srView.reset();
   }
   updateToolbarAndHeader();
   fileListPanel.render();
   fileTabs.render();
   if (store.viewMode === 'compare' && store.files.length >= 2) {
     compareView.render(reason);
+    return;
+  }
+  if (store.viewMode === 'sr' && store.doc && isSrDocument(store.doc)) {
+    srView.render(reason);
     return;
   }
   if (store.viewMode === 'raw' && store.doc) {
@@ -549,6 +573,12 @@ function openEditMenu() {
         disabled: !hasDoc || inCompare || busy,
         action: () => modals.openAnonymize(),
       },
+      {
+        icon: icons.checkCircle(14),
+        label: t('btnQaCheck'),
+        disabled: !hasDoc || inCompare || busy,
+        action: () => modals.openQaCheck(),
+      },
     ],
   });
 }
@@ -557,6 +587,7 @@ function openSaveMenu() {
   const hasDoc = Boolean(store.doc);
   const fileCount = store.files.length;
   const inCompare = hasDoc && store.compareMode && fileCount >= 2;
+  const inSr = hasDoc && store.viewMode === 'sr' && isSrDocument(store.doc);
   const inRaw = hasDoc && store.viewMode === 'raw';
   const busy = fileIo.isBusy() || store.anonymizing;
   const canDirectSave = hasDoc && Boolean(store.fileHandle);
@@ -567,6 +598,13 @@ function openSaveMenu() {
     anchorEl: saveSplitBtn,
     className: 'toolbar-menu',
     items: [
+      ...(inSr
+        ? [{
+            icon: icons.fileText(14),
+            label: t('saveMenuExportSr'),
+            action: () => srView.exportMarkdown(),
+          }, { sep: true }]
+        : []),
       ...(inRaw
         ? [{
             icon: icons.code(14),
@@ -645,10 +683,181 @@ filterChips.addEventListener('click', (e) => {
 btnExpandAll.addEventListener('click', () => store.expandAll());
 btnCollapseAll.addEventListener('click', () => store.collapseAll());
 
+function buildCommandPaletteItems() {
+  const hasDoc = Boolean(store.doc);
+  const fileCount = store.files.length;
+  const isSr = hasDoc && isSrDocument(store.doc);
+  const inCompare = hasDoc && store.viewMode === 'compare' && fileCount >= 2;
+  const items = [
+    {
+      id: 'open',
+      icon: icons.folderOpen(14),
+      label: t('btnOpen'),
+      keywords: 'open file dcm load',
+      shortcut: 'Ctrl+O',
+      action: () => fileIo.openFileDialog(),
+    },
+    {
+      id: 'sample',
+      icon: icons.sparkles(14),
+      label: t('welcomeBtnSample'),
+      keywords: 'sample ct demo test',
+      action: () => fileIo.loadSampleDicom(),
+    },
+  ];
+
+  if (hasDoc) {
+    items.push(
+      {
+        id: 'view-tree',
+        icon: icons.tree(14),
+        label: t('viewModeTree'),
+        keywords: 'tree tags inspector view',
+        action: () => store.setViewMode('tree'),
+      },
+      ...(isSr
+        ? [{
+            id: 'view-sr',
+            icon: icons.fileText(14),
+            label: t('viewModeSr'),
+            keywords: 'sr structured report clinical',
+            action: () => store.setViewMode('sr'),
+          }]
+        : []),
+      {
+        id: 'view-raw',
+        icon: icons.code(14),
+        label: t('viewModeRaw'),
+        keywords: 'raw dcmdump json hex',
+        action: () => store.setViewMode('raw'),
+      },
+      ...(fileCount >= 2
+        ? [{
+            id: 'view-compare',
+            icon: icons.compare(14),
+            label: t('btnCompare'),
+            keywords: 'compare diff side by side',
+            action: () => store.setViewMode('compare'),
+          }]
+        : []),
+      ...(!inCompare
+        ? [
+            {
+              id: 'add-tag',
+              icon: icons.plus(14),
+              label: t('btnAddTag'),
+              keywords: 'add new tag element',
+              action: () => modals.openAddTag(null),
+            },
+            {
+              id: 'batch-edit',
+              icon: icons.sliders(14),
+              label: t('fileListBatchEdit'),
+              keywords: 'batch multi file edit',
+              action: () => modals.openBatchEdit(),
+            },
+            {
+              id: 'anonymize',
+              icon: icons.shield(14),
+              label: t('btnAnonymize'),
+              keywords: 'anonymize phi hipaa deidentify strip',
+              action: () => modals.openAnonymize(),
+            },
+            {
+              id: 'qa-check',
+              icon: icons.checkCircle(14),
+              label: t('btnQaCheck'),
+              keywords: 'qa check validate conformance integrity',
+              action: () => modals.openQaCheck(),
+            },
+            {
+              id: 'diff',
+              icon: icons.diff(14),
+              label: t('btnDiff'),
+              keywords: 'diff changes summary',
+              action: () => modals.openDiff(),
+            },
+          ]
+        : []),
+      {
+        id: 'filter-phi',
+        icon: icons.shield(14),
+        label: t('qaFilterPhiBtn'),
+        keywords: 'phi filter patient privacy',
+        action: () => {
+          if (store.viewMode !== 'tree') store.setViewMode('tree');
+          store.setSearchQuery('');
+          store.setFilterMode('phi');
+        },
+      },
+      ...(isSr
+        ? [{
+            id: 'export-sr-md',
+            icon: icons.download(14),
+            label: t('saveMenuExportSr'),
+            keywords: 'sr markdown export report',
+            action: () => {
+              if (store.viewMode !== 'sr') store.setViewMode('sr');
+              srView.exportMarkdown();
+            },
+          }]
+        : []),
+      {
+        id: 'save-as',
+        icon: icons.save(14),
+        label: t('saveMenuSaveAs'),
+        keywords: 'save export download dcm',
+        shortcut: 'Ctrl+S',
+        action: () => fileIo.saveDocumentAs(),
+      }
+    );
+  }
+
+  items.push(
+    {
+      id: 'toggle-theme',
+      icon: store.theme === 'dark' ? icons.sun(14) : icons.moon(14),
+      label: store.theme === 'dark' ? t('settingsThemeLight') : t('settingsThemeDark'),
+      keywords: 'theme dark light mode',
+      action: () => store.setTheme(store.theme === 'dark' ? 'light' : 'dark'),
+    },
+    {
+      id: 'toggle-ui',
+      icon: store.uiStyle === 'modern' ? icons.code(14) : icons.layers(14),
+      label: store.uiStyle === 'modern' ? t('settingsUiRaw') : t('settingsUiModern'),
+      keywords: 'ui style modern terminal raw',
+      action: () => store.setUiStyle(store.uiStyle === 'modern' ? 'raw' : 'modern'),
+    },
+    {
+      id: 'settings',
+      icon: icons.settings(14),
+      label: t('modalSettingsTitle'),
+      keywords: 'settings preferences language shortcuts',
+      shortcut: 'Ctrl+,',
+      action: () => modals.openSettings(),
+    }
+  );
+  return items;
+}
+
 // Global keyboard shortcuts
 window.addEventListener('keydown', (e) => {
   if (e.defaultPrevented) return;
   const mod = e.ctrlKey || e.metaKey;
+  if (mod && !e.altKey && !e.shiftKey && (e.code === 'KeyK' || e.key.toLowerCase() === 'k')) {
+    if (e.repeat) return;
+    if (modals.isCommandPaletteOpen()) {
+      e.preventDefault();
+      modals.close();
+      return;
+    }
+    if (modalRoot.classList.contains('hidden')) {
+      e.preventDefault();
+      closePopupMenu();
+      modals.openCommandPalette(buildCommandPaletteItems());
+      return;
+    }
+  }
   if (mod && !e.altKey && !e.shiftKey && (e.code === 'Comma' || e.key === ',')) {
     if (e.repeat) return;
     if (modals.isSettingsOpen()) {
@@ -705,6 +914,8 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (store.compareMode) {
       compareView.focusSearch();
+    } else if (store.viewMode === 'sr') {
+      srView.focusSearch();
     } else if (store.viewMode === 'raw') {
       rawView.focusSearch();
     } else {

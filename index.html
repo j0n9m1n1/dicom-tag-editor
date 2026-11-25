@@ -160,6 +160,7 @@
         <button class="btn btn-sm hidden" id="btn-files" title="열린 파일 목록 패널 표시/숨기기"></button>
         <div class="view-mode-group hidden" id="view-mode-group" role="group" aria-label="View mode">
           <button type="button" class="btn btn-sm view-mode-btn active" id="btn-view-tree" data-view-mode="tree"></button>
+          <button type="button" class="btn btn-sm view-mode-btn hidden" id="btn-view-sr" data-view-mode="sr"></button>
           <button type="button" class="btn btn-sm view-mode-btn" id="btn-view-raw" data-view-mode="raw"></button>
           <button type="button" class="btn btn-sm view-mode-btn" id="btn-view-compare" data-view-mode="compare" disabled></button>
         </div>
@@ -180,7 +181,7 @@
     </header>
 
     <!-- Hidden fallback file input (multi-file enabled) -->
-    <input type="file" id="file-input" multiple accept=".dcm,.dicom,application/dicom,*/*" class="hidden" />
+    <input type="file" id="file-input" multiple accept=".dcm,.dicom,.gz,application/dicom,application/gzip,*/*" class="hidden" />
 
     <!-- Empty Welcome / Drop Landing -->
     <main id="welcome-view" class="welcome-view">
@@ -419,6 +420,7 @@
             <button class="chip active" data-filter="all"><span data-i18n="filterAll">전체</span></button>
             <button class="chip" data-filter="modified"><span data-i18n="filterModified">수정됨</span> <span class="chip-count" id="cnt-modified">0</span></button>
             <button class="chip" data-filter="invalid"><span data-i18n="filterInvalid">오류</span> <span class="chip-count" id="cnt-invalid">0</span></button>
+            <button class="chip" data-filter="phi"><span data-i18n="filterPhi">PHI</span> <span class="chip-count" id="cnt-phi">0</span></button>
             <button class="chip" data-filter="sequence"><span data-i18n="filterSeq">SQ</span></button>
             <button class="chip" data-filter="private"><span data-i18n="filterPrivate">Private</span></button>
             <button class="chip" data-filter="meta"><span data-i18n="filterMeta">Meta</span></button>
@@ -457,6 +459,9 @@
         <div class="inspector-scroll" id="inspector-container"></div>
         <div class="pixel-dock" id="pixel-container"></div>
       </aside>
+
+          <!-- Inline Structured Report (SR) Workspace -->
+          <section class="sr-pane hidden" id="sr-pane" aria-label="DICOM Structured Report"></section>
 
           <!-- Inline Raw DICOM Workspace (dcmdump / JSON / Binary Hex) -->
           <section class="raw-pane hidden" id="raw-pane" aria-label="DICOM Raw View"></section>

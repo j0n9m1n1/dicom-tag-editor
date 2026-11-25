@@ -15,6 +15,7 @@ import { hasNonAscii, isUtf8Charset, usesSpecificCharacterSet } from '../dicom/c
 import { computeVm, formatByteSize } from '../dicom/parser.js';
 import { encodeBinaryNumeric } from '../dicom/writer.js';
 import { generateDicomUid } from '../dicom/uid.js';
+import { getPhiTagInfo } from '../dicom/phiSpec.js';
 import { getReadOnlyTagMessage } from '../state/store.js';
 import { copyTextToClipboard } from '../utils/uiHelpers.js';
 import { icons, escapeHtml } from './icons.js';
@@ -267,6 +268,7 @@ export class InspectorPanel {
 
     const canDelete = !getReadOnlyTagMessage(node.tag);
     const canRevert = canDelete && (node.status === 'modified' || node.status === 'added');
+    const phiInfo = getPhiTagInfo(node.tag);
 
     this.container.innerHTML = `
       <!-- 1. Compact Header with Breadcrumbs, Copy & Revert/Delete Actions -->
@@ -278,6 +280,7 @@ export class InspectorPanel {
             <button class="btn-icon insp-copy-btn" data-action="copy-tag" title="${escapeHtml(t('inspCopyTagTitle'))}">${icons.copy(13)}</button>
             ${!node.isBinary && !node.isSequence ? `<button class="btn-icon insp-copy-btn" data-action="copy-val" title="${escapeHtml(t('inspCopyValTitle'))}">${icons.code(13)}</button>` : ''}
             ${statusBadgeMap[node.status] || ''}
+            ${phiInfo ? `<span class="mini-badge badge-phi" title="${escapeHtml(t('inspPhiActionTitle', { action: phiInfo.action }))}">PHI · ${escapeHtml(phiInfo.action)}</span>` : ''}
             ${node.isPrivate ? '<span class="mini-badge badge-private">Private</span>' : ''}
             ${node.isMeta ? '<span class="mini-badge badge-meta">Meta 0002</span>' : ''}
           </div>

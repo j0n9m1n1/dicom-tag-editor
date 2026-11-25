@@ -688,14 +688,51 @@ export function formatByteSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+async function gunzipBytes(compressed) {
+  if (typeof DecompressionStream === 'undefined') {
+    throw new DicomParseError(
+      'DEFLATE_FAILED',
+      'This browser does not support DecompressionStream for .dcm.gz files.',
+      { offset: 0 }
+    );
+  }
+  try {
+    const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  } catch (err) {
+    throw new DicomParseError(
+      'DEFLATE_FAILED',
+      `Gzip decompression failed: ${err.message || err}`,
+      { offset: 0 }
+    );
+  }
+}
+
 /**
  * Parse a complete DICOM ArrayBuffer into a structured editable document.
+ * Transparently decompresses Gzip-wrapped .dcm.gz files.
  * Throws a DicomParseError with rich diagnostics on failure.
  * @param {ArrayBuffer} arrayBuffer
  * @param {string} fileName
  */
 export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
-  const bytes = new Uint8Array(arrayBuffer);
+  const inputBytes = new Uint8Array(arrayBuffer);
+  let bytes = inputBytes;
+  let wasGzipped = false;
+
+  // Transparently decompress .dcm.gz (Gzip magic 1F 8B) before DICOM parsing
+  if (inputBytes.length >= 18 && inputBytes[0] === 0x1f && inputBytes[1] === 0x8b) {
+    try {
+      const gunzipped = await gunzipBytes(inputBytes);
+      if (gunzipped.length >= 16) {
+        bytes = gunzipped;
+        wasGzipped = true;
+      }
+    } catch {
+      // Fall through so detectNonDicomSignature can classify non-DICOM .gz archives cleanly
+    }
+  }
+
   const hasPart10Header =
     bytes.length >= 132 &&
     bytes[128] === 0x44 && // D
@@ -799,8 +836,9 @@ export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
     }
 
     return {
-      fileName,
+      fileName: wasGzipped ? fileName.replace(/\.gz$/i, '') : fileName,
       fileSize: bytes.length,
+      wasGzipped,
       hasPart10Header,
       preamble,
       transferSyntaxUid,

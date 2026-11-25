@@ -18,10 +18,19 @@ All parsing, editing, VR validation, multi-file comparison, anonymization, pixel
 - **Full NEMA PS3.6 Standard Dictionary (`5,041+` Tags & `187+` SOP Class UIDs)**
   - Complete standard DICOM tag lookup including Group `0040` (**MPPS** / Modality Worklist) tags and standard SOP Class / Transfer Syntax UID names
   - Quick preset chips for common coded tags (`SpecificCharacterSet`, `PerformedProcedureStepStatus`, etc.)
-- **Hierarchical Tag Tree (`File Meta 0002` + `Main Dataset` + Nested `SQ`)**
-  - Real-time search by tag `(GGGG,EEEE)`, keyword, VR, or value, plus quick filter chips (`Modified`, `Errors`, `SQ`, `Private`, `Meta`)
+- **Hierarchical Tag Tree (`File Meta 0002` + `Main Dataset` + Nested `SQ`) & PHI Detection**
+  - Real-time search by tag `(GGGG,EEEE)`, keyword, VR, or value, plus quick filter chips (`Modified`, `Errors`, **`PHI`**, `SQ`, `Private`, `Meta`)
+  - Automatic PS3.15 Annex E **PHI badge** indicators on sensitive tags in both the Tree and Inspector
   - Drag-to-resize columns (`Tag`, `Keyword / Name`, `VR`, `VM`, `Len`, `Value`) with persistent column widths
   - Color-coded edit states (`Modified`, `Added`, `Pending Delete`, `VR Error`), right-click context menu, full keyboard navigation (`↑↓`, `←→`, `PageUp/PageDown`, `Home/End`), and double-click / `F2` inline editing
+- **Inline Structured Report (`SR`) Reader**
+  - Automatically unlocks an **`SR`** view mode (`Tree | SR | Raw | Compare`) whenever a DICOM Structured Report (`(0040,A730) ContentSequence`) is opened
+  - Decodes all SR Value Types (`CONTAINER`, `TEXT`, `CODE`, `NUM` + measurement units, `PNAME`, `DATE`/`TIME`/`DATETIME`, `UIDREF`, `IMAGE`/`COMPOSITE`, `SCOORD`/`TCOORD`) with live search, Markdown copy/export (`.md`), and 1-click jump to the source tag in `Tree` view
+- **Upgraded Anonymizer, DICOM QA Check & Command Palette (`Ctrl+K`)**
+  - **Anonymize Profiles (`Basic` / `HIPAA` / `Teaching`):** One-click profile presets, UTC day-offset **Date Shifting** (`DA`/`DT`), `(0012,0063) DeidentificationMethod`, Private tag stripping, UID regeneration, and live impact preview
+  - **DICOM QA Check (`Edit ▾`):** High-signal conformance check for VR errors, Part 10 Meta↔Main UID consistency, non-ASCII charset mismatch, pixel geometry/bit-depth rules, SR flags, and remaining PHI count
+  - **Command Palette (`Ctrl+K`):** Quickly execute any action or jump directly to any tag in the active DICOM file
+  - **Direct `.dcm.gz` Open:** Transparently decompresses gzip-compressed DICOM files right in the browser
 - **Right-Side Tag Inspector & Raw Hex Debugger**
   - Displays **DICOM PS3.5 VR specifications** (category, max/fixed length, even padding byte, VM allowance, format guide) with live validation
   - Structured **`PN` (Person Name)** component editor (`Alphabetic` / `Ideographic` groups), multi-value (`VM > 1`) list editor, `DA`/`TM` quick date/time helpers, one-click standard `2.25.*` UID generator, and automatic `ISO_IR 192` (UTF-8) charset helper
@@ -39,7 +48,7 @@ All parsing, editing, VR validation, multi-file comparison, anonymization, pixel
   - Inspect, search, copy, or export the live dataset as DCMTK `dcmdump` text, structured DICOM JSON, or paginated **Binary Hex dump** with quick jumps (`0x0000 Preamble`, `0x0080 DICM`, `Main`, `PixelData`)
   - Built-in **File Open Error Diagnostics** modal inspecting Part 10 `DICM` header, detected non-DICOM signatures, failure offset, and hex preview
 - **Collapsible Pixel Preview Dock**
-  - Supports uncompressed Grayscale (8/16-bit signed/unsigned, `MONOCHROME1/2`, Rescale Slope/Intercept), RGB, `YBR_FULL`, `YBR_FULL_422`, **RLE Lossless**, **JPEG Baseline**, and multi-frame stepping
+  - Supports uncompressed Grayscale (8/16-bit signed/unsigned, `MONOCHROME1/2`, Rescale Slope/Intercept), RGB, `YBR_FULL`, `YBR_FULL_422`, **RLE Lossless**, **JPEG Baseline**, multi-frame stepping, and 1-click **PNG export**
   - Interactive mouse/touch drag Window Center/Width (`WC/WW`), CT presets (`Brain`, `Soft`, `Lung`, `Bone`), wheel zoom, `Shift+Drag` pan, Invert, and live cursor `(X, Y)` + pixel/HU readout
 - **Dual UI Styles (`Modern` / `Raw`), Bilingual UI & Mobile Support**
   - Instant **English (`EN`) / Korean (`KO`)**, **Dark / Light** theme, and **Modern / Raw (terminal wireframe)** UI switching via Settings (`⚙`)
@@ -63,6 +72,7 @@ All parsing, editing, VR validation, multi-file comparison, anonymization, pixel
 | `←` `→` | Collapse / Expand sequence nodes |
 | `F2` / Double-click | Inline edit selected tag value |
 | `Delete` | Toggle pending delete on selected tag |
+| `Ctrl + K` | Open Command Palette (actions & tag jump) |
 | `Ctrl + ,` | Open / toggle Settings |
 | `Esc` | Close modal or exit Compare view |
 

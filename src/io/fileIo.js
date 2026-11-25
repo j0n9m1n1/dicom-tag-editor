@@ -237,8 +237,11 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
           multiple: true,
           types: [
             {
-              description: 'DICOM Files',
-              accept: { 'application/dicom': ['.dcm', '.dicom'] },
+              description: 'DICOM Files (.dcm, .dicom, .dcm.gz)',
+              accept: {
+                'application/dicom': ['.dcm', '.dicom'],
+                'application/gzip': ['.gz'],
+              },
             },
           ],
           excludeAcceptAllOption: false,
@@ -299,7 +302,8 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
     }
     const { doc, name, fileHandle } = entry;
     if (!doc || !confirmInvalidBeforeSave(doc)) return;
-    const suggestedName = `${name.split('/').at(-1).replace(/\.dcm$/i, '')}_edited.dcm`;
+    const baseName = name.split('/').at(-1).replace(/(\.dcm)?\.gz$/i, '').replace(/\.dcm$/i, '');
+    const suggestedName = `${baseName}_edited.dcm`;
 
     return runSave(async () => {
       const directHandle = direct ? fileHandle : null;
@@ -354,7 +358,8 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
         }
         if (result.savedDoc) savedDocs.push(result.savedDoc);
 
-        const relPath = buildUniqueRelativePath(entry.name, usedPaths);
+        const outName = entry.doc?.wasGzipped ? entry.name.replace(/\.gz$/i, '') : entry.name;
+        const relPath = buildUniqueRelativePath(outName, usedPaths);
         const parts = relPath.split('/');
         const fileName = parts.pop();
         let targetDir = dirHandle;
@@ -394,7 +399,8 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
           continue;
         }
         if (result.savedDoc) savedDocs.push(result.savedDoc);
-        zipEntries.push({ name: entry.name, data: result.dataBytes });
+        const outName = entry.doc?.wasGzipped ? entry.name.replace(/\.gz$/i, '') : entry.name;
+        zipEntries.push({ name: outName, data: result.dataBytes });
       }
 
       if (zipEntries.length === 0) {

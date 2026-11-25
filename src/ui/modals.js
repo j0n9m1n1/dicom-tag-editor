@@ -8,7 +8,9 @@
 import { ALL_VR_CODES, getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
 import { parseTagString, searchDictionary, lookupTag, tagHex } from '../dicom/dictionary.js';
 import { formatByteSize } from '../dicom/parser.js';
-import { ANONYMIZE_PRESET_TAGS, getReadOnlyTagMessage } from '../state/store.js';
+import { ANONYMIZE_PRESET_TAGS, ANONYMIZE_PROFILES } from '../dicom/phiSpec.js';
+import { runDicomQaCheck } from '../dicom/qaChecker.js';
+import { getReadOnlyTagMessage } from '../state/store.js';
 import { copyTextToClipboard } from '../utils/uiHelpers.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLang, getLocalizedVrText } from '../i18n.js';
@@ -54,6 +56,10 @@ export class ModalManager {
 
   isSettingsOpen() {
     return !this.root.classList.contains('hidden') && Boolean(this.root.querySelector('[data-modal-kind="settings"]'));
+  }
+
+  isCommandPaletteOpen() {
+    return !this.root.classList.contains('hidden') && Boolean(this.root.querySelector('[data-modal-kind="palette"]'));
   }
 
   /**
@@ -334,24 +340,35 @@ export class ModalManager {
   }
 
   /**
-   * Open Anonymize preset modal.
+   * Open Anonymize preset modal with Basic/HIPAA/Teaching profiles, Date Shifting, and live preview.
    */
   openAnonymize() {
     if (!this.store.doc) return;
 
-    // Inspect current values in main dataset
+    // Inspect current values recursively (including nested SR PersonName)
     const currentMap = new Map();
-    for (const n of this.store.doc.datasetNodes) {
-      if (n.status !== 'deleted') currentMap.set(n.tag, n.value);
-    }
+    const collectCur = (nodes) => {
+      for (const n of nodes || []) {
+        if (n.status === 'deleted') continue;
+        if (n.isSequence) {
+          for (const item of n.items || []) collectCur(item.children);
+        } else if (!n.isBinary && !currentMap.has(n.tag)) {
+          currentMap.set(n.tag, n.value);
+        }
+      }
+    };
+    collectCur(this.store.doc.datasetNodes);
+
+    let activeProfile = 'basic';
 
     const rowsHtml = ANONYMIZE_PRESET_TAGS.map((p) => {
       const exists = currentMap.has(p.tag);
       const curVal = exists ? currentMap.get(p.tag) : null;
       const formatted = `(${p.tag.slice(0, 4)},${p.tag.slice(4, 8)})`;
+      const checked = p.profiles.includes(activeProfile) ? 'checked' : '';
       return `
         <tr class="${exists ? '' : 'muted'}">
-          <td><input type="checkbox" data-anon-check="${p.tag}" checked /></td>
+          <td><input type="checkbox" data-anon-check="${p.tag}" ${checked} /></td>
           <td class="mono">${formatted}</td>
           <td>${escapeHtml(p.label)}</td>
           <td class="mono small">${exists ? escapeHtml(curVal || '(empty)') : `<span class="muted">${escapeHtml(t('modalAnonMissing'))}</span>`}</td>
@@ -370,6 +387,15 @@ export class ModalManager {
           <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
         </div>
         <div class="modal-body modal-scroll">
+          <div class="anon-profile-bar">
+            <span class="anon-profile-lbl">${escapeHtml(t('modalAnonProfileLabel'))}</span>
+            <div class="seg-group anon-profile-seg">
+              <button type="button" class="seg-btn active" data-anon-profile="basic">${escapeHtml(t('modalAnonProfBasic'))}</button>
+              <button type="button" class="seg-btn" data-anon-profile="hipaa">${escapeHtml(t('modalAnonProfHipaa'))}</button>
+              <button type="button" class="seg-btn" data-anon-profile="teaching">${escapeHtml(t('modalAnonProfTeaching'))}</button>
+            </div>
+          </div>
+
           <table class="diff-table">
             <thead>
               <tr>
@@ -382,39 +408,63 @@ export class ModalManager {
             </thead>
             <tbody>${rowsHtml}</tbody>
           </table>
-          <label class="checkbox-row" style="margin-top:12px">
-            <input type="checkbox" id="anon-mark-deid" />
-            <span>${t('modalAnonMarkDeid')}</span>
-          </label>
-          <label class="checkbox-row" style="margin-top:8px">
-            <input type="checkbox" id="anon-strip-private" />
-            <span>${escapeHtml(t('modalAnonStripPrivate'))}</span>
-          </label>
-          <label class="checkbox-row" style="margin-top:8px">
-            <input type="checkbox" id="anon-regen-uid" />
-            <span>${escapeHtml(t('modalAnonRegenUid'))}</span>
-          </label>
-          ${this.store.files.length > 1 ? `
-            <label class="checkbox-row" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
-              <input type="checkbox" id="anon-all-files" checked />
-              <strong>${escapeHtml(t('modalAnonScopeAll', { n: this.store.files.length }))}</strong>
+
+          <div class="anon-options-box">
+            <label class="checkbox-row">
+              <input type="checkbox" id="anon-mark-deid" checked />
+              <span>${t('modalAnonMarkDeid')}</span>
             </label>
-          ` : ''}
+            <div class="anon-date-row">
+              <label class="checkbox-row">
+                <input type="checkbox" id="anon-shift-dates" />
+                <span>${escapeHtml(t('modalAnonDateShift'))}</span>
+              </label>
+              <div class="anon-date-days-wrap">
+                <input type="number" class="input input-sm mono anon-date-days" id="anon-date-days" value="-365" step="1" disabled />
+                <span class="muted small">${escapeHtml(t('modalAnonDateDaysUnit'))}</span>
+              </div>
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="anon-strip-private" />
+              <span>${escapeHtml(t('modalAnonStripPrivate'))}</span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="anon-regen-uid" />
+              <span>${escapeHtml(t('modalAnonRegenUid'))}</span>
+            </label>
+            ${this.store.files.length > 1 ? `
+              <label class="checkbox-row" style="margin-top:4px;padding-top:8px;border-top:1px solid var(--border)">
+                <input type="checkbox" id="anon-all-files" checked />
+                <strong>${escapeHtml(t('modalAnonScopeAll', { n: this.store.files.length }))}</strong>
+              </label>
+            ` : ''}
+          </div>
+
           <div class="val-feedback val-warn" style="margin-top:12px">
             ${icons.alertCircle(15)}
             <span>${escapeHtml(t('modalAnonDisclaimer'))}</span>
           </div>
         </div>
-        <div class="modal-footer">
-          <button class="btn" data-modal-close>${escapeHtml(t('modalCancel'))}</button>
-          <button class="btn btn-primary" id="btn-apply-anon">${icons.shield(15)} ${escapeHtml(t('modalAnonApplyBtn'))}</button>
+        <div class="modal-footer modal-footer-between">
+          <div class="anon-preview-summary mono small" id="anon-preview-bar"></div>
+          <div class="anon-footer-btns">
+            <button class="btn" data-modal-close>${escapeHtml(t('modalCancel'))}</button>
+            <button class="btn btn-primary" id="btn-apply-anon">${icons.shield(15)} ${escapeHtml(t('modalAnonApplyBtn'))}</button>
+          </div>
         </div>
       </div>
     `;
 
     this.root.classList.remove('hidden');
 
-    this.root.querySelector('#btn-apply-anon').addEventListener('click', async () => {
+    const markDeidCb = this.root.querySelector('#anon-mark-deid');
+    const shiftDatesCb = this.root.querySelector('#anon-shift-dates');
+    const dateDaysInp = this.root.querySelector('#anon-date-days');
+    const stripPrivateCb = this.root.querySelector('#anon-strip-private');
+    const regenUidCb = this.root.querySelector('#anon-regen-uid');
+    const previewBar = this.root.querySelector('#anon-preview-bar');
+
+    const collectRulesAndOpts = () => {
       const rules = [];
       this.root.querySelectorAll('[data-anon-check]').forEach((cb) => {
         if (cb.checked) {
@@ -423,11 +473,59 @@ export class ModalManager {
           rules.push({ tag, replacement: valInp ? valInp.value : '' });
         }
       });
+      const profileDef = ANONYMIZE_PROFILES[activeProfile] || ANONYMIZE_PROFILES.basic;
+      const days = parseInt(dateDaysInp.value, 10);
       const opts = {
-        markDeidentified: this.root.querySelector('#anon-mark-deid').checked,
-        stripPrivate: this.root.querySelector('#anon-strip-private').checked,
-        regenerateUids: this.root.querySelector('#anon-regen-uid').checked,
+        markDeidentified: markDeidCb.checked,
+        methodText: profileDef.methodText,
+        stripPrivate: stripPrivateCb.checked,
+        regenerateUids: regenUidCb.checked,
+        shiftDates: shiftDatesCb.checked,
+        dateShiftDays: Number.isFinite(days) ? days : 0,
       };
+      return { rules, opts };
+    };
+
+    const updatePreview = () => {
+      dateDaysInp.disabled = !shiftDatesCb.checked;
+      const { rules, opts } = collectRulesAndOpts();
+      const b = this.store.previewAnonymization(rules, opts);
+      previewBar.textContent = t('modalAnonPreview', {
+        tags: b.tagChanges,
+        dates: b.dateShifts,
+        priv: b.privateDeletes,
+        uids: b.uidChanges,
+      });
+    };
+
+    this.root.querySelectorAll('[data-anon-profile]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const pid = btn.dataset.anonProfile;
+        const prof = ANONYMIZE_PROFILES[pid];
+        if (!prof) return;
+        activeProfile = pid;
+        this.root.querySelectorAll('[data-anon-profile]').forEach((b) =>
+          b.classList.toggle('active', b.dataset.anonProfile === pid)
+        );
+        this.root.querySelectorAll('[data-anon-check]').forEach((cb) => {
+          const tagDef = ANONYMIZE_PRESET_TAGS.find((p) => p.tag === cb.dataset.anonCheck);
+          if (tagDef) cb.checked = tagDef.profiles.includes(pid);
+        });
+        markDeidCb.checked = prof.markDeidentified;
+        stripPrivateCb.checked = prof.stripPrivate;
+        regenUidCb.checked = prof.regenerateUids;
+        shiftDatesCb.checked = prof.shiftDates;
+        dateDaysInp.value = String(prof.dateShiftDays);
+        updatePreview();
+      });
+    });
+
+    this.root.querySelector('.modal-body').addEventListener('change', updatePreview);
+    this.root.querySelector('.modal-body').addEventListener('input', updatePreview);
+    updatePreview();
+
+    this.root.querySelector('#btn-apply-anon').addEventListener('click', async () => {
+      const { rules, opts } = collectRulesAndOpts();
       const allFilesCb = this.root.querySelector('#anon-all-files');
       const applyAll = Boolean(allFilesCb && allFilesCb.checked && this.store.files.length > 1);
       this.close();
@@ -451,6 +549,232 @@ export class ModalManager {
         );
       }
     });
+  }
+
+  /**
+   * Open High-Signal DICOM Conformance & Integrity QA Modal.
+   */
+  openQaCheck() {
+    if (!this.store.doc) return;
+    const qa = runDicomQaCheck(this.store.doc);
+    const allItems = [...qa.errors, ...qa.warnings, ...qa.infos];
+
+    const renderIssue = (item) => {
+      const sevCls = item.severity === 'error' ? 'qa-sev-err' : item.severity === 'warning' ? 'qa-sev-warn' : 'qa-sev-info';
+      const sevLbl = item.severity === 'error' ? t('qaSevError') : item.severity === 'warning' ? t('qaSevWarn') : t('qaSevInfo');
+      const msg = t(item.code, item.params || {});
+      const jumpHtml = item.nodeId
+        ? `<button type="button" class="btn btn-xs" data-qa-jump="${escapeHtml(item.nodeId)}">${escapeHtml(item.tag || t('srJumpTreeBtn'))}</button>`
+        : item.tag
+          ? `<span class="mono small muted">${escapeHtml(item.tag)}</span>`
+          : '';
+      return `
+        <div class="qa-issue-row">
+          <span class="status-pill ${sevCls}">${escapeHtml(sevLbl)}</span>
+          <span class="qa-issue-msg">${escapeHtml(msg)}</span>
+          ${jumpHtml}
+        </div>
+      `;
+    };
+
+    const bodyHtml = allItems.length === 0
+      ? `<div class="val-feedback val-ok" style="margin:8px 0">${icons.checkCircle(16)}<span>${escapeHtml(t('qaAllClean'))}</span></div>`
+      : `<div class="qa-issue-list">${allItems.map(renderIssue).join('')}</div>`;
+
+    this.root.innerHTML = `
+      <div class="modal-card modal-lg" role="dialog" aria-modal="true">
+        <div class="modal-header">
+          <div>
+            <h3>${escapeHtml(t('modalQaTitle'))}</h3>
+            <div class="muted small">${escapeHtml(t('modalQaSubtitle', { err: qa.errors.length, warn: qa.warnings.length, phi: qa.phiCount }))}</div>
+          </div>
+          <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
+        </div>
+        <div class="modal-body modal-scroll">
+          <div class="qa-summary-strip">
+            <span class="qa-pill ${qa.errors.length > 0 ? 'qa-pill-err' : 'qa-pill-ok'}">${escapeHtml(t('qaSummaryErr', { n: qa.errors.length }))}</span>
+            <span class="qa-pill ${qa.warnings.length > 0 ? 'qa-pill-warn' : 'qa-pill-ok'}">${escapeHtml(t('qaSummaryWarn', { n: qa.warnings.length }))}</span>
+            <span class="qa-pill qa-pill-phi">${escapeHtml(t('qaSummaryPhi', { n: qa.phiCount }))}</span>
+          </div>
+          ${bodyHtml}
+        </div>
+        <div class="modal-footer modal-footer-between">
+          <div class="anon-footer-btns">
+            ${qa.phiCount > 0 ? `<button type="button" class="btn btn-sm" id="btn-qa-filter-phi">${escapeHtml(t('qaFilterPhiBtn'))}</button>` : ''}
+            ${qa.phiCount > 0 ? `<button type="button" class="btn btn-sm" id="btn-qa-open-anon">${icons.shield(13)} ${escapeHtml(t('btnAnonymize'))}</button>` : ''}
+          </div>
+          <button type="button" class="btn btn-primary" data-modal-close>${escapeHtml(t('modalClose'))}</button>
+        </div>
+      </div>
+    `;
+    this.root.classList.remove('hidden');
+
+    this.root.querySelectorAll('[data-qa-jump]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.qaJump;
+        this.close();
+        this.callbacks.onJumpToNode?.(id);
+      });
+    });
+    this.root.querySelector('#btn-qa-filter-phi')?.addEventListener('click', () => {
+      this.close();
+      if (this.store.viewMode !== 'tree') this.store.setViewMode('tree');
+      this.store.setSearchQuery('');
+      this.store.setFilterMode('phi');
+      this.store.setMobileTab('tree');
+    });
+    this.root.querySelector('#btn-qa-open-anon')?.addEventListener('click', () => {
+      this.openAnonymize();
+    });
+  }
+
+  /**
+   * Open Command Palette (Ctrl+K) searching app actions AND live tags in the active DICOM.
+   * @param {Array<{ id: string, label: string, keywords?: string, shortcut?: string, icon?: string, action: () => void }>} commands
+   */
+  openCommandPalette(commands = []) {
+    // Collect flattened tags from active doc for instant tag-jump
+    const tagEntries = [];
+    if (this.store.doc) {
+      const walk = (nodes) => {
+        for (const n of nodes || []) {
+          if (n.status === 'deleted') continue;
+          tagEntries.push(n);
+          if (n.isSequence && n.items) {
+            for (const item of n.items) walk(item.children);
+          }
+        }
+      };
+      walk(this.store.doc.metaNodes);
+      walk(this.store.doc.datasetNodes);
+    }
+
+    this.root.innerHTML = `
+      <div class="modal-card modal-md cmd-palette-card" data-modal-kind="palette" role="dialog" aria-modal="true">
+        <div class="cmd-palette-search">
+          <span class="search-icon">${icons.search(15)}</span>
+          <input type="text" class="cmd-palette-input" id="cmd-palette-input" placeholder="${escapeHtml(t('cmdPalettePh'))}" autocomplete="off" />
+          <kbd class="cmd-esc-hint">Esc</kbd>
+        </div>
+        <div class="cmd-palette-list" id="cmd-palette-list" role="listbox"></div>
+      </div>
+    `;
+    this.root.classList.remove('hidden');
+
+    const input = this.root.querySelector('#cmd-palette-input');
+    const listEl = this.root.querySelector('#cmd-palette-list');
+    let currentRows = [];
+    let activeIdx = 0;
+
+    const buildRows = (rawQuery) => {
+      const q = (rawQuery || '').trim().toLowerCase();
+      const qHex = /^[0-9a-f(),\s]+$/.test(q) ? q.replace(/[^0-9a-f]/g, '') : '';
+      const rows = [];
+
+      for (const cmd of commands) {
+        const hay = `${cmd.label} ${cmd.keywords || ''} ${cmd.shortcut || ''}`.toLowerCase();
+        if (!q || hay.includes(q)) {
+          rows.push({ kind: 'cmd', ...cmd });
+        }
+      }
+
+      if (q && tagEntries.length > 0) {
+        let added = 0;
+        for (const n of tagEntries) {
+          if (added >= 12) break;
+          const match =
+            (qHex && n.tag.toLowerCase().includes(qHex)) ||
+            n.formattedTag.toLowerCase().includes(q) ||
+            (n.keyword && n.keyword.toLowerCase().includes(q)) ||
+            (n.name && n.name.toLowerCase().includes(q)) ||
+            (!n.isBinary && !n.isSequence && (n.value || '').toLowerCase().includes(q));
+          if (match) {
+            rows.push({
+              kind: 'tag',
+              id: n.id,
+              label: `${n.formattedTag} ${n.keyword}`,
+              sub: !n.isBinary && !n.isSequence ? (n.value || '(empty)') : n.vr,
+              vr: n.vr,
+              action: () => this.callbacks.onJumpToNode?.(n.id),
+            });
+            added++;
+          }
+        }
+      }
+      return rows;
+    };
+
+    const renderList = () => {
+      currentRows = buildRows(input.value);
+      activeIdx = currentRows.length > 0 ? Math.min(activeIdx, currentRows.length - 1) : -1;
+      if (currentRows.length === 0) {
+        listEl.innerHTML = `<div class="cmd-palette-empty">${escapeHtml(t('cmdPaletteEmpty'))}</div>`;
+        return;
+      }
+      listEl.innerHTML = currentRows
+        .map((row, idx) => {
+          const isAct = idx === activeIdx ? 'active' : '';
+          if (row.kind === 'tag') {
+            return `
+              <button type="button" class="cmd-item ${isAct}" data-cmd-idx="${idx}" role="option" aria-selected="${idx === activeIdx}">
+                <span class="vr-pill vr-cat-${getVrSpec(row.vr).category}">${escapeHtml(row.vr)}</span>
+                <span class="cmd-item-label mono">${escapeHtml(row.label)}</span>
+                <span class="cmd-item-sub">${escapeHtml(row.sub)}</span>
+              </button>
+            `;
+          }
+          return `
+            <button type="button" class="cmd-item ${isAct}" data-cmd-idx="${idx}" role="option" aria-selected="${idx === activeIdx}">
+              ${row.icon || ''}
+              <span class="cmd-item-label">${escapeHtml(row.label)}</span>
+              ${row.shortcut ? `<kbd class="cmd-shortcut">${escapeHtml(row.shortcut)}</kbd>` : ''}
+            </button>
+          `;
+        })
+        .join('');
+    };
+
+    const runActive = () => {
+      const target = currentRows[activeIdx];
+      if (!target) return;
+      this.close();
+      target.action();
+    };
+
+    input.addEventListener('input', () => {
+      activeIdx = 0;
+      renderList();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (currentRows.length > 0) {
+          activeIdx = (activeIdx + 1) % currentRows.length;
+          renderList();
+          listEl.querySelector('.cmd-item.active')?.scrollIntoView({ block: 'nearest' });
+        }
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (currentRows.length > 0) {
+          activeIdx = (activeIdx - 1 + currentRows.length) % currentRows.length;
+          renderList();
+          listEl.querySelector('.cmd-item.active')?.scrollIntoView({ block: 'nearest' });
+        }
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        runActive();
+      }
+    });
+
+    listEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-cmd-idx]');
+      if (!btn) return;
+      activeIdx = Number(btn.dataset.cmdIdx);
+      runActive();
+    });
+
+    renderList();
+    input.focus();
   }
 
   /**
@@ -687,6 +1011,7 @@ export class ModalManager {
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutUndoRedo'))}</span><kbd>Ctrl + Z / Y</kbd></div>
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutInline'))}</span><kbd>F2</kbd></div>
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutDelete'))}</span><kbd>Delete</kbd></div>
+              <div class="shortcut-item"><span>${escapeHtml(t('shortcutPalette'))}</span><kbd>Ctrl + K</kbd></div>
               <div class="shortcut-item"><span>${escapeHtml(t('shortcutSettings'))}</span><kbd>Ctrl + ,</kbd></div>
             </div>
           </div>

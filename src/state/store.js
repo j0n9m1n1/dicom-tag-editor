@@ -10,24 +10,11 @@ import { validateVrValue, BINARY_VRS } from '../dicom/vrSpec.js';
 import { formatTag, tagHex, lookupTag } from '../dicom/dictionary.js';
 import { genNodeId, parseDicomBuffer } from '../dicom/parser.js';
 import { generateDicomUid, getSopInstanceUid } from '../dicom/uid.js';
+import { ANONYMIZE_PRESET_TAGS, isPhiNode, shiftDicomDateValue } from '../dicom/phiSpec.js';
+import { isSrDocument } from '../dicom/srParser.js';
 import { getLang, setLang as setI18nLang } from '../i18n.js';
 
-export const ANONYMIZE_PRESET_TAGS = [
-  { tag: '00100010', label: 'PatientName', replacement: 'ANONYMOUS' },
-  { tag: '00100020', label: 'PatientID', replacement: 'ANON-0000' },
-  { tag: '00100030', label: 'PatientBirthDate', replacement: '' },
-  { tag: '00100040', label: 'PatientSex', replacement: '' },
-  { tag: '00101010', label: 'PatientAge', replacement: '' },
-  { tag: '00101040', label: 'PatientAddress', replacement: '' },
-  { tag: '00104000', label: 'PatientComments', replacement: '' },
-  { tag: '00080050', label: 'AccessionNumber', replacement: '' },
-  { tag: '00080080', label: 'InstitutionName', replacement: 'ANONYMIZED' },
-  { tag: '00080081', label: 'InstitutionAddress', replacement: '' },
-  { tag: '00080090', label: 'ReferringPhysicianName', replacement: '' },
-  { tag: '00081050', label: 'PerformingPhysicianName', replacement: '' },
-  { tag: '00081070', label: 'OperatorsName', replacement: '' },
-  { tag: '00181000', label: 'DeviceSerialNumber', replacement: '' },
-];
+export { ANONYMIZE_PRESET_TAGS };
 
 let _fileIdSeq = 1;
 function nextFileId() {
@@ -146,7 +133,7 @@ export class AppStore {
     this._userPrefPixelOpen = true;
     this.showFileList = false;
     this._userToggledFileList = false;
-    this.viewMode = 'tree'; // 'tree' | 'raw' | 'compare'
+    this.viewMode = 'tree'; // 'tree' | 'sr' | 'raw' | 'compare'
     this.compareFileAId = null;
     this.compareFileBId = null;
     this.mobileTab = 'tree'; // 'files' | 'tree' | 'inspector' | 'pixel'
@@ -244,6 +231,14 @@ export class AppStore {
       this.enterCompareMode();
       return;
     }
+    if (mode === 'sr') {
+      if (!this.doc || !isSrDocument(this.doc)) return;
+      if (this.viewMode === 'sr' && this.mobileTab === 'tree') return;
+      this.viewMode = 'sr';
+      this.mobileTab = 'tree';
+      this.emit('view');
+      return;
+    }
     if (mode === 'raw') {
       if (!this.doc) return;
       if (this.viewMode === 'raw' && this.mobileTab === 'tree') return;
@@ -330,6 +325,9 @@ export class AppStore {
   }
 
   _bindEntryToActive(entry) {
+    if (entry?.doc?.wasGzipped) {
+      entry.fileHandle = null; // Prevent overwriting a .dcm.gz source with uncompressed .dcm bytes
+    }
     this.activeFileId = entry ? entry.id : null;
     this.doc = entry ? entry.doc : null;
     this.fileHandle = entry ? entry.fileHandle : null;
@@ -337,6 +335,10 @@ export class AppStore {
     this.expandedIds = entry ? entry.expandedIds : new Set(['__meta__', '__main__']);
     this.undoStack = entry ? entry.undoStack : [];
     this.redoStack = entry ? entry.redoStack : [];
+
+    if (this.viewMode === 'sr' && (!this.doc || !isSrDocument(this.doc))) {
+      this.viewMode = 'tree';
+    }
 
     // Auto-collapse Pixel Preview when opening non-image DICOMs (e.g. SR, RT Plan)
     if (this.doc) {
@@ -637,7 +639,7 @@ export class AppStore {
     this.files = [];
     this.showFileList = false;
     this._userToggledFileList = false;
-    this.viewMode = 'tree'; // 'tree' | 'raw' | 'compare'
+    this.viewMode = 'tree'; // 'tree' | 'sr' | 'raw' | 'compare'
     this.compareFileAId = null;
     this.compareFileBId = null;
     this.searchQuery = '';
@@ -1297,8 +1299,11 @@ export class AppStore {
   _buildAnonymizeCommandForDoc(doc, rules, opts = {}) {
     const {
       markDeidentified = false,
+      methodText = '',
       stripPrivate = false,
       regenerateUids = false,
+      shiftDates = false,
+      dateShiftDays = 0,
       sharedUidMap = new Map(),
       sopUidMap = new Map(),
     } = opts;
@@ -1306,6 +1311,8 @@ export class AppStore {
     const ruleMap = new Map(rules.map((r) => [r.tag, r.replacement]));
     const snapshots = [];
     const privateDeletes = [];
+    let dateShiftCount = 0;
+    let uidChangeCount = 0;
 
     const mapUid = (origUid) => {
       if (origUid && sharedUidMap.has(origUid)) return sharedUidMap.get(origUid);
@@ -1333,19 +1340,41 @@ export class AppStore {
         if (n.isBinary || getReadOnlyTagMessage(n.tag)) continue;
 
         let nextVal = ruleMap.get(n.tag);
+        let isDateShift = false;
+        let isUidChange = false;
+
         if (regenerateUids && n.vr === 'UI') {
-          if (n.tag === '0020000D' || n.tag === '0020000E') {
+          if (n.tag === '0020000D' || n.tag === '0020000E' || n.tag === '00200052') {
             nextVal = mapUid(n.value);
+            isUidChange = true;
           } else if (n.tag === '00080018' && ownSopUid && nodes === doc.datasetNodes) {
             nextVal = ownSopUid;
+            isUidChange = true;
           } else if (n.tag === '00081155') {
             nextVal = n.value.split('\\').map((uid) => (
               sopUidMap.get(uid.trim()) || (uid.trim() === originalSopUid && ownSopUid) || uid
             )).join('\\');
+            isUidChange = true;
+          }
+        }
+
+        if (
+          nextVal === undefined &&
+          shiftDates &&
+          dateShiftDays &&
+          (n.vr === 'DA' || n.vr === 'DT') &&
+          n.value
+        ) {
+          const shifted = shiftDicomDateValue(n.value, n.vr, dateShiftDays);
+          if (shifted !== n.value) {
+            nextVal = shifted;
+            isDateShift = true;
           }
         }
 
         if (nextVal !== undefined && n.value !== nextVal) {
+          if (isDateShift) dateShiftCount++;
+          if (isUidChange) uidChangeCount++;
           snapshots.push({
             node: n,
             prevValue: n.value,
@@ -1359,32 +1388,32 @@ export class AppStore {
     walk(doc.metaNodes);
     walk(doc.datasetNodes);
 
-    let addedDeidNode = null;
-    if (markDeidentified) {
-      const existing = doc.datasetNodes.find((n) => n.tag === '00120062' && n.status !== 'deleted');
+    const addedNodes = [];
+    const upsertRootTag = (group, element, hex, vr, targetVal) => {
+      const existing = doc.datasetNodes.find((n) => n.tag === hex && n.status !== 'deleted');
       if (existing) {
-        if (existing.value !== 'YES') {
+        if (existing.value !== targetVal) {
           snapshots.push({
             node: existing,
             prevValue: existing.value,
             prevStatus: existing.status,
-            nextValue: 'YES',
-            nextStatus: existing.status === 'added' ? 'added' : 'modified',
+            nextValue: targetVal,
+            nextStatus: existing.status === 'added' ? 'added' : targetVal === existing.originalValue ? 'unchanged' : 'modified',
           });
         }
       } else {
-        const dict = lookupTag(0x0012, 0x0062);
-        addedDeidNode = {
+        const dict = lookupTag(group, element);
+        addedNodes.push({
           id: genNodeId(),
-          group: 0x0012,
-          element: 0x0062,
-          tag: '00120062',
-          formattedTag: '(0012,0062)',
+          group,
+          element,
+          tag: hex,
+          formattedTag: formatTag(group, element),
           keyword: dict.keyword,
           name: dict.name,
-          vr: 'CS',
+          vr,
           vrSource: 'explicit',
-          vmSpec: '1',
+          vmSpec: dict.vm || '1',
           isMeta: false,
           isPrivate: false,
           isSequence: false,
@@ -1394,18 +1423,33 @@ export class AppStore {
           rawLength: 0,
           rawBytes: null,
           originalValue: '',
-          value: 'YES',
+          value: targetVal,
           status: 'added',
-          validation: validateVrValue('CS', 'YES'),
-        };
+          validation: validateVrValue(vr, targetVal, hex),
+        });
+      }
+    };
+
+    if (markDeidentified) {
+      upsertRootTag(0x0012, 0x0062, '00120062', 'CS', 'YES');
+      const cleanMethod = String(methodText || '').trim().slice(0, 64);
+      if (cleanMethod) {
+        upsertRootTag(0x0012, 0x0063, '00120063', 'LO', cleanMethod);
       }
     }
 
-    const changeCount = snapshots.length + privateDeletes.length + (addedDeidNode ? 1 : 0);
+    const changeCount = snapshots.length + privateDeletes.length + addedNodes.length;
     if (changeCount === 0) return null;
 
     return {
       changeCount,
+      breakdown: {
+        tagChanges: snapshots.length - dateShiftCount - uidChangeCount + addedNodes.length,
+        dateShifts: dateShiftCount,
+        privateDeletes: privateDeletes.length,
+        uidChanges: uidChangeCount,
+        totalChanges: changeCount,
+      },
       cmd: {
         label: 'Batch Anonymize',
         affectsPixel: false,
@@ -1418,8 +1462,8 @@ export class AppStore {
           for (const d of privateDeletes) {
             d.node.status = 'deleted';
           }
-          if (addedDeidNode) {
-            doc.datasetNodes.push(addedDeidNode);
+          if (addedNodes.length > 0) {
+            doc.datasetNodes.push(...addedNodes);
             doc.datasetNodes.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
           }
         },
@@ -1432,13 +1476,21 @@ export class AppStore {
           for (const d of privateDeletes) {
             d.node.status = d.prevStatus;
           }
-          if (addedDeidNode) {
-            const idx = doc.datasetNodes.indexOf(addedDeidNode);
+          for (const added of addedNodes) {
+            const idx = doc.datasetNodes.indexOf(added);
             if (idx >= 0) doc.datasetNodes.splice(idx, 1);
           }
         },
       },
     };
+  }
+
+  previewAnonymization(rules, opts = {}) {
+    if (!this.doc) {
+      return { tagChanges: 0, dateShifts: 0, privateDeletes: 0, uidChanges: 0, totalChanges: 0 };
+    }
+    const built = this._buildAnonymizeCommandForDoc(this.doc, rules, opts);
+    return built?.breakdown || { tagChanges: 0, dateShifts: 0, privateDeletes: 0, uidChanges: 0, totalChanges: 0 };
   }
 
   applyAnonymization(rules, opts = {}) {
@@ -1653,6 +1705,7 @@ export class AppStore {
       added: 0,
       deleted: 0,
       invalid: 0,
+      phiCount: 0,
       privateCount: 0,
       sequenceCount: 0,
       diffs: [],
@@ -1666,6 +1719,7 @@ export class AppStore {
         if (n.status === 'added') stats.added++;
         if (n.status === 'deleted') stats.deleted++;
         if (n.status !== 'deleted' && n.validation && !n.validation.valid) stats.invalid++;
+        if (isPhiNode(n) && (n.isBinary || String(n.value || '').trim() !== '')) stats.phiCount++;
         if (n.isPrivate) stats.privateCount++;
         if (n.isSequence) stats.sequenceCount++;
 

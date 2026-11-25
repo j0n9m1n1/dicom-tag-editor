@@ -5,6 +5,7 @@
 
 import { getVrSpec, NUMERIC_VRS } from '../dicom/vrSpec.js';
 import { computeVm } from '../dicom/parser.js';
+import { isPhiNode, getPhiTagInfo } from '../dicom/phiSpec.js';
 import { canEditNodeValue, getReadOnlyTagMessage } from '../state/store.js';
 import { copyTextToClipboard } from '../utils/uiHelpers.js';
 import { openPopupMenu, closePopupMenu } from './popupMenu.js';
@@ -205,6 +206,8 @@ export class TreeView {
         return node.status !== 'unchanged';
       case 'invalid':
         return node.status !== 'deleted' && node.validation && !node.validation.valid;
+      case 'phi':
+        return isPhiNode(node) && (node.isBinary || String(node.value || '').trim() !== '');
       case 'sequence':
         return node.isSequence;
       case 'private':
@@ -388,6 +391,7 @@ export class TreeView {
       const n = row.node;
       const spec = getVrSpec(n.vr);
       const invalid = n.status !== 'deleted' && n.validation && !n.validation.valid;
+      const phiInfo = isPhiNode(n) && (n.isBinary || String(n.value || '').trim() !== '') ? getPhiTagInfo(n.tag) : null;
       const statusCls = `status-${n.status}`;
       const invalidCls = invalid ? 'has-error' : '';
       const privateCls = n.isPrivate ? 'is-private' : '';
@@ -427,6 +431,7 @@ export class TreeView {
           </div>
           <div class="col-name" title="${escapeHtml(n.name)} (${escapeHtml(n.keyword)})">
             <span class="tag-name">${escapeHtml(n.keyword !== 'UnknownTag' ? n.keyword : n.name)}</span>
+            ${phiInfo ? `<span class="mini-badge badge-phi" title="${escapeHtml(t('inspPhiActionTitle', { action: phiInfo.action }))}">PHI</span>` : ''}
             ${n.isPrivate ? '<span class="mini-badge badge-private">PRIV</span>' : ''}
             ${invalid ? `<span class="mini-badge badge-err" title="${escapeHtml(n.validation.messages.join(' / '))}">${icons.alertCircle(12)}</span>` : ''}
           </div>

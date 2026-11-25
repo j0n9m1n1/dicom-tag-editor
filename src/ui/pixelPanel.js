@@ -230,6 +230,7 @@ export class PixelPanel {
           <button class="btn btn-xs ${this._invert ? 'btn-primary' : ''}" id="btn-pixel-invert">${icons.contrast(13)} ${escapeHtml(t('pixelInvert'))}</button>
           ${isScalar ? `<button class="btn btn-xs" id="btn-pixel-auto">${escapeHtml(t('pixelAutoWl'))}</button>` : ''}
           ${isScalar && meta.windowCenter !== null ? `<button class="btn btn-xs" id="btn-pixel-tag-wl">${escapeHtml(t('pixelTagWl'))}</button>` : ''}
+          <button class="btn btn-xs" id="btn-pixel-png" title="${escapeHtml(t('pixelExportPngTitle'))}">${icons.download(12)} PNG</button>
           <span class="pixel-zoom-group">
             <button class="btn btn-xs" id="btn-zoom-out" title="Zoom Out">-</button>
             <button class="btn btn-xs" id="btn-zoom-reset" title="Reset Zoom">${escapeHtml(t('pixelZoomReset'))}</button>
@@ -258,6 +259,7 @@ export class PixelPanel {
     const invertBtn = this.container.querySelector('#btn-pixel-invert');
     const autoBtn = this.container.querySelector('#btn-pixel-auto');
     const tagWlBtn = this.container.querySelector('#btn-pixel-tag-wl');
+    const pngBtn = this.container.querySelector('#btn-pixel-png');
     const zoomInBtn = this.container.querySelector('#btn-zoom-in');
     const zoomOutBtn = this.container.querySelector('#btn-zoom-out');
     const zoomResetBtn = this.container.querySelector('#btn-zoom-reset');
@@ -317,6 +319,9 @@ export class PixelPanel {
         this._updateWlReadout();
         this._redrawCanvas();
       });
+    }
+    if (pngBtn) {
+      pngBtn.addEventListener('click', () => this.exportPng());
     }
 
     const setZoom = (next) => {
@@ -454,6 +459,31 @@ export class PixelPanel {
     if (wcNum) wcNum.textContent = String(Math.round(this._wc));
     if (wwNum) wwNum.textContent = String(Math.round(this._ww));
     if (hud) hud.textContent = `WC: ${Math.round(this._wc)} / WW: ${Math.round(this._ww)}`;
+  }
+
+  exportPng() {
+    const canvas = this.container.querySelector('#pixel-canvas');
+    if (!canvas || !this._decoded || this._decoded.kind === 'unsupported' || !this.store.doc) {
+      return false;
+    }
+    const base = this.store.doc.fileName.split('/').at(-1).replace(/\.dcm$/i, '');
+    const frameSuffix = this._meta?.numberOfFrames > 1 ? `_f${this._frameIndex + 1}` : '';
+    const fileName = `${base}${frameSuffix}.png`;
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      try {
+        a.click();
+      } finally {
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    }, 'image/png');
+    return true;
   }
 
   _redrawCanvas() {
