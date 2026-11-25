@@ -16,6 +16,10 @@ import { getLang, setLang as setI18nLang } from '../i18n.js';
 
 export { ANONYMIZE_PRESET_TAGS };
 
+export function hasPixelData(doc) {
+  return Boolean(doc?.datasetNodes?.some((n) => n.tag === '7FE00010' && n.status !== 'deleted'));
+}
+
 let _fileIdSeq = 1;
 function nextFileId() {
   return `file_${_fileIdSeq++}`;
@@ -162,6 +166,9 @@ export class AppStore {
     if (this.viewMode === 'sr' && (!this.doc || !isSrDocument(this.doc))) {
       this.viewMode = 'tree';
     }
+    if (this.viewMode === 'pixel' && (!this.doc || !hasPixelData(this.doc))) {
+      this.viewMode = 'tree';
+    }
     for (const fn of this.listeners) fn(reason);
   }
 
@@ -232,6 +239,14 @@ export class AppStore {
   setViewMode(mode) {
     if (mode === 'compare') {
       this.enterCompareMode();
+      return;
+    }
+    if (mode === 'pixel') {
+      if (!this.doc || !hasPixelData(this.doc)) return;
+      if (this.viewMode === 'pixel' && this.mobileTab === 'tree') return;
+      this.viewMode = 'pixel';
+      this.mobileTab = 'tree';
+      this.emit('view');
       return;
     }
     if (mode === 'sr') {
@@ -342,13 +357,13 @@ export class AppStore {
     if (this.viewMode === 'sr' && (!this.doc || !isSrDocument(this.doc))) {
       this.viewMode = 'tree';
     }
+    if (this.viewMode === 'pixel' && (!this.doc || !hasPixelData(this.doc))) {
+      this.viewMode = 'tree';
+    }
 
     // Auto-collapse Pixel Preview when opening non-image DICOMs (e.g. SR, RT Plan)
     if (this.doc) {
-      const hasPixel = Boolean(
-        this.doc.datasetNodes?.some((n) => n.tag === '7FE00010' && n.status !== 'deleted')
-      );
-      this.showPixelPanel = hasPixel ? this._userPrefPixelOpen : false;
+      this.showPixelPanel = hasPixelData(this.doc) ? this._userPrefPixelOpen : false;
     }
   }
 

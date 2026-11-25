@@ -30,6 +30,7 @@ export class PixelPanel {
     this.store = store;
     this._lastPixelVersion = -1;
     this._lastLang = null;
+    this._lastFullMode = false;
     this._meta = null;
     this._decoded = null;
     this._frameIndex = 0;
@@ -44,8 +45,18 @@ export class PixelPanel {
     this._renderToken = 0;
 
     this.container.addEventListener('click', (e) => {
+      if (e.target.closest('[data-pixel-expand]')) {
+        e.stopPropagation();
+        this.store.setViewMode('pixel');
+        return;
+      }
+      if (e.target.closest('[data-pixel-exit]')) {
+        e.stopPropagation();
+        this.store.setViewMode('tree');
+        return;
+      }
       if (e.target.closest('[data-pixel-toggle]')) {
-        if (window.innerWidth > 820) {
+        if (window.innerWidth > 820 && this.store.viewMode !== 'pixel') {
           this.store.togglePixelPanel();
         }
       }
@@ -53,7 +64,7 @@ export class PixelPanel {
 
     this.container.addEventListener('keydown', (e) => {
       if ((e.key === 'Enter' || e.key === ' ') && e.target.closest('[data-pixel-toggle]')) {
-        if (window.innerWidth > 820) {
+        if (window.innerWidth > 820 && this.store.viewMode !== 'pixel' && !e.target.closest('button')) {
           e.preventDefault();
           this.store.togglePixelPanel();
         }
@@ -73,32 +84,64 @@ export class PixelPanel {
   }
 
   _headerHtml(meta, isCollapsed) {
+    const isFull = this.store.viewMode === 'pixel';
     const isMobile = window.innerWidth <= 820;
-    const chev = isMobile ? '' : (isCollapsed ? icons.chevronRight(14) : icons.chevronDown(14));
+    const canToggle = !isMobile && !isFull;
+    const chev = canToggle ? (isCollapsed ? icons.chevronRight(14) : icons.chevronDown(14)) : '';
     const metaPill = meta
       ? `<span class="pixel-meta-pill">${meta.cols}×${meta.rows} · ${meta.bitsStored}/${meta.bitsAllocated}b${isCollapsed ? '' : ` · ${escapeHtml(meta.photometric)}`}</span>`
       : '';
+    const actionBtn = isFull
+      ? `<button type="button" class="btn btn-xs" data-pixel-exit="true">${icons.x(13)}<span>${escapeHtml(t('rawExitBtn'))}</span></button>`
+      : meta
+        ? `<button type="button" class="btn-icon pixel-expand-btn" data-pixel-expand="true" title="${escapeHtml(t('pixelExpandTitle'))}">${icons.maximize(13)}</button>`
+        : '';
     return `
-      <div class="pixel-header ${isMobile ? '' : 'pixel-header-toggle'}" ${isMobile ? '' : `data-pixel-toggle="true" role="button" tabindex="0" title="${escapeHtml(t('pixelToggleHint'))}"`}>
+      <div class="pixel-header ${canToggle ? 'pixel-header-toggle' : ''}" ${canToggle ? `data-pixel-toggle="true" role="button" tabindex="0" title="${escapeHtml(t('pixelToggleHint'))}"` : ''}>
         <span class="pixel-title">${chev}${icons.image(15)} ${escapeHtml(t('pixelTitle'))}</span>
-        ${metaPill}
+        <div class="pixel-header-right">
+          ${metaPill}
+          ${actionBtn}
+        </div>
       </div>
     `;
   }
 
+  fitCanvas() {
+    const wrap = this.container.querySelector('#pixel-canvas-wrap');
+    const canvas = this.container.querySelector('#pixel-canvas');
+    if (!wrap || !canvas || !this._decoded || this._decoded.kind === 'unsupported') return;
+
+    if (this.store.viewMode !== 'pixel') {
+      canvas.style.width = '';
+      canvas.style.height = '';
+      return;
+    }
+
+    const availW = wrap.clientWidth;
+    const availH = wrap.clientHeight;
+    if (availW <= 0 || availH <= 0) return;
+
+    const scale = Math.min(availW / this._decoded.width, availH / this._decoded.height);
+    canvas.style.width = `${Math.max(1, Math.floor(this._decoded.width * scale))}px`;
+    canvas.style.height = `${Math.max(1, Math.floor(this._decoded.height * scale))}px`;
+  }
+
   async sync(force = false) {
+    const isFull = this.store.viewMode === 'pixel';
     const isMobile = window.innerWidth <= 820;
     if (isMobile) {
-      const shouldHide = this.store.mobileTab !== 'pixel';
+      const shouldHide = !isFull && this.store.mobileTab !== 'pixel';
       this.container.classList.toggle('hidden', shouldHide);
       this.container.classList.remove('collapsed');
       if (shouldHide) return;
     } else {
       this.container.classList.remove('hidden');
-      const collapsed = !this.store.showPixelPanel;
+      const collapsed = !isFull && !this.store.showPixelPanel;
       this.container.classList.toggle('collapsed', collapsed);
 
       if (collapsed) {
+        this._lastFullMode = false;
         const meta = this.store.doc ? extractPixelMeta(this.store.doc) : null;
         this._meta = meta;
         this.container.innerHTML = this._headerHtml(meta, true);
@@ -109,6 +152,7 @@ export class PixelPanel {
     if (!this.store.doc) {
       this._lastPixelVersion = -1;
       this._lastLang = null;
+      this._lastFullMode = isFull;
       this._releaseDecoded();
       this.container.innerHTML = `
         ${this._headerHtml(null, false)}
@@ -125,10 +169,19 @@ export class PixelPanel {
       this._decoded &&
       this.container.querySelector('#pixel-canvas, .pixel-unsupported, .pixel-empty')
     ) {
+      if (this._lastFullMode !== isFull) {
+        this._lastFullMode = isFull;
+        const oldHeader = this.container.querySelector('.pixel-header');
+        if (oldHeader) oldHeader.outerHTML = this._headerHtml(this._meta, false);
+        requestAnimationFrame(() => this.fitCanvas());
+      } else if (isFull) {
+        requestAnimationFrame(() => this.fitCanvas());
+      }
       return;
     }
     this._lastPixelVersion = this.store.pixelVersion;
     this._lastLang = curLang;
+    this._lastFullMode = isFull;
 
     const meta = extractPixelMeta(this.store.doc);
     this._meta = meta;
@@ -181,6 +234,7 @@ export class PixelPanel {
 
     this._renderUi(meta, decoded);
     this._redrawCanvas();
+    this.fitCanvas();
     this._applyCanvasTransform();
   }
 

@@ -4,7 +4,7 @@
  * InspectorPanel, PixelPanel, RawView, CompareView, Modals, Mobile Tabs, and Shortcuts.
  */
 
-import { AppStore } from './state/store.js';
+import { AppStore, hasPixelData } from './state/store.js';
 import { isSrDocument } from './dicom/srParser.js';
 import { createFileIoController } from './io/fileIo.js';
 import { FileListPanel } from './ui/fileList.js';
@@ -31,6 +31,7 @@ const btnOpen = document.getElementById('btn-open');
 const btnFiles = document.getElementById('btn-files');
 const viewModeGroup = document.getElementById('view-mode-group');
 const btnViewTree = document.getElementById('btn-view-tree');
+const btnViewPixel = document.getElementById('btn-view-pixel');
 const btnViewSr = document.getElementById('btn-view-sr');
 const btnViewRaw = document.getElementById('btn-view-raw');
 const btnViewCompare = document.getElementById('btn-view-compare');
@@ -160,6 +161,8 @@ function applyLanguage() {
   btnFiles.title = t('btnFilesTitle');
   btnViewTree.innerHTML = `${icons.tree(14)}<span>${t('viewModeTree')}</span>`;
   btnViewTree.title = t('viewModeTreeTitle');
+  btnViewPixel.innerHTML = `${icons.image(14)}<span>${t('viewModePixel')}</span>`;
+  btnViewPixel.title = t('viewModePixelTitle');
   btnViewSr.innerHTML = `${icons.fileText(14)}<span>${t('viewModeSr')}</span>`;
   btnViewSr.title = t('viewModeSrTitle');
   btnViewRaw.innerHTML = `${icons.code(14)}<span>${t('viewModeRaw')}</span>`;
@@ -300,17 +303,20 @@ function updateToolbarAndHeader() {
   editorView.classList.toggle('hidden', !hasDoc);
   mobileNav.classList.toggle('hidden', !hasDoc);
 
+  const hasPixel = hasDoc && hasPixelData(store.doc);
   const isSr = hasDoc && isSrDocument(store.doc);
   const inCompare = hasDoc && store.viewMode === 'compare' && fileCount >= 2;
+  const inPixel = hasPixel && store.viewMode === 'pixel';
   const inSr = isSr && store.viewMode === 'sr';
   const inRaw = hasDoc && store.viewMode === 'raw';
-  const inTree = hasDoc && !inCompare && !inSr && !inRaw;
+  const inTree = hasDoc && !inCompare && !inPixel && !inSr && !inRaw;
   editorView.classList.toggle('compare-active', inCompare);
+  editorView.classList.toggle('pixel-active', inPixel);
   editorView.classList.toggle('sr-active', inSr);
   editorView.classList.toggle('raw-active', inRaw);
   treePane.classList.toggle('hidden', !inTree);
   resizer.classList.toggle('hidden', !inTree);
-  sidePane.classList.toggle('hidden', !inTree);
+  sidePane.classList.toggle('hidden', !inTree && !inPixel);
   srPane.classList.toggle('hidden', !inSr);
   rawPane.classList.toggle('hidden', !inRaw);
   comparePane.classList.toggle('hidden', !inCompare);
@@ -318,7 +324,7 @@ function updateToolbarAndHeader() {
   // Sync mobile tab state on editor view & bottom nav
   editorView.setAttribute('data-mobile-tab', store.mobileTab);
   mobFilesCount.textContent = String(fileCount);
-  const isSpecialView = inCompare || inSr || inRaw;
+  const isSpecialView = inCompare || inPixel || inSr || inRaw;
   mobileNav.querySelectorAll('.mob-tab').forEach((tab) => {
     const isActiveMobTab = isSpecialView
       ? store.mobileTab === 'files' && tab.dataset.mobTab === 'files'
@@ -333,16 +339,20 @@ function updateToolbarAndHeader() {
 
   viewModeGroup.classList.toggle('hidden', !hasDoc);
   btnViewTree.disabled = !hasDoc;
+  btnViewPixel.classList.toggle('hidden', !hasPixel);
+  btnViewPixel.disabled = !hasPixel;
   btnViewSr.classList.toggle('hidden', !isSr);
   btnViewSr.disabled = !isSr;
   btnViewRaw.disabled = !hasDoc;
   btnViewCompare.disabled = !hasDoc || fileCount < 2;
   btnViewCompare.title = fileCount >= 2 ? t('btnCompareTitle') : t('btnCompareNeedTwoTitle');
   btnViewTree.classList.toggle('active', inTree);
+  btnViewPixel.classList.toggle('active', inPixel);
   btnViewSr.classList.toggle('active', inSr);
   btnViewRaw.classList.toggle('active', inRaw);
   btnViewCompare.classList.toggle('active', inCompare);
   btnViewTree.setAttribute('aria-pressed', String(inTree));
+  btnViewPixel.setAttribute('aria-pressed', String(inPixel));
   btnViewSr.setAttribute('aria-pressed', String(inSr));
   btnViewRaw.setAttribute('aria-pressed', String(inRaw));
   btnViewCompare.setAttribute('aria-pressed', String(inCompare));
@@ -471,6 +481,10 @@ store.subscribe((reason) => {
     compareView.render(reason);
     return;
   }
+  if (store.viewMode === 'pixel' && store.doc && hasPixelData(store.doc)) {
+    pixelPanel.sync(reason === 'document' || reason === 'lang');
+    return;
+  }
   if (store.viewMode === 'sr' && store.doc && isSrDocument(store.doc)) {
     srView.render(reason);
     return;
@@ -486,6 +500,7 @@ store.subscribe((reason) => {
 
 window.addEventListener('resize', () => {
   pixelPanel.sync(false);
+  pixelPanel.fitCanvas();
 });
 
 // ============================================================================
@@ -587,6 +602,7 @@ function openSaveMenu() {
   const hasDoc = Boolean(store.doc);
   const fileCount = store.files.length;
   const inCompare = hasDoc && store.compareMode && fileCount >= 2;
+  const inPixel = hasDoc && store.viewMode === 'pixel' && hasPixelData(store.doc);
   const inSr = hasDoc && store.viewMode === 'sr' && isSrDocument(store.doc);
   const inRaw = hasDoc && store.viewMode === 'raw';
   const busy = fileIo.isBusy() || store.anonymizing;
@@ -598,6 +614,13 @@ function openSaveMenu() {
     anchorEl: saveSplitBtn,
     className: 'toolbar-menu',
     items: [
+      ...(inPixel
+        ? [{
+            icon: icons.image(14),
+            label: t('saveMenuExportPng'),
+            action: () => pixelPanel.exportPng(),
+          }, { sep: true }]
+        : []),
       ...(inSr
         ? [{
             icon: icons.fileText(14),
@@ -686,6 +709,7 @@ btnCollapseAll.addEventListener('click', () => store.collapseAll());
 function buildCommandPaletteItems() {
   const hasDoc = Boolean(store.doc);
   const fileCount = store.files.length;
+  const hasPixel = hasDoc && hasPixelData(store.doc);
   const isSr = hasDoc && isSrDocument(store.doc);
   const inCompare = hasDoc && store.viewMode === 'compare' && fileCount >= 2;
   const busy = fileIo.isBusy() || store.anonymizing;
@@ -716,6 +740,15 @@ function buildCommandPaletteItems() {
         keywords: 'tree tags inspector view',
         action: () => store.setViewMode('tree'),
       },
+      ...(hasPixel
+        ? [{
+            id: 'view-pixel',
+            icon: icons.image(14),
+            label: t('viewModePixel'),
+            keywords: 'pixel image viewer preview full',
+            action: () => store.setViewMode('pixel'),
+          }]
+        : []),
       ...(isSr
         ? [{
             id: 'view-sr',
@@ -791,6 +824,19 @@ function buildCommandPaletteItems() {
           store.setFilterMode('phi');
         },
       },
+      ...(hasPixel
+        ? [{
+            id: 'export-pixel-png',
+            icon: icons.download(14),
+            label: t('saveMenuExportPng'),
+            keywords: 'pixel png image export screenshot',
+            action: () => {
+              if (!pixelPanel.exportPng()) {
+                store.setViewMode('pixel');
+              }
+            },
+          }]
+        : []),
       ...(isSr
         ? [{
             id: 'export-sr-md',

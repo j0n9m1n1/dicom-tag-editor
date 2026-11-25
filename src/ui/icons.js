@@ -29,6 +29,7 @@ export const icons = {
   checkCircle: (s = 14) => SVG('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>', s),
   sparkles: (s = 16) => SVG('<path d="M12 3l1.9 5.8L20 11l-6.1 2.2L12 19l-1.9-5.8L4 11l6.1-2.2L12 3Z"/>', s),
   layers: (s = 15) => SVG('<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>', s),
+  maximize: (s = 14) => SVG('<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>', s),
   contrast: (s = 15) => SVG('<circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12Z"/>', s),
   x: (s = 16) => SVG('<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>', s),
   code: (s = 15) => SVG('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>', s),

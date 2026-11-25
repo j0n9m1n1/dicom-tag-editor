@@ -16,7 +16,7 @@ import { formatHexSlice, formatHexRuler, findSerializedLandmarks } from '../src/
 import { formatTabLabel } from '../src/ui/fileTabs.js';
 import { buildUniqueRelativePath } from '../src/io/fileIo.js';
 import { buildZipArchive } from '../src/utils/zipWriter.js';
-import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges } from '../src/state/store.js';
+import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges, hasPixelData } from '../src/state/store.js';
 
 globalThis.localStorage = { getItem: () => null, setItem() {} };
 
@@ -1350,4 +1350,24 @@ test('Post-feature audit fixes: .dcm.gz markSaved handle retention, SR viewMode 
   assert.equal(shownRes.rows.length, 1);
   assert.equal(shownRes.rows[0].a?.tag, '(0020,000D)');
   assert.equal(shownRes.rows[0].b?.tag, '(0020,000D)');
+
+  // 6) Full-pane Pixel viewMode activates on PixelData docs, persists across CT slices, and falls back on non-pixel/deleted PixelData
+  assert.equal(hasPixelData(cmpA), true);
+  assert.equal(hasPixelData(srDoc), false);
+  const pxStore = new AppStore();
+  pxStore.loadDocument(cmpA);
+  pxStore.loadDocument(cmpB, null, { append: true });
+  pxStore.loadDocument(srDoc, null, { append: true });
+  await pxStore.switchToFile(pxStore.files[0].id);
+  pxStore.setViewMode('pixel');
+  assert.equal(pxStore.viewMode, 'pixel');
+  await pxStore.switchToFile(pxStore.files[1].id);
+  assert.equal(pxStore.viewMode, 'pixel');
+  await pxStore.switchToFile(pxStore.files[2].id);
+  assert.equal(pxStore.viewMode, 'tree');
+  await pxStore.switchToFile(pxStore.files[0].id);
+  pxStore.setViewMode('pixel');
+  const pxTag = cmpA.datasetNodes.find((n) => n.tag === '7FE00010');
+  pxStore.toggleDeleteNode(pxTag.id);
+  assert.equal(pxStore.viewMode, 'tree');
 });
