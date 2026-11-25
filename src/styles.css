@@ -340,7 +340,8 @@ code {
 .view-mode-group .view-mode-btn {
   border: 1px solid transparent;
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-primary);
+  opacity: 0.82;
   padding: 4px 9px;
   font-size: 12px;
   font-weight: 500;
@@ -349,14 +350,20 @@ code {
   background: var(--bg-hover);
   border-color: transparent;
   color: var(--text-primary);
+  opacity: 1;
 }
 .view-mode-group .view-mode-btn.active,
 .view-mode-group .view-mode-btn.active:hover:not(:disabled) {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--accent-fg);
+  opacity: 1;
   font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.view-mode-group .view-mode-btn:disabled {
+  color: var(--text-muted);
+  opacity: 0.34;
 }
 .view-mode-group .view-mode-btn:focus-visible {
   outline: 2px solid var(--accent);
@@ -4670,7 +4677,8 @@ kbd {
   border: none;
   border-right: 1px solid var(--border);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-primary);
+  opacity: 0.85;
   box-shadow: none;
 }
 :root[data-ui="raw"] .view-mode-group .view-mode-btn:last-child {
@@ -4679,14 +4687,20 @@ kbd {
 :root[data-ui="raw"] .view-mode-group .view-mode-btn:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
+  opacity: 1;
   border-color: var(--border);
 }
 :root[data-ui="raw"] .view-mode-group .view-mode-btn.active,
 :root[data-ui="raw"] .view-mode-group .view-mode-btn.active:hover:not(:disabled) {
   background: var(--accent);
   color: var(--accent-fg);
+  opacity: 1;
   border-color: var(--accent);
   font-weight: 700;
+}
+:root[data-ui="raw"] .view-mode-group .view-mode-btn:disabled {
+  color: var(--text-muted);
+  opacity: 0.34;
 }
 
 :root[data-ui="raw"] .raw-inline-topbar,

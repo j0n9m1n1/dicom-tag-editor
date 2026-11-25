@@ -1046,8 +1046,18 @@ pixelPanel.sync(true);
 // ============================================================================
 if ('serviceWorker' in navigator && window.isSecureContext) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js', { scope: './' }).catch((err) => {
-      console.warn('Service worker registration failed:', err);
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || refreshing || store.files.length > 0) return;
+      refreshing = true;
+      window.location.reload();
     });
+    navigator.serviceWorker
+      .register('./sw.js', { scope: './', updateViaCache: 'none' })
+      .then((reg) => reg.update().catch(() => {}))
+      .catch((err) => {
+        console.warn('Service worker registration failed:', err);
+      });
   });
 }

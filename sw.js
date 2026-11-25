@@ -53,7 +53,13 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE_NAME)
-      .then((cache) => cache.addAll(PRECACHE_URLS))
+      .then((cache) =>
+        Promise.all(
+          PRECACHE_URLS.map((url) =>
+            cache.add(new Request(url, { cache: 'no-cache' }))
+          )
+        )
+      )
       .then(() => self.skipWaiting())
   );
 });
@@ -80,8 +86,12 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
 
+  const networkReq = request.mode === 'navigate'
+    ? fetch(request.url, { cache: 'no-cache' })
+    : fetch(request);
+
   event.respondWith(
-    fetch(request)
+    networkReq
       .then((response) => {
         if (response && response.ok && response.type === 'basic') {
           const copy = response.clone();
