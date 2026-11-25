@@ -163,11 +163,17 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
   async function serializeEntryForBatch(entry) {
     let dataBytes = null;
     let savedDoc = null;
+    let outName = entry.name;
     if (!entry.doc) {
       try {
         const buffer = entry.arrayBuffer || await entry.sourceFile.arrayBuffer();
-        await parseDicomBuffer(buffer, entry.name);
-        dataBytes = new Uint8Array(buffer);
+        const parsed = await parseDicomBuffer(buffer, entry.name);
+        if (parsed.wasGzipped) {
+          dataBytes = await writeDicomDocument(parsed);
+          outName = entry.name.replace(/\.gz$/i, '');
+        } else {
+          dataBytes = new Uint8Array(buffer);
+        }
       } catch {
         return null;
       }
@@ -177,9 +183,10 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
       const { doc } = entry;
       const revision = store.getDocumentRevision(doc);
       dataBytes = await writeDicomDocument(doc);
+      if (doc.wasGzipped) outName = entry.name.replace(/\.gz$/i, '');
       savedDoc = { doc, revision };
     }
-    return { dataBytes, savedDoc };
+    return { dataBytes, savedDoc, outName };
   }
 
   function markBatchDocsSaved(savedDocs) {
@@ -358,8 +365,7 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
         }
         if (result.savedDoc) savedDocs.push(result.savedDoc);
 
-        const outName = entry.doc?.wasGzipped ? entry.name.replace(/\.gz$/i, '') : entry.name;
-        const relPath = buildUniqueRelativePath(outName, usedPaths);
+        const relPath = buildUniqueRelativePath(result.outName, usedPaths);
         const parts = relPath.split('/');
         const fileName = parts.pop();
         let targetDir = dirHandle;
@@ -399,8 +405,7 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
           continue;
         }
         if (result.savedDoc) savedDocs.push(result.savedDoc);
-        const outName = entry.doc?.wasGzipped ? entry.name.replace(/\.gz$/i, '') : entry.name;
-        zipEntries.push({ name: outName, data: result.dataBytes });
+        zipEntries.push({ name: result.outName, data: result.dataBytes });
       }
 
       if (zipEntries.length === 0) {

@@ -329,7 +329,7 @@ export class SrView {
 
   exportMarkdown() {
     if (!this._lastSr || !this.store.doc) return;
-    const base = this.store.doc.fileName.split('/').at(-1).replace(/\.dcm$/i, '');
+    const base = this.store.doc.fileName.split('/').at(-1).replace(/\.(dcm|dicom)$/i, '');
     const md = formatSrMarkdown(this._lastSr, this.store.doc.fileName);
     downloadBlobBytes(md, 'text/markdown;charset=utf-8', `${base}_report.md`);
   }

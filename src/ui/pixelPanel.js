@@ -466,7 +466,7 @@ export class PixelPanel {
     if (!canvas || !this._decoded || this._decoded.kind === 'unsupported' || !this.store.doc) {
       return false;
     }
-    const base = this.store.doc.fileName.split('/').at(-1).replace(/\.dcm$/i, '');
+    const base = this.store.doc.fileName.split('/').at(-1).replace(/\.(dcm|dicom)$/i, '');
     const frameSuffix = this._meta?.numberOfFrames > 1 ? `_f${this._frameIndex + 1}` : '';
     const fileName = `${base}${frameSuffix}.png`;
     canvas.toBlob((blob) => {

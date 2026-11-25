@@ -1223,3 +1223,119 @@ test('PHI spec, Date Shifting, upgraded Anonymizer, QA check, and transparent .d
   assert.equal(cleanDoc.datasetNodes.find((n) => n.tag === '00120062'), undefined);
   assert.equal(cleanDoc.datasetNodes.find((n) => n.tag === '00120063'), undefined);
 });
+
+test('Post-feature audit fixes: .dcm.gz markSaved handle retention, SR viewMode reconcile, QA empty-pixel/DICOMDIR/VerificationFlag', async () => {
+  const sampleBuf = await generateSampleDicomBuffer();
+  const gzBytes = gzipSync(Buffer.from(sampleBuf));
+  const gzArrBuf = gzBytes.buffer.slice(gzBytes.byteOffset, gzBytes.byteOffset + gzBytes.byteLength);
+
+  // 1) Inactive .dcm.gz clears fileHandle on lazy parse, and markSaved clears wasGzipped so new handle survives tab switch
+  const store = new AppStore();
+  await store.loadFileItems([
+    { name: 'plain.dcm', size: sampleBuf.byteLength, arrayBuffer: sampleBuf.slice(0) },
+    { name: 'lazy.dcm.gz', size: gzBytes.byteLength, arrayBuffer: gzArrBuf, fileHandle: { name: 'lazy.dcm.gz' } },
+  ]);
+  const [plainEntry, gzEntry] = store.files;
+  await store.ensureEntryParsed(gzEntry);
+  assert.equal(gzEntry.fileHandle, null);
+  assert.equal(gzEntry.doc.wasGzipped, true);
+
+  await store.switchToFile(gzEntry.id);
+  const newHandle = { name: 'saved_plain.dcm' };
+  store.markSaved(gzEntry.doc, store.getDocumentRevision(gzEntry.doc), {
+    handle: newHandle,
+    name: 'saved_plain.dcm',
+    size: sampleBuf.byteLength,
+  });
+  assert.equal(gzEntry.doc.wasGzipped, false);
+  await store.switchToFile(plainEntry.id);
+  await store.switchToFile(gzEntry.id);
+  assert.equal(store.fileHandle, newHandle);
+
+  // 2) Removing SR markers while in 'sr' viewMode reconciles viewMode back to 'tree'
+  const mkNode = (tag, vr, value, opts = {}) => ({
+    id: `aud_${tag}_${Math.random().toString(36).slice(2, 7)}`,
+    tag,
+    formattedTag: `(${tag.slice(0, 4)},${tag.slice(4, 8)})`,
+    vr,
+    value,
+    originalValue: value,
+    isSequence: Boolean(opts.isSequence),
+    isBinary: Boolean(opts.isBinary),
+    items: opts.items || [],
+    status: 'unchanged',
+  });
+  const srDoc = {
+    fileName: 'mini_sr.dcm',
+    hasPart10Header: true,
+    metaNodes: [mkNode('00020010', 'UI', explicitLittleEndian)],
+    datasetNodes: [
+      mkNode('00080060', 'CS', 'SR'),
+      mkNode('0040A493', 'CS', 'BOGUS_FLAG'),
+    ],
+  };
+  const srStore = new AppStore();
+  srStore.loadDocument(srDoc);
+  srStore.setViewMode('sr');
+  assert.equal(srStore.viewMode, 'sr');
+  srStore.updateNodeValue(srDoc.datasetNodes[0].id, 'OT');
+  assert.equal(srStore.viewMode, 'tree');
+
+  // 3) QA checker flags invalid VerificationFlag, avoids Number('')===0 false positives on missing pixel tags, and skips DICOMDIR
+  srDoc.datasetNodes[0].value = 'SR';
+  const srQa = runDicomQaCheck(srDoc);
+  assert.ok(srQa.warnings.some((w) => w.code === 'qaSrFlagInvalid' && w.tag === '(0040,A493)'));
+
+  const missingBitsDoc = {
+    hasPart10Header: false,
+    metaNodes: [],
+    datasetNodes: [
+      mkNode('00080016', 'UI', '1.2.840.10008.5.1.4.1.1.2'),
+      mkNode('00080018', 'UI', '2.25.1'),
+      mkNode('0020000D', 'UI', '2.25.2'),
+      mkNode('0020000E', 'UI', '2.25.3'),
+      mkNode('00080060', 'CS', 'CT'),
+      mkNode('00280010', 'US', '64'),
+      mkNode('00280011', 'US', '64'),
+      mkNode('7FE00010', 'OW', '[Binary]', { isBinary: true }),
+    ],
+  };
+  const missingBitsQa = runDicomQaCheck(missingBitsDoc);
+  assert.equal(missingBitsQa.errors.length, 0);
+
+  const dicomDirDoc = {
+    hasPart10Header: true,
+    metaNodes: [
+      mkNode('00020002', 'UI', '1.2.840.10008.1.3.10'),
+      mkNode('00020010', 'UI', explicitLittleEndian),
+    ],
+    datasetNodes: [mkNode('00041220', 'SQ', '', { isSequence: true, items: [] })],
+  };
+  const dirQa = runDicomQaCheck(dicomDirDoc);
+  assert.equal(dirQa.errors.length, 0);
+  assert.equal(dirQa.warnings.length, 0);
+
+  // 4) SR SCOORD handles non-numeric coordinate tokens without emitting NaN
+  const nanSr = {
+    fileName: 'coord.dcm',
+    hasPart10Header: false,
+    metaNodes: [],
+    datasetNodes: [
+      mkNode('00080060', 'CS', 'SR'),
+      mkNode('0040A730', 'SQ', '', {
+        isSequence: true,
+        items: [{
+          id: 'c_item',
+          children: [
+            mkNode('0040A040', 'CS', 'SCOORD'),
+            mkNode('00700023', 'CS', 'POINT'),
+            mkNode('00700022', 'FL', 'abc\\12.5'),
+          ],
+        }],
+      }),
+    ],
+  };
+  const parsedNan = extractSrDocument(nanSr);
+  assert.equal(parsedNan.items[0].valueDetail.includes('NaN'), false);
+  assert.ok(parsedNan.items[0].valueDetail.includes('abc, 12.5'));
+});

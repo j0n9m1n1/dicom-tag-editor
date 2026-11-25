@@ -159,6 +159,9 @@ export class AppStore {
   }
 
   emit(reason = 'state') {
+    if (this.viewMode === 'sr' && (!this.doc || !isSrDocument(this.doc))) {
+      this.viewMode = 'tree';
+    }
     for (const fn of this.listeners) fn(reason);
   }
 
@@ -371,6 +374,7 @@ export class AppStore {
       if (!buf) throw new Error('No file data available');
       const doc = await parseDicomBuffer(buf, entry.name);
       entry.doc = doc;
+      if (doc.wasGzipped) entry.fileHandle = null;
       entry.error = null;
       entry.errorCode = null;
       entry.errorDetails = null;
@@ -1754,6 +1758,7 @@ export class AppStore {
       entry.sourceFile = null;
       entry.name = doc.fileName = file.name;
       entry.size = doc.fileSize = file.size;
+      doc.wasGzipped = false;
       if (doc === this.doc) this.fileHandle = file.handle;
     }
     if (this.getDocumentRevision(doc) !== revision) {

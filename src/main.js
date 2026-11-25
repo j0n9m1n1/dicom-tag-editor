@@ -688,6 +688,7 @@ function buildCommandPaletteItems() {
   const fileCount = store.files.length;
   const isSr = hasDoc && isSrDocument(store.doc);
   const inCompare = hasDoc && store.viewMode === 'compare' && fileCount >= 2;
+  const busy = fileIo.isBusy() || store.anonymizing;
   const items = [
     {
       id: 'open',
@@ -740,7 +741,7 @@ function buildCommandPaletteItems() {
             action: () => store.setViewMode('compare'),
           }]
         : []),
-      ...(!inCompare
+      ...(!inCompare && !busy
         ? [
             {
               id: 'add-tag',
@@ -802,14 +803,28 @@ function buildCommandPaletteItems() {
             },
           }]
         : []),
-      {
-        id: 'save-as',
-        icon: icons.save(14),
-        label: t('saveMenuSaveAs'),
-        keywords: 'save export download dcm',
-        shortcut: 'Ctrl+S',
-        action: () => fileIo.saveDocumentAs(),
-      }
+      ...(!inCompare && !busy
+        ? [
+            ...(store.fileHandle
+              ? [{
+                  id: 'save-direct',
+                  icon: icons.save(14),
+                  label: t('saveMenuOverwrite'),
+                  keywords: 'save overwrite direct dcm',
+                  shortcut: 'Ctrl+S',
+                  action: () => fileIo.saveDocumentDirect(),
+                }]
+              : []),
+            {
+              id: 'save-as',
+              icon: icons.download(14),
+              label: t('saveMenuSaveAs'),
+              keywords: 'save as export download dcm',
+              shortcut: store.fileHandle ? 'Ctrl+Shift+S' : 'Ctrl+S',
+              action: () => fileIo.saveDocumentAs(),
+            },
+          ]
+        : []),
     );
   }
 

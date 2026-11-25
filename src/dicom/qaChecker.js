@@ -134,25 +134,28 @@ export function runDicomQaCheck(doc) {
     infos.push({ code: 'qaRawNoPart10', severity: 'info' });
   }
 
-  // 3) Core root IOD UIDs & Modality
-  checkedRules++;
-  const coreRequired = [
-    ['00080016', '(0008,0016)', 'SOPClassUID'],
-    ['00080018', '(0008,0018)', 'SOPInstanceUID'],
-    ['0020000D', '(0020,000D)', 'StudyInstanceUID'],
-    ['0020000E', '(0020,000E)', 'SeriesInstanceUID'],
-    ['00080060', '(0008,0060)', 'Modality'],
-  ];
-  for (const [hex, fmt, kw] of coreRequired) {
-    const node = findActive(main, hex);
-    if (!node || !String(node.value || '').trim()) {
-      warnings.push({
-        code: 'qaMissingTag',
-        severity: 'warning',
-        tag: fmt,
-        nodeId: node?.id,
-        params: { tag: fmt, keyword: kw },
-      });
+  // 3) Core root IOD UIDs & Modality (skip for DICOMDIR Media Storage Directory)
+  const isDicomDir = getVal(meta, '00020002') === '1.2.840.10008.1.3.10';
+  if (!isDicomDir) {
+    checkedRules++;
+    const coreRequired = [
+      ['00080016', '(0008,0016)', 'SOPClassUID'],
+      ['00080018', '(0008,0018)', 'SOPInstanceUID'],
+      ['0020000D', '(0020,000D)', 'StudyInstanceUID'],
+      ['0020000E', '(0020,000E)', 'SeriesInstanceUID'],
+      ['00080060', '(0008,0060)', 'Modality'],
+    ];
+    for (const [hex, fmt, kw] of coreRequired) {
+      const node = findActive(main, hex);
+      if (!node || !String(node.value || '').trim()) {
+        warnings.push({
+          code: 'qaMissingTag',
+          severity: 'warning',
+          tag: fmt,
+          nodeId: node?.id,
+          params: { tag: fmt, keyword: kw },
+        });
+      }
     }
   }
 
@@ -160,11 +163,12 @@ export function runDicomQaCheck(doc) {
   const pixelNode = findActive(main, '7FE00010');
   if (pixelNode) {
     checkedRules++;
-    const rows = Number(getVal(main, '00280010'));
-    const cols = Number(getVal(main, '00280011'));
-    const bitsAlloc = Number(getVal(main, '00280100'));
-    const bitsStored = Number(getVal(main, '00280101'));
-    const highBit = Number(getVal(main, '00280102'));
+    const parseNum = (s) => (s !== '' ? Number(s) : NaN);
+    const rows = parseNum(getVal(main, '00280010'));
+    const cols = parseNum(getVal(main, '00280011'));
+    const bitsAlloc = parseNum(getVal(main, '00280100'));
+    const bitsStored = parseNum(getVal(main, '00280101'));
+    const highBit = parseNum(getVal(main, '00280102'));
     if (!Number.isFinite(rows) || rows <= 0 || !Number.isFinite(cols) || cols <= 0) {
       errors.push({
         code: 'qaPixelDimInvalid',
@@ -173,7 +177,7 @@ export function runDicomQaCheck(doc) {
         nodeId: findActive(main, '00280010')?.id || pixelNode.id,
       });
     }
-    if (Number.isFinite(bitsAlloc) && Number.isFinite(bitsStored) && bitsStored > bitsAlloc) {
+    if (Number.isFinite(bitsAlloc) && bitsAlloc > 0 && Number.isFinite(bitsStored) && bitsStored > bitsAlloc) {
       errors.push({
         code: 'qaPixelBitsInvalid',
         severity: 'error',
@@ -182,7 +186,7 @@ export function runDicomQaCheck(doc) {
         params: { stored: bitsStored, alloc: bitsAlloc },
       });
     }
-    if (Number.isFinite(bitsAlloc) && Number.isFinite(highBit) && highBit >= bitsAlloc) {
+    if (Number.isFinite(bitsAlloc) && bitsAlloc > 0 && Number.isFinite(highBit) && highBit >= bitsAlloc) {
       errors.push({
         code: 'qaPixelHighBitInvalid',
         severity: 'error',
@@ -211,7 +215,17 @@ export function runDicomQaCheck(doc) {
         severity: 'warning',
         tag: '(0040,A491)',
         nodeId: findActive(main, '0040A491')?.id,
-        params: { tag: '(0040,A491)', value: comp },
+        params: { tag: '(0040,A491)', value: comp, expected: 'PARTIAL / COMPLETE' },
+      });
+    }
+    const verif = getVal(main, '0040A493');
+    if (verif && verif !== 'UNVERIFIED' && verif !== 'VERIFIED') {
+      warnings.push({
+        code: 'qaSrFlagInvalid',
+        severity: 'warning',
+        tag: '(0040,A493)',
+        nodeId: findActive(main, '0040A493')?.id,
+        params: { tag: '(0040,A493)', value: verif, expected: 'UNVERIFIED / VERIFIED' },
       });
     }
   }

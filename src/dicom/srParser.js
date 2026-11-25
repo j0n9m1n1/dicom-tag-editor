@@ -187,7 +187,13 @@ function parseSrItem(nodes, itemId, depth) {
       const ptCount = Math.floor(rawCoords.length / dim);
       valueText = gType || valueType;
       if (ptCount > 0) {
-        const preview = rawCoords.slice(0, dim * 2).map((v) => Number(v).toFixed(1)).join(', ');
+        const preview = rawCoords
+          .slice(0, dim * 2)
+          .map((v) => {
+            const num = Number(v);
+            return Number.isFinite(num) ? num.toFixed(1) : v;
+          })
+          .join(', ');
         valueDetail = `${ptCount} pt(s) [${preview}${rawCoords.length > dim * 2 ? ', …' : ''}]`;
       }
       if (gDataNode) jumpNodeId = gDataNode.id;
