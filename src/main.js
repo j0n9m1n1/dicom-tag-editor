@@ -462,6 +462,27 @@ store.subscribe((reason) => {
     inspector.render(reason);
     return;
   }
+  if (reason === 'layout') {
+    const hasDoc = Boolean(store.doc);
+    const showFiles = store.showFileList && store.files.length > 0;
+    btnFiles.classList.toggle('btn-primary', showFiles && hasDoc);
+    fileListPane.classList.toggle('desktop-hidden', !showFiles);
+    if ((showFiles || store.mobileTab === 'files') && !fileListPane.hasChildNodes()) {
+      fileListPanel.render();
+    }
+    editorView.setAttribute('data-mobile-tab', store.mobileTab);
+    const isSpecialView = store.viewMode !== 'tree';
+    mobileNav.querySelectorAll('.mob-tab').forEach((tab) => {
+      const isActiveMobTab = isSpecialView
+        ? store.mobileTab === 'files' && tab.dataset.mobTab === 'files'
+        : tab.dataset.mobTab === store.mobileTab;
+      tab.classList.toggle('active', isActiveMobTab);
+    });
+    if (store.viewMode === 'tree' || store.viewMode === 'pixel') {
+      pixelPanel.sync(false);
+    }
+    return;
+  }
   if (reason === 'document' || reason === 'compare' || reason === 'view' || reason === 'lang') {
     closePopupMenu();
   }
@@ -495,7 +516,7 @@ store.subscribe((reason) => {
   }
   treeView.render(reason);
   inspector.render(reason);
-  pixelPanel.sync(reason === 'document' || reason === 'layout' || reason === 'lang');
+  pixelPanel.sync(reason === 'document' || reason === 'lang');
 });
 
 window.addEventListener('resize', () => {
