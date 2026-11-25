@@ -287,8 +287,24 @@ export class AppStore {
   setCompareFiles(fileAId, fileBId) {
     if (this.files.length < 2) return;
     const validIds = new Set(this.files.map((f) => f.id));
-    if (fileAId && validIds.has(fileAId)) this.compareFileAId = fileAId;
-    if (fileBId && validIds.has(fileBId)) this.compareFileBId = fileBId;
+    const prevA = this.compareFileAId;
+    const prevB = this.compareFileBId;
+    let nextA = fileAId && validIds.has(fileAId) ? fileAId : prevA;
+    let nextB = fileBId && validIds.has(fileBId) ? fileBId : prevB;
+
+    if (nextA && nextA === nextB) {
+      if (nextA !== prevA && prevA && validIds.has(prevA)) {
+        nextB = prevA;
+      } else if (nextB !== prevB && prevB && validIds.has(prevB)) {
+        nextA = prevB;
+      } else {
+        const other = this.files.find((f) => f.id !== nextA);
+        if (other) nextB = other.id;
+      }
+    }
+
+    this.compareFileAId = nextA;
+    this.compareFileBId = nextB;
     this.emit('compare');
   }
 
@@ -645,6 +661,7 @@ export class AppStore {
 
     if (this.files.length <= 1) {
       this.showFileList = false;
+      this._userToggledFileList = false;
       this.compareMode = false;
       this.compareFileAId = null;
       this.compareFileBId = null;
@@ -727,6 +744,7 @@ export class AppStore {
 
     if (this.files.length <= 1) {
       this.showFileList = false;
+      this._userToggledFileList = false;
       this.compareMode = false;
       this.compareFileAId = null;
       this.compareFileBId = null;
@@ -1097,6 +1115,12 @@ export class AppStore {
     if (!this.doc) return null;
     const hex = tagHex(group, element);
     if (getReadOnlyTagMessage(hex)) return { locked: true };
+    if (targetList && group === 0x0002) {
+      return { invalidLocation: 'metaTagInSequenceErr' };
+    }
+    if (!targetList && group === 0x0002 && !this.doc.hasPart10Header) {
+      return { invalidLocation: 'metaTagNoPart10Err' };
+    }
     const dict = lookupTag(group, element);
     const isMeta = targetList ? targetSection === 'meta' : group === 0x0002;
     const list = targetList || (isMeta ? this.doc.metaNodes : this.doc.datasetNodes);
@@ -1499,6 +1523,7 @@ export class AppStore {
         try {
           const doc = await this.ensureEntryParsed(entry);
           if (!this.files.includes(entry)) continue;
+          if (isMeta && !doc.hasPart10Header) continue;
           const list = isMeta ? doc.metaNodes : doc.datasetNodes;
           const existing = list.find((n) => n.tag === hex && n.status !== 'deleted');
           const deletedExisting = !existing && mode === 'set'

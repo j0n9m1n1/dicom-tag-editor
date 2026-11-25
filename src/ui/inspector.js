@@ -9,10 +9,11 @@
  *  6. Multi-value list editor, DA/TM/UI helpers, UTF-8 charset guard, VR Standard Spec card, and Raw Hex dump
  */
 
-import { getVrSpec, validateVrValue } from '../dicom/vrSpec.js';
+import { getVrSpec, validateVrValue, NUMERIC_VRS } from '../dicom/vrSpec.js';
 import { lookupUidName } from '../dicom/dictionary.js';
 import { hasNonAscii, isUtf8Charset, usesSpecificCharacterSet } from '../dicom/charset.js';
 import { computeVm, formatByteSize } from '../dicom/parser.js';
+import { encodeBinaryNumeric } from '../dicom/writer.js';
 import { generateDicomUid } from '../dicom/uid.js';
 import { getReadOnlyTagMessage } from '../state/store.js';
 import { copyTextToClipboard } from '../utils/uiHelpers.js';
@@ -321,9 +322,9 @@ export class InspectorPanel {
               ${this._showRawHex ? icons.chevronDown(14) : icons.chevronRight(14)}
               <span class="insp-section-title">${escapeHtml(t('inspRawHexTitle'))}</span>
             </span>
-            <span class="insp-acc-meta mono">${node.status === 'unchanged' && node.rawBytes ? `${node.rawBytes.length} B` : `${new TextEncoder().encode(node.value || '').length} B`}</span>
+            <span class="insp-acc-meta mono" id="insp-rawhex-len">${this._getEncodedPreviewBytes(node).length} B</span>
           </button>
-          ${this._showRawHex ? `<div class="insp-acc-body">${this._renderRawHexBody(node)}</div>` : ''}
+          ${this._showRawHex ? `<div class="insp-acc-body" id="insp-rawhex-body">${this._renderRawHexBody(node)}</div>` : ''}
         </div>
       ` : ''}
 
@@ -357,11 +358,21 @@ export class InspectorPanel {
     `;
   }
 
+  _getEncodedPreviewBytes(node) {
+    if (node.status === 'unchanged' && node.rawBytes instanceof Uint8Array) {
+      return node.rawBytes;
+    }
+    if (NUMERIC_VRS.has(node.vr) || node.vr === 'AT') {
+      return encodeBinaryNumeric(node.value, node.vr, this.store.doc?.littleEndian !== false, node.tag);
+    }
+    return new TextEncoder().encode(node.value || '');
+  }
+
   _renderRawHexBody(node) {
     if (node.status === 'unchanged' && node.rawBytes && node.rawBytes.length > 0) {
       return `<pre class="hex-dump">${escapeHtml(buildHexDump(node.rawBytes, 256))}</pre>`;
     }
-    const encoded = new TextEncoder().encode(node.value || '');
+    const encoded = this._getEncodedPreviewBytes(node);
     return `
       <pre class="hex-dump">${escapeHtml(buildHexDump(encoded, 256))}</pre>
       <p class="muted small" style="margin:6px 0 0">${escapeHtml(t('inspRawHexNewNote'))}</p>
@@ -535,10 +546,11 @@ export class InspectorPanel {
   _renderLiveMetricsHtml(node, spec, needsUtf8Warn) {
     if (node.isBinary || node.isSequence) return '';
     const val = node.value || '';
-    const byteLen = new TextEncoder().encode(val).length;
+    const byteLen = this._getEncodedPreviewBytes(node).length;
     const charLen = val.length;
     const vm = computeVm(node);
     const v = node.validation || validateVrValue(node.vr, val, node.tag);
+    const needsPadNote = spec.padding !== 'none' && (byteLen & 1) === 1;
 
     const limitInfo = spec.maxLength
       ? `${spec.lengthUnit === 'chars' ? charLen : byteLen} / ${spec.maxLength} ${spec.lengthUnit}`
@@ -590,7 +602,7 @@ export class InspectorPanel {
       ${uidNameHtml}
       <div class="insp-metrics-bar">
         <span>${escapeHtml(t('inspMetricLen'))} <strong>${escapeHtml(limitInfo)}</strong></span>
-        <span>${escapeHtml(t('inspMetricBytes'))} <strong>${byteLen} B</strong>${(byteLen & 1) === 1 ? escapeHtml(t('inspMetricPadNote')) : ''}</span>
+        <span>${escapeHtml(t('inspMetricBytes'))} <strong>${byteLen} B</strong>${needsPadNote ? escapeHtml(t('inspMetricPadNote')) : ''}</span>
         <span>VM: <strong>${vm}</strong></span>
       </div>
       ${statusBox}
@@ -600,15 +612,24 @@ export class InspectorPanel {
 
   _updateLiveMetrics(node) {
     const el = this.container.querySelector('#insp-live-metrics');
-    if (!el) return;
-    const spec = getVrSpec(node.vr);
-    const charset = this.store.getSpecificCharacterSet();
-    const needsUtf8Warn =
-      !node.isMeta &&
-      usesSpecificCharacterSet(node.vr) &&
-      hasNonAscii(node.value) &&
-      !isUtf8Charset(charset);
-    el.innerHTML = this._renderLiveMetricsHtml(node, spec, needsUtf8Warn);
+    if (el) {
+      const spec = getVrSpec(node.vr);
+      const charset = this.store.getSpecificCharacterSet();
+      const needsUtf8Warn =
+        !node.isMeta &&
+        usesSpecificCharacterSet(node.vr) &&
+        hasNonAscii(node.value) &&
+        !isUtf8Charset(charset);
+      el.innerHTML = this._renderLiveMetricsHtml(node, spec, needsUtf8Warn);
+    }
+    const rawLenEl = this.container.querySelector('#insp-rawhex-len');
+    if (rawLenEl) {
+      rawLenEl.textContent = `${this._getEncodedPreviewBytes(node).length} B`;
+    }
+    if (this._showRawHex) {
+      const rawBodyEl = this.container.querySelector('#insp-rawhex-body');
+      if (rawBodyEl) rawBodyEl.innerHTML = this._renderRawHexBody(node);
+    }
   }
 
   _onInput(e) {

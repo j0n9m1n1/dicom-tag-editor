@@ -58,8 +58,10 @@ export function buildZipArchive(entries) {
       return clean;
     }
     const dot = clean.lastIndexOf('.');
-    const base = dot > 0 ? clean.slice(0, dot) : clean;
-    const ext = dot > 0 ? clean.slice(dot) : '';
+    const slash = clean.lastIndexOf('/');
+    const hasExt = dot > slash + 1;
+    const base = hasExt ? clean.slice(0, dot) : clean;
+    const ext = hasExt ? clean.slice(dot) : '';
     let idx = 2;
     while (usedNames.has(`${base}_${idx}${ext}`)) idx++;
     const candidate = `${base}_${idx}${ext}`;

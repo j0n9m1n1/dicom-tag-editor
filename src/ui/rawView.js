@@ -384,6 +384,11 @@ export class RawView {
         const nextMode = btn.dataset.rawFmt;
         if (this.mode === nextMode) return;
         this.mode = nextMode;
+        const bodyEl = this.container.querySelector('#raw-inline-body');
+        if (bodyEl) {
+          bodyEl.scrollTop = 0;
+          bodyEl.scrollLeft = 0;
+        }
         this._renderContent();
       });
     });
@@ -556,6 +561,7 @@ export class RawView {
     const bodyEl = this.container.querySelector('#raw-inline-body');
     if (!preEl || !this.store.doc) return;
     const prevScrollTop = preserveScroll && bodyEl ? bodyEl.scrollTop : 0;
+    const prevActiveIdx = preserveScroll ? this.activeMatchIdx : -1;
     preEl.classList.remove('raw-hex-pre');
 
     const text = this._getCurrentText();
@@ -565,7 +571,7 @@ export class RawView {
 
     if (!q) {
       preEl.textContent = text;
-      if (bodyEl && preserveScroll) bodyEl.scrollTop = prevScrollTop;
+      if (bodyEl) bodyEl.scrollTop = prevScrollTop;
       this._updateMatchNav();
       return;
     }
@@ -597,9 +603,10 @@ export class RawView {
 
     this.matchCount = count;
     preEl.innerHTML = parts.join('');
-    if (bodyEl && preserveScroll) bodyEl.scrollTop = prevScrollTop;
+    if (bodyEl) bodyEl.scrollTop = prevScrollTop;
     if (count > 0) {
-      this._setActiveMatch(0, false);
+      const nextIdx = prevActiveIdx >= 0 ? Math.min(prevActiveIdx, count - 1) : 0;
+      this._setActiveMatch(nextIdx, false);
     } else {
       this._updateMatchNav();
     }

@@ -4,7 +4,7 @@ import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { parseDicomBuffer } from '../src/dicom/parser.js';
 import { decodePixelFrame, extractPixelMeta } from '../src/dicom/pixelRenderer.js';
 import { generateSampleDicomBuffer } from '../src/dicom/sampleGenerator.js';
-import { writeDicomDocument } from '../src/dicom/writer.js';
+import { writeDicomDocument, encodeBinaryNumeric } from '../src/dicom/writer.js';
 import { validateVrValue } from '../src/dicom/vrSpec.js';
 import { formatDicomJson } from '../src/dicom/dcmdump.js';
 import { DICOM_DICTIONARY, lookupTag, lookupUidName, searchDictionary } from '../src/dicom/dictionary.js';
@@ -912,4 +912,84 @@ test('AppStore viewMode switches Tree/Raw/Compare cleanly and RawView locates se
   assert.equal(buildUniqueRelativePath('../study\\img:01.dcm', used), 'study/img_01.dcm');
   assert.equal(buildUniqueRelativePath('study/IMG_01.dcm', used), 'study/IMG_01_2.dcm');
   assert.equal(buildUniqueRelativePath('', used), 'file.dcm');
+});
+
+test('Audit regressions: binary numeric encoding, Group 0002 placement guards, Compare auto-swap, sidebar flag reset & ZIP dotted folders', async () => {
+  // 1) encodeBinaryNumeric matches actual DICOM binary encoding (US/AT)
+  const usBytes = encodeBinaryNumeric('512', 'US', true);
+  assert.deepEqual(Array.from(usBytes), [0x00, 0x02]);
+  const atBytes = encodeBinaryNumeric('(0010,0020)', 'AT', true);
+  assert.deepEqual(Array.from(atBytes), [0x10, 0x00, 0x20, 0x00]);
+
+  // 2) Group 0002 placement guards: blocked in SQ item and on raw non-Part-10 DICOM
+  const sampleBytes = new Uint8Array(await generateSampleDicomBuffer());
+  const part10Doc = await parseDicomBuffer(sampleBytes.buffer, 'part10.dcm');
+  const rawDoc = await parse(hex(
+    '10 00 10 00 50 4e 04 00 54 45 53 54' + // (0010,0010) PN "TEST"
+    '28 00 10 00 55 53 02 00 04 00'        // (0028,0010) US 4
+  ));
+  assert.equal(rawDoc.hasPart10Header, false);
+
+  const store = new AppStore();
+  store.loadDocument(rawDoc);
+  const rawMetaRes = store.addTag({ group: 0x0002, element: 0x0016, vr: 'AE', value: 'PACS' });
+  assert.equal(rawMetaRes?.invalidLocation, 'metaTagNoPart10Err');
+  assert.equal(countDocChanges(rawDoc), 0);
+
+  store.loadDocument(part10Doc, null, { append: true });
+  const seqNode = part10Doc.datasetNodes.find((n) => n.tag === '00081115');
+  assert.ok(seqNode?.isSequence && seqNode.items.length > 0);
+  const seqItem = seqNode.items[0];
+  const prevChildCount = seqItem.children.length;
+  const sqMetaRes = store.addTag({
+    group: 0x0002,
+    element: 0x0016,
+    vr: 'AE',
+    value: 'PACS',
+    targetList: seqItem.children,
+    targetSection: 'main',
+  });
+  assert.equal(sqMetaRes?.invalidLocation, 'metaTagInSequenceErr');
+  assert.equal(seqItem.children.length, prevChildCount);
+
+  // Batch edit for Group 0002 applies only to Part 10 docs and skips raw non-Part-10 docs
+  const batchMeta = await store.batchEditAcrossFiles({
+    group: 0x0002,
+    element: 0x0016,
+    vr: 'AE',
+    value: 'BATCH_AE',
+    mode: 'set',
+  });
+  assert.equal(batchMeta.affectedFiles, 1);
+  assert.equal(rawDoc.metaNodes.length, 0);
+  assert.ok(part10Doc.metaNodes.some((n) => n.tag === '00020016' && n.value === 'BATCH_AE'));
+
+  // 3) Compare mode auto-swaps A and B when selecting the opposite side's file
+  const idA = store.files[0].id;
+  const idB = store.files[1].id;
+  store.enterCompareMode(idA, idB);
+  assert.equal(store.compareFileAId, idA);
+  assert.equal(store.compareFileBId, idB);
+  store.setCompareFiles(idB, idB); // selecting B into slot A swaps A into slot B
+  assert.equal(store.compareFileAId, idB);
+  assert.equal(store.compareFileBId, idA);
+
+  // 4) Closing down to 1 file resets _userToggledFileList so reopening multiple files shows sidebar again
+  store.toggleFileList();
+  assert.equal(store._userToggledFileList, true);
+  await store.removeFile(idB);
+  assert.equal(store.files.length, 1);
+  assert.equal(store._userToggledFileList, false);
+  const part10Doc2 = await parseDicomBuffer(sampleBytes.buffer, 'part10_2.dcm');
+  store.loadDocument(part10Doc2, null, { append: true });
+  assert.equal(store.showFileList, true);
+
+  // 5) buildZipArchive keeps dotted directory names intact when deduplicating extensionless files
+  const zipBytes = buildZipArchive([
+    { name: 'study.1/IM0001', data: new Uint8Array([1, 2, 3]) },
+    { name: 'study.1/IM0001', data: new Uint8Array([4, 5, 6]) },
+  ]);
+  const zipAscii = Buffer.from(zipBytes).toString('latin1');
+  assert.ok(zipAscii.includes('study.1/IM0001_2'));
+  assert.ok(!zipAscii.includes('study_2.1/IM0001'));
 });

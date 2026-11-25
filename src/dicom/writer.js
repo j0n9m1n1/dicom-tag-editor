@@ -58,7 +58,7 @@ function padEven(bytes, padByte) {
 /**
  * Encode numeric / AT value string into binary bytes.
  */
-function encodeBinaryNumeric(value, vr, littleEndian, tag = '') {
+export function encodeBinaryNumeric(value, vr, littleEndian, tag = '') {
   const raw = (value ?? '').trim();
   if (raw === '') return new Uint8Array(0);
   const parts = raw.split('\\').map((s) => s.trim()).filter((s) => s !== '');

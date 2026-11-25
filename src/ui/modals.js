@@ -23,21 +23,31 @@ export class ModalManager {
     this.root = root;
     this.store = store;
     this.callbacks = callbacks || {};
+    this._backdropMouseDown = false;
+
+    this.root.addEventListener('mousedown', (e) => {
+      this._backdropMouseDown = e.target === this.root;
+    });
 
     this.root.addEventListener('click', (e) => {
-      if (e.target === this.root || e.target.closest('[data-modal-close]')) {
+      const fromBackdrop = this._backdropMouseDown && e.target === this.root;
+      this._backdropMouseDown = false;
+      if (fromBackdrop || e.target.closest('[data-modal-close]')) {
         this.close();
       }
     });
 
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !this.root.classList.contains('hidden')) {
+        e.preventDefault();
+        e.stopPropagation();
         this.close();
       }
     });
   }
 
   close() {
+    this._backdropMouseDown = false;
     this.root.classList.add('hidden');
     this.root.innerHTML = '';
   }
@@ -194,6 +204,11 @@ export class ModalManager {
       });
       if (res?.locked) {
         feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(t(getReadOnlyTagMessage(tagHex(parsed.group, parsed.element))))}</span>`;
+        return;
+      }
+      if (res?.invalidLocation) {
+        feedbackEl.innerHTML = `<span class="text-danger">${escapeHtml(t(res.invalidLocation))}</span>`;
+        tagInp.focus();
         return;
       }
       this.close();
