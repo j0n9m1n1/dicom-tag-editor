@@ -31,6 +31,187 @@ function parseFirstNumber(val, fallback) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+const OVERLAY_PALETTE = [
+  [34, 197, 94],   // emerald green (6000)
+  [56, 189, 248],  // sky cyan (6002)
+  [245, 158, 11],  // amber (6004)
+  [244, 114, 182], // pink (6006)
+  [163, 230, 53],  // lime (6008)
+  [192, 132, 252], // violet (600A)
+];
+
+function extractOverlayDefinitions(nodes, defaultRows, defaultCols, bitsAllocated, bitsStored, highBit) {
+  const byGroup = new Map();
+  for (const n of nodes || []) {
+    if (n.status === 'deleted') continue;
+    const g = n.group;
+    if (g >= 0x6000 && g <= 0x601e && (g & 1) === 0) {
+      let bucket = byGroup.get(g);
+      if (!bucket) {
+        bucket = new Map();
+        byGroup.set(g, bucket);
+      }
+      bucket.set(n.element, n);
+    }
+  }
+  if (byGroup.size === 0) return [];
+
+  const overlays = [];
+  const sortedGroups = Array.from(byGroup.keys()).sort((a, b) => a - b);
+  for (const group of sortedGroups) {
+    const tags = byGroup.get(group);
+    const getVal = (el) => {
+      const node = tags.get(el);
+      return node && !node.isBinary && !node.isSequence ? node.value : null;
+    };
+    const dataNode = tags.get(0x3000) || null;
+    const rows = parseFirstNumber(getVal(0x0010), defaultRows);
+    const cols = parseFirstNumber(getVal(0x0011), defaultCols);
+    if (rows <= 0 || cols <= 0) continue;
+
+    const originRaw = getVal(0x0050);
+    const originParts = originRaw ? String(originRaw).split('\\').map((s) => Number(s.trim())) : [];
+    const originRow = Number.isFinite(originParts[0]) ? Math.trunc(originParts[0]) - 1 : 0;
+    const originCol = Number.isFinite(originParts[1]) ? Math.trunc(originParts[1]) - 1 : 0;
+    const numberOfFrames = Math.max(1, Math.floor(parseFirstNumber(getVal(0x0015), 1)));
+    const imageFrameOrigin = Math.max(1, Math.floor(parseFirstNumber(getVal(0x0051), 1)));
+    const ovBitsAlloc = parseFirstNumber(getVal(0x0100), dataNode ? 1 : bitsAllocated);
+    const bitPosRaw = getVal(0x0102);
+    const bitPosition = bitPosRaw !== null ? parseFirstNumber(bitPosRaw, -1) : (dataNode ? 0 : -1);
+
+    const hasSeparateData = Boolean(dataNode?.rawBytes && dataNode.rawBytes.length > 0);
+    const lowStoredBit = Math.max(0, highBit + 1 - bitsStored);
+    const inStoredRange = bitPosition >= lowStoredBit && bitPosition <= highBit;
+    const isEmbedded = !hasSeparateData && bitPosition >= 0 && bitPosition < bitsAllocated && !inStoredRange;
+    if (!hasSeparateData && !isEmbedded) continue;
+
+    overlays.push({
+      group,
+      groupHex: group.toString(16).toUpperCase().padStart(4, '0'),
+      rows,
+      cols,
+      originRow,
+      originCol,
+      numberOfFrames,
+      imageFrameOrigin,
+      bitsAllocated: ovBitsAlloc,
+      bitPosition,
+      type: (getVal(0x0040) || 'G').trim().toUpperCase(),
+      label: (getVal(0x1500) || getVal(0x0022) || `60${group.toString(16).toUpperCase().slice(2)}`).trim(),
+      dataNode,
+      embedded: isEmbedded,
+      color: OVERLAY_PALETTE[overlays.length % OVERLAY_PALETTE.length],
+    });
+  }
+  return overlays;
+}
+
+/**
+ * Extract active 1-bit overlay masks for a given frame index from both
+ * separate (60xx,3000) OverlayData and embedded PixelData bit-planes.
+ */
+function extractOverlayPlanesForFrame(meta, frameIndex, rawFrameBytes, rawLittleEndian, rawBitsAllocated) {
+  const defs = meta.overlays || [];
+  if (defs.length === 0) return [];
+
+  const activePlanes = [];
+  for (const ov of defs) {
+    // Check multi-frame overlay visibility window (1-based ImageFrameOrigin)
+    const ovFrameIdx = (frameIndex + 1) - ov.imageFrameOrigin;
+    if (ovFrameIdx < 0 || ovFrameIdx >= ov.numberOfFrames) continue;
+
+    const pixelCount = ov.rows * ov.cols;
+    const mask = new Uint8Array(pixelCount);
+
+    if (!ov.embedded && ov.dataNode?.rawBytes) {
+      const src = ov.dataNode.rawBytes;
+      const isBigEndianOw = meta.littleEndian === false && ov.dataNode.vr === 'OW';
+      const bitStart = ovFrameIdx * pixelCount;
+      let anySet = false;
+      for (let i = 0; i < pixelCount; i++) {
+        const bitIdx = bitStart + i;
+        let byteIdx = bitIdx >> 3;
+        if (isBigEndianOw) byteIdx ^= 1;
+        if (byteIdx >= src.length) break;
+        if ((src[byteIdx] >>> (bitIdx & 7)) & 1) {
+          mask[i] = 1;
+          anySet = true;
+        }
+      }
+      if (anySet) {
+        activePlanes.push({
+          group: ov.group,
+          groupHex: ov.groupHex,
+          label: ov.label,
+          type: ov.type,
+          rows: ov.rows,
+          cols: ov.cols,
+          originRow: ov.originRow,
+          originCol: ov.originCol,
+          color: ov.color,
+          mask,
+        });
+      }
+    } else if (ov.embedded && rawFrameBytes && (rawBitsAllocated === 8 || rawBitsAllocated === 16)) {
+      const bitMask = 1 << ov.bitPosition;
+      const view = new DataView(rawFrameBytes.buffer, rawFrameBytes.byteOffset, rawFrameBytes.byteLength);
+      const bytesPerSample = rawBitsAllocated / 8;
+      const maxPixels = Math.min(pixelCount, Math.floor(rawFrameBytes.length / bytesPerSample));
+      let anySet = false;
+      for (let i = 0; i < maxPixels; i++) {
+        const sample = rawBitsAllocated === 8 ? view.getUint8(i) : view.getUint16(i * 2, rawLittleEndian);
+        if (sample & bitMask) {
+          mask[i] = 1;
+          anySet = true;
+        }
+      }
+      if (anySet) {
+        activePlanes.push({
+          group: ov.group,
+          groupHex: ov.groupHex,
+          label: ov.label,
+          type: ov.type,
+          rows: ov.rows,
+          cols: ov.cols,
+          originRow: ov.originRow,
+          originCol: ov.originCol,
+          color: ov.color,
+          mask,
+        });
+      }
+    }
+  }
+  return activePlanes;
+}
+
+function compositeOverlaysOnImageData(imgData, overlays) {
+  if (!overlays || overlays.length === 0) return;
+  const imgW = imgData.width;
+  const imgH = imgData.height;
+  const dst = imgData.data;
+
+  for (const ov of overlays) {
+    const [cr, cg, cb] = ov.color;
+    const mask = ov.mask;
+    for (let r = 0; r < ov.rows; r++) {
+      const dstY = ov.originRow + r;
+      if (dstY < 0 || dstY >= imgH) continue;
+      const srcRowOff = r * ov.cols;
+      const dstRowOff = dstY * imgW;
+      for (let c = 0; c < ov.cols; c++) {
+        if (!mask[srcRowOff + c]) continue;
+        const dstX = ov.originCol + c;
+        if (dstX < 0 || dstX >= imgW) continue;
+        const p = (dstRowOff + dstX) * 4;
+        dst[p] = cr;
+        dst[p + 1] = cg;
+        dst[p + 2] = cb;
+        dst[p + 3] = 255;
+      }
+    }
+  }
+}
+
 /**
  * Extract pixel-related metadata from the live document (reflects unsaved tag edits!).
  */
@@ -60,6 +241,7 @@ export function extractPixelMeta(doc) {
   const tsInfo = doc.transferSyntaxInfo || {};
   const compressed = Boolean(pixelNode.encapsulated || tsInfo.compressed);
   const codec = tsInfo.codec || (compressed ? 'unknown' : 'raw');
+  const overlays = extractOverlayDefinitions(nodes, rows, cols, bitsAllocated, bitsStored, highBit);
 
   return {
     pixelNode,
@@ -80,6 +262,7 @@ export function extractPixelMeta(doc) {
     littleEndian: doc.littleEndian !== false,
     compressed,
     codec,
+    overlays,
     transferSyntaxName: tsInfo.name || doc.transferSyntaxUid || 'Unknown',
   };
 }
@@ -231,7 +414,8 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
       try {
         const blob = new Blob([frag], { type: 'image/jpeg' });
         const bitmap = await createImageBitmap(blob);
-        return { kind: 'bitmap', width: bitmap.width, height: bitmap.height, bitmap };
+        const overlays = extractOverlayPlanesForFrame(meta, frameIndex, null, true, 8);
+        return { kind: 'bitmap', width: bitmap.width, height: bitmap.height, bitmap, overlays };
       } catch {
         return {
           kind: 'unsupported',
@@ -252,7 +436,7 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
         const bitsAllocated = decoded.bytesPerSample * 8;
         const bitsStored = Math.min(bitsAllocated, meta.bitsStored || decoded.precision);
         const highBit = decoded.precision <= bitsStored ? bitsStored - 1 : Math.min(bitsAllocated - 1, meta.highBit);
-        return decodeUncompressedBytes(
+        const result = decodeUncompressedBytes(
           decoded.data,
           {
             ...meta,
@@ -267,6 +451,10 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
           },
           0
         );
+        if (result.kind !== 'unsupported') {
+          result.overlays = extractOverlayPlanesForFrame(meta, frameIndex, decoded.data, true, bitsAllocated);
+        }
+        return result;
       } catch {
         return {
           kind: 'unsupported',
@@ -280,7 +468,11 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
     if (meta.codec === 'rle') {
       try {
         const raw = decodeRleFrame(frag, meta.rows, meta.cols, meta.samplesPerPixel, meta.bitsAllocated);
-        return decodeUncompressedBytes(raw, { ...meta, littleEndian: true, planarConfig: 0 }, 0);
+        const result = decodeUncompressedBytes(raw, { ...meta, littleEndian: true, planarConfig: 0 }, 0);
+        if (result.kind !== 'unsupported') {
+          result.overlays = extractOverlayPlanesForFrame(meta, frameIndex, raw, true, meta.bitsAllocated);
+        }
+        return result;
       } catch {
         return {
           kind: 'unsupported',
@@ -304,7 +496,19 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
     return { kind: 'unsupported', reason: t('pixelErrEmpty'), codec: 'raw' };
   }
 
-  return decodeUncompressedBytes(rawBytes, meta, frameIndex);
+  const result = decodeUncompressedBytes(rawBytes, meta, frameIndex);
+  if (result.kind !== 'unsupported') {
+    const bytesPerSample = meta.bitsAllocated / 8;
+    const isPackedYbr = meta.photometric === 'YBR_FULL_422';
+    const frameByteSize = meta.rows * meta.cols * (isPackedYbr ? 2 : meta.samplesPerPixel) * bytesPerSample;
+    const frameStart = frameIndex * frameByteSize;
+    const frameSlice =
+      frameStart + frameByteSize <= rawBytes.length
+        ? rawBytes.subarray(frameStart, frameStart + frameByteSize)
+        : null;
+    result.overlays = extractOverlayPlanesForFrame(meta, frameIndex, frameSlice, meta.littleEndian, meta.bitsAllocated);
+  }
+  return result;
 }
 
 function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
@@ -427,20 +631,26 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
 }
 
 /**
- * Render decoded frame onto a target HTMLCanvasElement with Window/Level & Invert.
+ * Render decoded frame onto a target HTMLCanvasElement with Window/Level, Invert, and Overlays.
  */
-export function renderFrameToCanvas(canvas, decoded, meta, { wc, ww, invert = false }) {
+export function renderFrameToCanvas(canvas, decoded, meta, { wc, ww, invert = false, showOverlays = true }) {
   const ctx = canvas.getContext('2d');
   if (!ctx || !decoded || decoded.kind === 'unsupported') return;
 
   canvas.width = decoded.width;
   canvas.height = decoded.height;
+  const activeOverlays = showOverlays ? decoded.overlays : null;
 
   if (decoded.kind === 'bitmap') {
     ctx.save();
     if (invert) ctx.filter = 'invert(1)';
     ctx.drawImage(decoded.bitmap, 0, 0);
     ctx.restore();
+    if (activeOverlays && activeOverlays.length > 0) {
+      const imgData = ctx.getImageData(0, 0, decoded.width, decoded.height);
+      compositeOverlaysOnImageData(imgData, activeOverlays);
+      ctx.putImageData(imgData, 0, 0);
+    }
     return;
   }
 
@@ -457,6 +667,9 @@ export function renderFrameToCanvas(canvas, decoded, meta, { wc, ww, invert = fa
         dst[i + 2] = 255 - src[i + 2];
         dst[i + 3] = 255;
       }
+    }
+    if (activeOverlays && activeOverlays.length > 0) {
+      compositeOverlaysOnImageData(imgData, activeOverlays);
     }
     ctx.putImageData(imgData, 0, 0);
     return;
@@ -486,6 +699,9 @@ export function renderFrameToCanvas(canvas, decoded, meta, { wc, ww, invert = fa
     dst[p + 1] = g;
     dst[p + 2] = g;
     dst[p + 3] = 255;
+  }
+  if (activeOverlays && activeOverlays.length > 0) {
+    compositeOverlaysOnImageData(imgData, activeOverlays);
   }
   ctx.putImageData(imgData, 0, 0);
 }

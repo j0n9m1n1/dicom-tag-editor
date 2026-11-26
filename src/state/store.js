@@ -947,7 +947,7 @@ export class AppStore {
   }
 
   _isPixelDisplayTag(hex) {
-    return hex.startsWith('0028') || hex === '7FE00010' || hex === '00020010';
+    return hex.startsWith('0028') || hex === '7FE00010' || hex === '00020010' || /^60[01][02468ACE]/i.test(hex);
   }
 
   getDocumentRevision(doc) {

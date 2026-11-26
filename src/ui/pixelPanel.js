@@ -37,6 +37,7 @@ export class PixelPanel {
     this._wc = 40;
     this._ww = 400;
     this._invert = false;
+    this._showOverlays = true;
     this._zoom = 1;
     this._panX = 0;
     this._panY = 0;
@@ -282,6 +283,7 @@ export class PixelPanel {
         ${presetBtns}
         <div class="pixel-btn-row">
           <button class="btn btn-xs ${this._invert ? 'btn-primary' : ''}" id="btn-pixel-invert">${icons.contrast(13)} ${escapeHtml(t('pixelInvert'))}</button>
+          ${(meta.overlays?.length || 0) > 0 ? `<button class="btn btn-xs ${this._showOverlays ? 'btn-primary' : ''}" id="btn-pixel-overlay" title="${escapeHtml(t('pixelOverlayTitle', { n: meta.overlays.length }))}">${icons.layers(12)} ${escapeHtml(t('pixelOverlay'))}${meta.overlays.length > 1 ? ` (${meta.overlays.length})` : ''}</button>` : ''}
           ${isScalar ? `<button class="btn btn-xs" id="btn-pixel-auto">${escapeHtml(t('pixelAutoWl'))}</button>` : ''}
           ${isScalar && meta.windowCenter !== null ? `<button class="btn btn-xs" id="btn-pixel-tag-wl">${escapeHtml(t('pixelTagWl'))}</button>` : ''}
           <button class="btn btn-xs" id="btn-pixel-png" title="${escapeHtml(t('pixelExportPngTitle'))}">${icons.download(12)} PNG</button>
@@ -311,6 +313,7 @@ export class PixelPanel {
     const wwSlider = this.container.querySelector('#wl-ww');
     const frameSlider = this.container.querySelector('#pixel-frame');
     const invertBtn = this.container.querySelector('#btn-pixel-invert');
+    const overlayBtn = this.container.querySelector('#btn-pixel-overlay');
     const autoBtn = this.container.querySelector('#btn-pixel-auto');
     const tagWlBtn = this.container.querySelector('#btn-pixel-tag-wl');
     const pngBtn = this.container.querySelector('#btn-pixel-png');
@@ -355,6 +358,13 @@ export class PixelPanel {
       invertBtn.addEventListener('click', () => {
         this._invert = !this._invert;
         invertBtn.classList.toggle('btn-primary', this._invert);
+        this._redrawCanvas();
+      });
+    }
+    if (overlayBtn) {
+      overlayBtn.addEventListener('click', () => {
+        this._showOverlays = !this._showOverlays;
+        overlayBtn.classList.toggle('btn-primary', this._showOverlays);
         this._redrawCanvas();
       });
     }
@@ -547,6 +557,7 @@ export class PixelPanel {
       wc: this._wc,
       ww: this._ww,
       invert: this._invert,
+      showOverlays: this._showOverlays,
     });
   }
 }

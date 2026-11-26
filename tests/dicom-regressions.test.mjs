@@ -4,7 +4,7 @@ import { deflateRawSync, gzipSync, inflateRawSync } from 'node:zlib';
 import { parseDicomBuffer } from '../src/dicom/parser.js';
 import { decodeJpegLossless } from '../src/dicom/jpegLossless.js';
 import { getPhiTagInfo, isPhiNode, shiftDicomDateValue } from '../src/dicom/phiSpec.js';
-import { decodePixelFrame, extractPixelMeta } from '../src/dicom/pixelRenderer.js';
+import { decodePixelFrame, extractPixelMeta, renderFrameToCanvas } from '../src/dicom/pixelRenderer.js';
 import { runDicomQaCheck } from '../src/dicom/qaChecker.js';
 import { generateSampleDicomBuffer } from '../src/dicom/sampleGenerator.js';
 import { extractSrDocument, formatSrMarkdown, isSrDocument } from '../src/dicom/srParser.js';
@@ -1528,4 +1528,93 @@ test('JPEG Lossless (.57 / .70) pure-JS decoder round-trips 16-bit signed CT (in
     Array.from(decodedRgb.rgba),
     [255, 0, 10, 255, 128, 64, 32, 255, 0, 255, 128, 255, 10, 20, 30, 255]
   );
+});
+
+test('DICOM Overlay planes (60xx,3000 separate & embedded PixelData bit-planes) decode with origin/multi-frame and composite onto canvas', async () => {
+  // 4x2 16-bit unsigned grayscale (BitsStored=12, HighBit=11) with:
+  //  - Group 6000 separate (6000,3000) OverlayData: 2x1 at 1-based origin (2, 3) => (row=1, col=2) with bit 0 set -> pixel (1,2)
+  //  - Group 6002 embedded overlay at OverlayBitPosition=12 set on pixel (0,1) (sample = 0x1064: 12-bit value 100 + bit 12)
+  const rawPixels = new Uint8Array(4 * 2 * 2);
+  const pv = new DataView(rawPixels.buffer);
+  for (let i = 0; i < 8; i++) pv.setUint16(i * 2, 100, true);
+  pv.setUint16(1 * 2, 100 | (1 << 12), true); // pixel (row=0, col=1) carries embedded bit 12
+
+  const mk = (group, element, vr, value, opts = {}) => ({
+    group,
+    element,
+    tag: `${group.toString(16).toUpperCase().padStart(4, '0')}${element.toString(16).toUpperCase().padStart(4, '0')}`,
+    vr,
+    value,
+    isBinary: Boolean(opts.isBinary),
+    isSequence: false,
+    rawBytes: opts.rawBytes || null,
+    status: 'unchanged',
+  });
+
+  const doc = {
+    littleEndian: true,
+    transferSyntaxInfo: { name: 'Explicit VR Little Endian', compressed: false },
+    datasetNodes: [
+      mk(0x0028, 0x0002, 'US', '1'),
+      mk(0x0028, 0x0004, 'CS', 'MONOCHROME2'),
+      mk(0x0028, 0x0010, 'US', '2'),
+      mk(0x0028, 0x0011, 'US', '4'),
+      mk(0x0028, 0x0100, 'US', '16'),
+      mk(0x0028, 0x0101, 'US', '12'),
+      mk(0x0028, 0x0102, 'US', '11'),
+      mk(0x0028, 0x0103, 'US', '0'),
+      // Separate Overlay 6000 at origin row=2, col=3 (1-based -> row=1, col=2), 2 cols x 1 row, bit 0 set (0b01)
+      mk(0x6000, 0x0010, 'US', '1'),
+      mk(0x6000, 0x0011, 'US', '2'),
+      mk(0x6000, 0x0040, 'CS', 'G'),
+      mk(0x6000, 0x0050, 'SS', '2\\3'),
+      mk(0x6000, 0x0100, 'US', '1'),
+      mk(0x6000, 0x0102, 'US', '0'),
+      mk(0x6000, 0x3000, 'OB', '[Binary]', { isBinary: true, rawBytes: new Uint8Array([0x01]) }),
+      // Embedded Overlay 6002 in unused bit 12
+      mk(0x6002, 0x0010, 'US', '2'),
+      mk(0x6002, 0x0011, 'US', '4'),
+      mk(0x6002, 0x0040, 'CS', 'R'),
+      mk(0x6002, 0x0050, 'SS', '1\\1'),
+      mk(0x6002, 0x0100, 'US', '16'),
+      mk(0x6002, 0x0102, 'US', '12'),
+      mk(0x7fe0, 0x0010, 'OW', '[Binary]', { isBinary: true, rawBytes: rawPixels }),
+    ],
+  };
+
+  const meta = extractPixelMeta(doc);
+  assert.equal(meta.overlays.length, 2);
+  assert.equal(meta.overlays[0].embedded, false);
+  assert.equal(meta.overlays[1].embedded, true);
+
+  const decoded = await decodePixelFrame(meta, 0);
+  assert.equal(decoded.kind, 'scalar');
+  // Embedded bit 12 must NOT corrupt the 12-bit pixel value at (0,1)
+  assert.equal(decoded.values[1], 100);
+  assert.equal(decoded.overlays.length, 2);
+  assert.deepEqual(Array.from(decoded.overlays[0].mask), [1, 0]);
+  assert.equal(decoded.overlays[1].mask[1], 1);
+  assert.equal(decoded.overlays[1].mask[0], 0);
+
+  // Render onto mock canvas and verify overlay compositing ON vs OFF
+  let lastImgData = null;
+  const mockCanvas = {
+    width: 0,
+    height: 0,
+    getContext: () => ({
+      createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
+      putImageData: (img) => { lastImgData = img; },
+    }),
+  };
+
+  renderFrameToCanvas(mockCanvas, decoded, meta, { wc: 100, ww: 100, invert: false, showOverlays: true });
+  // Pixel (row=1, col=2) => idx 6 should have Group 6000 emerald green [34, 197, 94]
+  assert.deepEqual(Array.from(lastImgData.data.slice(6 * 4, 6 * 4 + 4)), [34, 197, 94, 255]);
+  // Pixel (row=0, col=1) => idx 1 should have Group 6002 sky cyan [56, 189, 248]
+  assert.deepEqual(Array.from(lastImgData.data.slice(1 * 4, 1 * 4 + 4)), [56, 189, 248, 255]);
+
+  renderFrameToCanvas(mockCanvas, decoded, meta, { wc: 100, ww: 100, invert: false, showOverlays: false });
+  // With showOverlays=false, both pixels revert to grayscale (R === G === B)
+  assert.equal(lastImgData.data[6 * 4], lastImgData.data[6 * 4 + 1]);
+  assert.equal(lastImgData.data[1 * 4], lastImgData.data[1 * 4 + 1]);
 });
