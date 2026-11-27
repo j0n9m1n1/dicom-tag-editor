@@ -402,6 +402,7 @@ export class TreeView {
       const spec = getVrSpec(n.vr);
       const invalid = n.status !== 'deleted' && n.validation && !n.validation.valid;
       const phiInfo = isPhiNode(n) && (n.isBinary || String(n.value || '').trim() !== '') ? getPhiTagInfo(n.tag) : null;
+      const readOnlyReason = getReadOnlyTagMessage(n.tag);
       const statusCls = `status-${n.status}`;
       const invalidCls = invalid ? 'has-error' : '';
       const privateCls = n.isPrivate ? 'is-private' : '';
@@ -450,7 +451,8 @@ export class TreeView {
           </div>
           <div class="col-vm">${vm}</div>
           <div class="col-len">${byteLen}</div>
-          <div class="col-val">
+          <div class="col-val${readOnlyReason ? ' has-readonly-badge' : ''}">
+            ${readOnlyReason ? `<button type="button" class="mini-badge tree-readonly-badge" data-tree-readonly tabindex="-1" title="${escapeHtml(t(readOnlyReason))}">${escapeHtml(t('tagReadOnly'))}</button>` : ''}
             ${valueHtml}
           </div>
         </div>
@@ -525,9 +527,13 @@ export class TreeView {
 
   startInlineEdit(nodeId) {
     const info = this.store.findNodeInfo(nodeId);
-    if (!info || info.isSeqItem || !canEditNodeValue(info.node)) {
+    if (!info || info.isSeqItem) return;
+    const readOnlyReason = getReadOnlyTagMessage(info.node.tag);
+    if (readOnlyReason) {
+      this.callbacks.onToast?.(t(readOnlyReason), 'info');
       return;
     }
+    if (!canEditNodeValue(info.node)) return;
     this.inlineEditId = nodeId;
     this.render();
   }
@@ -569,6 +575,10 @@ export class TreeView {
     if (!rowEl) return;
     const id = rowEl.dataset.rowId;
     this._selectRow(id);
+    if (e.target.closest('[data-tree-readonly]')) {
+      this.startInlineEdit(id);
+      return;
+    }
     if (rowEl.dataset.kind === 'section' || e.target.closest('[data-toggle]')) {
       this._toggleRow(this.visibleRows.find((row) => row.id === id));
     }
@@ -646,7 +656,7 @@ export class TreeView {
         targetId = current.parentId;
         break;
       case 'F2':
-        if (selectedIndex < 0 || current.kind !== 'tag' || !canEditNodeValue(current.node)) return;
+        if (selectedIndex < 0 || current.kind !== 'tag') return;
         e.preventDefault();
         this.startInlineEdit(current.id);
         return;

@@ -354,7 +354,8 @@ export class RawView {
         </div>
       </div>
 
-      <div class="raw-inline-body" id="raw-inline-body">
+      <p class="raw-readonly-hint" id="raw-readonly-hint"></p>
+      <div class="raw-inline-body" id="raw-inline-body" aria-describedby="raw-readonly-hint">
         <div class="raw-hex-ruler hidden" id="raw-hex-ruler" aria-hidden="true"></div>
         <pre class="raw-inline-pre" id="raw-inline-pre"></pre>
       </div>
@@ -483,6 +484,7 @@ export class RawView {
   }
 
   _syncLabels() {
+    const readOnlyHint = this.container.querySelector('#raw-readonly-hint');
     const searchInp = this.container.querySelector('#raw-search-input');
     const clearBtn = this.container.querySelector('#btn-raw-search-clear');
     const delLbl = this.container.querySelector('#raw-inc-del-lbl');
@@ -493,6 +495,7 @@ export class RawView {
     const exportBtn = this.container.querySelector('#btn-raw-export');
     const closeBtn = this.container.querySelector('#btn-raw-close');
 
+    if (readOnlyHint) readOnlyHint.textContent = t('rawReadOnlyHint');
     if (searchInp) searchInp.placeholder = t('rawSearchPh');
     if (clearBtn) clearBtn.title = t('searchClearTitle');
     if (delLbl) delLbl.textContent = t('modalRawIncludeDeleted');

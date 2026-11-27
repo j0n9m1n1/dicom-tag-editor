@@ -1639,6 +1639,28 @@ code {
   white-space: nowrap;
   padding-left: 4px;
 }
+.col-val.has-readonly-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.has-readonly-badge > :last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-readonly-badge {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tree-readonly-badge:hover,
+.tree-readonly-badge:focus-visible {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
 .val-text {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -3609,6 +3631,15 @@ kbd {
   align-items: center;
   gap: 5px;
   flex-shrink: 0;
+}
+
+.raw-readonly-hint {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
 }
 
 .raw-inline-body {
