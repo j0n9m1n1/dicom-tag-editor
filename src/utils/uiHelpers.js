@@ -53,29 +53,47 @@ export function downloadBlobBytes(data, mimeType, fileName) {
 }
 
 /**
+ * Strip path prefix and DICOM extensions (.dcm, .dicom, .dcm.gz, .dicom.gz, .gz).
+ * @param {string} fileName
+ * @returns {string}
+ */
+export function stripDicomBaseName(fileName) {
+  const base = String(fileName || 'dicom').split(/[\\/]/).at(-1) || 'dicom';
+  return base.replace(/\.(dcm|dicom)(\.gz)?$/i, '').replace(/\.gz$/i, '') || 'dicom';
+}
+
+/**
  * Prompt before closing a single modified file entry, then remove it from the store.
  * @param {import('../state/store.js').AppStore} store
  * @param {string} fileId
+ * @param {(failures: Array<any>) => void} [onFallbackErrors]
  */
-export async function confirmAndCloseFile(store, fileId) {
+export async function confirmAndCloseFile(store, fileId, onFallbackErrors = null) {
   const entry = store.files.find((f) => f.id === fileId);
   if (!entry) return;
   if (countDocChanges(entry.doc) && !window.confirm(t('confirmCloseFileDirty', { name: entry.name }))) {
     return;
   }
-  await store.removeFile(entry.id);
+  const res = await store.removeFile(entry.id);
+  if (res?.fallbackErrors?.length > 0) {
+    onFallbackErrors?.(res.fallbackErrors);
+  }
 }
 
 /**
  * Prompt before closing multiple entries if any contain unsaved edits, then remove them.
  * @param {import('../state/store.js').AppStore} store
  * @param {Array<any>} entries
+ * @param {(failures: Array<any>) => void} [onFallbackErrors]
  */
-export async function confirmAndCloseFiles(store, entries) {
+export async function confirmAndCloseFiles(store, entries, onFallbackErrors = null) {
   if (!entries || entries.length === 0) return;
   const dirtyCount = entries.filter((entry) => entry.doc && countDocChanges(entry.doc) > 0).length;
   if (dirtyCount > 0 && !window.confirm(t('confirmCloseMultiDirty', { count: dirtyCount }))) {
     return;
   }
-  await store.removeFiles(entries.map((e) => e.id));
+  const res = await store.removeFiles(entries.map((e) => e.id));
+  if (res?.fallbackErrors?.length > 0) {
+    onFallbackErrors?.(res.fallbackErrors);
+  }
 }

@@ -13,6 +13,8 @@
  */
 
 import { decodeJpegLossless } from './jpegLossless.js';
+import { basicOffsetFrameStarts } from './encapsulation.js';
+import { checkedPixelCount, MAX_FRAME_PIXELS } from './pixelGeometry.js';
 import { t } from '../i18n.js';
 
 function findTagValue(nodes, tagHex) {
@@ -27,6 +29,7 @@ function findTagNode(nodes, tagHex) {
 function parseFirstNumber(val, fallback) {
   if (val === null || val === undefined || val === '') return fallback;
   const first = String(val).split('\\')[0].trim();
+  if (!first) return fallback;
   const n = Number(first);
   return Number.isFinite(n) ? n : fallback;
 }
@@ -39,6 +42,10 @@ const OVERLAY_PALETTE = [
   [163, 230, 53],  // lime (6008)
   [192, 132, 252], // violet (600A)
 ];
+
+function oppositeWordByte(offset) {
+  return offset % 2 ? offset - 1 : offset + 1;
+}
 
 function extractOverlayDefinitions(nodes, defaultRows, defaultCols, bitsAllocated, bitsStored, highBit) {
   const byGroup = new Map();
@@ -67,7 +74,7 @@ function extractOverlayDefinitions(nodes, defaultRows, defaultCols, bitsAllocate
     const dataNode = tags.get(0x3000) || null;
     const rows = parseFirstNumber(getVal(0x0010), defaultRows);
     const cols = parseFirstNumber(getVal(0x0011), defaultCols);
-    if (rows <= 0 || cols <= 0) continue;
+    if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows <= 0 || cols <= 0) continue;
 
     const originRaw = getVal(0x0050);
     const originParts = originRaw ? String(originRaw).split('\\').map((s) => Number(s.trim())) : [];
@@ -112,28 +119,32 @@ function extractOverlayDefinitions(nodes, defaultRows, defaultCols, bitsAllocate
  * Extract active 1-bit overlay masks for a given frame index from both
  * separate (60xx,3000) OverlayData and embedded PixelData bit-planes.
  */
-function extractOverlayPlanesForFrame(meta, frameIndex, rawFrameBytes, rawLittleEndian, rawBitsAllocated) {
+function extractOverlayPlanesForFrame(meta, frameIndex, rawFrameBytes, rawLittleEndian, rawBitsAllocated, frameStart = 0, swapWords = false) {
   const defs = meta.overlays || [];
   if (defs.length === 0) return [];
 
   const activePlanes = [];
+  let pixelsRemaining = MAX_FRAME_PIXELS;
   for (const ov of defs) {
     // Check multi-frame overlay visibility window (1-based ImageFrameOrigin)
     const ovFrameIdx = ov.appliesToAllFrames ? 0 : (frameIndex + 1) - ov.imageFrameOrigin;
     if (ovFrameIdx < 0 || ovFrameIdx >= ov.numberOfFrames) continue;
 
     const pixelCount = ov.rows * ov.cols;
-    const mask = new Uint8Array(pixelCount);
+    if (!Number.isSafeInteger(pixelCount) || pixelCount < 1 || pixelCount > pixelsRemaining) continue;
 
     if (!ov.embedded && ov.dataNode?.rawBytes) {
       const src = ov.dataNode.rawBytes;
       const isBigEndianOw = meta.littleEndian === false && ov.dataNode.vr === 'OW';
       const bitStart = ovFrameIdx * pixelCount;
+      if (!Number.isSafeInteger(bitStart) || bitStart + pixelCount > src.length * 8) continue;
+      const mask = new Uint8Array(pixelCount);
+      pixelsRemaining -= pixelCount;
       let anySet = false;
       for (let i = 0; i < pixelCount; i++) {
         const bitIdx = bitStart + i;
-        let byteIdx = bitIdx >> 3;
-        if (isBigEndianOw) byteIdx ^= 1;
+        let byteIdx = Math.floor(bitIdx / 8);
+        if (isBigEndianOw) byteIdx = oppositeWordByte(byteIdx);
         if (byteIdx >= src.length) break;
         if ((src[byteIdx] >>> (bitIdx & 7)) & 1) {
           mask[i] = 1;
@@ -155,13 +166,16 @@ function extractOverlayPlanesForFrame(meta, frameIndex, rawFrameBytes, rawLittle
         });
       }
     } else if (ov.embedded && rawFrameBytes && (rawBitsAllocated === 8 || rawBitsAllocated === 16)) {
+      const end = frameStart + pixelCount * (rawBitsAllocated / 8);
+      if (pixelCount > meta.rows * meta.cols || end + (swapWords ? end % 2 : 0) > rawFrameBytes.length) continue;
+      const mask = new Uint8Array(pixelCount);
+      pixelsRemaining -= pixelCount;
       const bitMask = 1 << ov.bitPosition;
       const view = new DataView(rawFrameBytes.buffer, rawFrameBytes.byteOffset, rawFrameBytes.byteLength);
-      const bytesPerSample = rawBitsAllocated / 8;
-      const maxPixels = Math.min(pixelCount, Math.floor(rawFrameBytes.length / bytesPerSample));
       let anySet = false;
-      for (let i = 0; i < maxPixels; i++) {
-        const sample = rawBitsAllocated === 8 ? view.getUint8(i) : view.getUint16(i * 2, rawLittleEndian);
+      for (let i = 0; i < pixelCount; i++) {
+        const sample = rawBitsAllocated === 8 ? view.getUint8(swapWords ? oppositeWordByte(frameStart + i) : frameStart + i)
+          : view.getUint16(frameStart + i * 2, rawLittleEndian);
         if (sample & bitMask) {
           mask[i] = 1;
           anySet = true;
@@ -184,6 +198,34 @@ function extractOverlayPlanesForFrame(meta, frameIndex, rawFrameBytes, rawLittle
     }
   }
   return activePlanes;
+}
+
+function sequenceItemNodes(nodes, tag, index = 0) {
+  return findTagNode(nodes, tag)?.items?.[index]?.children || [];
+}
+
+function readPresentationTags(nodes, fallback = {}) {
+  return {
+    rescaleSlope: parseFirstNumber(findTagValue(nodes, '00281053'), fallback.rescaleSlope ?? 1),
+    rescaleIntercept: parseFirstNumber(findTagValue(nodes, '00281052'), fallback.rescaleIntercept ?? 0),
+    windowCenter: parseFirstNumber(findTagValue(nodes, '00281050'), fallback.windowCenter ?? null),
+    windowWidth: parseFirstNumber(findTagValue(nodes, '00281051'), fallback.windowWidth ?? null),
+    voiFunction: (findTagValue(nodes, '00281056') || fallback.voiFunction || 'LINEAR').trim().toUpperCase(),
+  };
+}
+
+function framePresentation(meta, frameIndex) {
+  const group = meta.perFrameGroups?.[frameIndex]?.children;
+  if (!group) return meta;
+  return { ...meta,
+    ...readPresentationTags(sequenceItemNodes(group, '00289145'), meta),
+    ...readVoiTags(sequenceItemNodes(group, '00289132'), meta),
+  };
+}
+
+function readVoiTags(nodes, fallback) {
+  const { windowCenter, windowWidth, voiFunction } = readPresentationTags(nodes, fallback);
+  return { windowCenter, windowWidth, voiFunction };
 }
 
 function compositeOverlaysOnImageData(imgData, overlays) {
@@ -233,12 +275,9 @@ export function extractPixelMeta(doc) {
   const bitsStored = parseFirstNumber(findTagValue(nodes, '00280101'), bitsAllocated);
   const highBit = parseFirstNumber(findTagValue(nodes, '00280102'), bitsStored - 1);
   const pixelRepresentation = parseFirstNumber(findTagValue(nodes, '00280103'), 0); // 0=unsigned, 1=signed
-  const rescaleIntercept = parseFirstNumber(findTagValue(nodes, '00281052'), 0);
-  const rescaleSlope = parseFirstNumber(findTagValue(nodes, '00281053'), 1);
-  const windowCenterRaw = findTagValue(nodes, '00281050');
-  const windowWidthRaw = findTagValue(nodes, '00281051');
-  const windowCenter = windowCenterRaw !== null ? parseFirstNumber(windowCenterRaw, null) : null;
-  const windowWidth = windowWidthRaw !== null ? parseFirstNumber(windowWidthRaw, null) : null;
+  const shared = sequenceItemNodes(nodes, '52009229');
+  const rootPresentation = readPresentationTags(nodes);
+  const sharedPresentation = readPresentationTags(sequenceItemNodes(shared, '00289145'), rootPresentation);
 
   const tsInfo = doc.transferSyntaxInfo || {};
   const compressed = Boolean(pixelNode.encapsulated || tsInfo.compressed);
@@ -257,13 +296,13 @@ export function extractPixelMeta(doc) {
     bitsStored,
     highBit,
     pixelRepresentation,
-    rescaleIntercept,
-    rescaleSlope,
-    windowCenter,
-    windowWidth,
+    ...sharedPresentation,
+    ...readVoiTags(sequenceItemNodes(shared, '00289132'), sharedPresentation),
+    perFrameGroups: findTagNode(nodes, '52009230')?.items,
     littleEndian: doc.littleEndian !== false,
     compressed,
     codec,
+    transferSyntaxUid: doc.transferSyntaxUid,
     overlays,
     transferSyntaxName: tsInfo.name || doc.transferSyntaxUid || 'Unknown',
   };
@@ -278,47 +317,50 @@ function decodeRleFrame(fragment, rows, cols, samplesPerPixel, bitsAllocated) {
   }
   const view = new DataView(fragment.buffer, fragment.byteOffset, fragment.byteLength);
   const numSegments = view.getUint32(0, true);
-  if (numSegments < 1 || numSegments > 15) {
+  const pixelCount = checkedPixelCount(rows, cols);
+  if (!((samplesPerPixel === 1 && (bitsAllocated === 8 || bitsAllocated === 16)) ||
+      (samplesPerPixel === 3 && bitsAllocated === 8))) {
+    throw new Error('Unsupported RLE sample format.');
+  }
+  const bytesPerSample = bitsAllocated / 8;
+  if (numSegments !== samplesPerPixel * bytesPerSample) {
     throw new Error('Invalid RLE segment count.');
   }
   const offsets = [];
   for (let i = 0; i < numSegments; i++) {
     const off = view.getUint32(4 + i * 4, true);
-    if (off < 64 || off > fragment.length) {
+    if ((i === 0 ? off !== 64 : off <= offsets[i - 1]) || off >= fragment.length || off % 2) {
       throw new Error('Invalid RLE segment offset.');
     }
     offsets.push(off);
   }
 
-  const pixelCount = rows * cols;
-  const bytesPerSample = Math.ceil(bitsAllocated / 8);
-  const expectedSegments = samplesPerPixel * bytesPerSample;
   const decodedSegments = [];
 
-  for (let s = 0; s < Math.min(numSegments, expectedSegments); s++) {
+  for (let s = 0; s < numSegments; s++) {
     const start = offsets[s];
-    const end = s + 1 < numSegments && offsets[s + 1] > start ? offsets[s + 1] : fragment.length;
+    const end = offsets[s + 1] ?? fragment.length;
+    if ((end - start) % 2) throw new Error('RLE segment must have even length.');
     const segOut = new Uint8Array(pixelCount);
     let inPos = start;
     let outPos = 0;
 
-    while (inPos < end && outPos < pixelCount) {
-      let n = fragment[inPos++];
-      if (n > 127) n -= 256; // signed int8
-      if (n >= 0 && n <= 127) {
-        const count = n + 1;
-        for (let k = 0; k < count && inPos < end && outPos < pixelCount; k++) {
-          segOut[outPos++] = fragment[inPos++];
-        }
-      } else if (n >= -127 && n <= -1) {
-        const count = -n + 1;
-        const val = inPos < end ? fragment[inPos++] : 0;
-        for (let k = 0; k < count && outPos < pixelCount; k++) {
-          segOut[outPos++] = val;
-        }
+    while (outPos < pixelCount) {
+      if (inPos >= end) throw new Error('Truncated RLE segment.');
+      const command = view.getInt8(inPos++);
+      if (command === -128) continue;
+      const count = Math.abs(command) + 1;
+      const encodedBytes = command < 0 ? 1 : count;
+      if (inPos + encodedBytes > end || count > cols - outPos % cols) {
+        throw new Error('Invalid RLE run length.');
       }
-      // n === -128 is a no-op
+      if (command < 0) segOut.fill(fragment[inPos], outPos, outPos + count);
+      else segOut.set(fragment.subarray(inPos, inPos + count), outPos);
+      inPos += encodedBytes;
+      outPos += count;
     }
+    while (inPos < end && fragment[inPos] === 0x80) inPos++;
+    if (inPos !== end && !(inPos === end - 1 && fragment[inPos] === 0)) throw new Error('Unexpected RLE segment data.');
     decodedSegments.push(segOut);
   }
 
@@ -425,28 +467,22 @@ function findJpegFragmentRanges(fragments) {
 function extractEncapsulatedFrameBytes(pixelNode, numberOfFrames, frameIndex, codec) {
   const frags = pixelNode.fragments || [];
   if (frags.length === 0 || frameIndex < 0 || frameIndex >= numberOfFrames) return null;
+  const bot = pixelNode.basicOffsetTable;
+  let starts;
+  try {
+    starts = basicOffsetFrameStarts(bot, frags, numberOfFrames);
+  } catch {
+    return null;
+  }
+  if (codec === 'rle' && (frags.length !== numberOfFrames || (starts && starts[frameIndex] !== frameIndex))) return null;
+  if (starts) return concatFragments(frags.slice(starts[frameIndex], starts[frameIndex + 1]));
   if (numberOfFrames <= 1) {
     return concatFragments(frags);
   }
   if (frags.length === numberOfFrames) {
     return frags[frameIndex];
   }
-  const bot = pixelNode.basicOffsetTable;
-  if (bot && bot.length >= numberOfFrames * 4) {
-    const view = new DataView(bot.buffer, bot.byteOffset, bot.byteLength);
-    const startOff = view.getUint32(frameIndex * 4, true);
-    const endOff = frameIndex + 1 < numberOfFrames ? view.getUint32((frameIndex + 1) * 4, true) : Infinity;
-    const selected = [];
-    let cursor = 0;
-    for (const f of frags) {
-      if (cursor >= startOff && cursor < endOff) {
-        selected.push(f);
-      }
-      cursor += 8 + f.length; // each fragment item has an 8-byte (FFFE,E000)+length header
-    }
-    if (selected.length > 0) return concatFragments(selected);
-  }
-  if (bot?.length || (codec !== 'jpeg-lossless' && codec !== 'jpeg-baseline')) return null;
+  if (codec !== 'jpeg-lossless' && codec !== 'jpeg-baseline') return null;
 
   let ranges = jpegFragmentRanges.get(frags);
   if (!ranges) {
@@ -456,6 +492,19 @@ function extractEncapsulatedFrameBytes(pixelNode, numberOfFrames, frameIndex, co
   if (ranges.length !== numberOfFrames) return null;
   const [first, end] = ranges[frameIndex];
   return concatFragments(frags.slice(first, end));
+}
+
+function grayscaleBitmapBytes(bitmap) {
+  const canvas = typeof OffscreenCanvas === 'function'
+    ? new OffscreenCanvas(bitmap.width, bitmap.height) : document.createElement('canvas');
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  context.drawImage(bitmap, 0, 0);
+  const rgba = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+  const samples = new Uint8Array(bitmap.width * bitmap.height);
+  for (let i = 0; i < samples.length; i++) samples[i] = rgba[i * 4];
+  return samples;
 }
 
 /**
@@ -469,9 +518,15 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
   if (!meta) {
     return { kind: 'unsupported', reason: t('pixelErrNoTag'), codec: 'none' };
   }
-  if (meta.rows <= 0 || meta.cols <= 0) {
+  try {
+    checkedPixelCount(meta.rows, meta.cols);
+  } catch {
     return { kind: 'unsupported', reason: t('pixelErrDim'), codec: meta.codec };
   }
+  if (!Number.isSafeInteger(frameIndex) || frameIndex < 0 || (meta.numberOfFrames && frameIndex >= meta.numberOfFrames)) {
+    return { kind: 'unsupported', reason: t('pixelErrDim'), codec: meta.codec };
+  }
+  meta = framePresentation(meta, frameIndex);
 
   // 1) Compressed formats
   if (meta.compressed) {
@@ -482,12 +537,27 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
 
     // JPEG Baseline / Extended via browser native decoder
     if (meta.codec === 'jpeg-baseline') {
+      let bitmap;
       try {
         const blob = new Blob([frag], { type: 'image/jpeg' });
-        const bitmap = await createImageBitmap(blob);
+        bitmap = await createImageBitmap(blob, { colorSpaceConversion: 'none', imageOrientation: 'none' });
+        checkedPixelCount(bitmap.height, bitmap.width);
         const overlays = extractOverlayPlanesForFrame(meta, frameIndex, null, true, 8);
+        if (meta.photometric === 'MONOCHROME1' || meta.photometric === 'MONOCHROME2') {
+          try {
+            const decoded = decodeUncompressedBytes(grayscaleBitmapBytes(bitmap), {
+              ...meta, rows: bitmap.height, cols: bitmap.width, samplesPerPixel: 1, bitsAllocated: 8,
+              bitsStored: 8, highBit: 7, pixelRepresentation: 0, littleEndian: true,
+            }, 0);
+            return { ...decoded, overlays };
+          } finally {
+            bitmap.close?.();
+            bitmap = null;
+          }
+        }
         return { kind: 'bitmap', width: bitmap.width, height: bitmap.height, bitmap, overlays };
       } catch {
+        bitmap?.close?.();
         return {
           kind: 'unsupported',
           reason: t('pixelErrJpeg', { ts: meta.transferSyntaxName }),
@@ -503,6 +573,7 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
           rows: meta.rows,
           cols: meta.cols,
           bitsAllocated: meta.bitsAllocated,
+          firstOrderOnly: meta.transferSyntaxUid === '1.2.840.10008.1.2.4.70',
         });
         const bitsAllocated = decoded.bytesPerSample * 8;
         const bitsStored = Math.min(bitsAllocated, meta.bitsStored || decoded.precision);
@@ -573,13 +644,14 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
     const isPackedYbr = meta.photometric === 'YBR_FULL_422';
     const frameByteSize = meta.rows * meta.cols * (isPackedYbr ? 2 : meta.samplesPerPixel) * bytesPerSample;
     const frameStart = frameIndex * frameByteSize;
-    const frameSlice =
-      frameStart + frameByteSize <= rawBytes.length
-        ? rawBytes.subarray(frameStart, frameStart + frameByteSize)
-        : null;
-    result.overlays = extractOverlayPlanesForFrame(meta, frameIndex, frameSlice, meta.littleEndian, meta.bitsAllocated);
+    result.overlays = extractOverlayPlanesForFrame(meta, frameIndex, rawBytes, meta.littleEndian,
+      meta.bitsAllocated, frameStart, usesBigEndianBytePairs(meta));
   }
   return result;
+}
+
+function usesBigEndianBytePairs(meta) {
+  return meta.bitsAllocated === 8 && meta.littleEndian === false && meta.pixelNode?.vr === 'OW';
 }
 
 function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
@@ -590,11 +662,11 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
     photometric,
     planarConfig,
     bitsAllocated,
-    bitsStored,
+    bitsStored = bitsAllocated,
     highBit = bitsStored - 1,
     pixelRepresentation,
-    rescaleSlope,
-    rescaleIntercept,
+    rescaleSlope = 1,
+    rescaleIntercept = 0,
     littleEndian,
   } = meta;
 
@@ -617,8 +689,10 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
   const bytesPerSample = bitsAllocated / 8;
   const frameByteSize = pixelCount * (isPackedYbr ? 2 : samplesPerPixel) * bytesPerSample;
   const frameOffset = frameIndex * frameByteSize;
+  const swapWords = usesBigEndianBytePairs(meta);
 
-  if (frameOffset + frameByteSize > rawBytes.length) {
+  const frameEnd = frameOffset + frameByteSize;
+  if (frameEnd + (swapWords ? frameEnd % 2 : 0) > rawBytes.length) {
     return {
       kind: 'unsupported',
       reason: t('pixelErrSmall', { len: rawBytes.length, cols, rows }),
@@ -626,20 +700,29 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
     };
   }
 
+  if (!Number.isInteger(bitsStored) || !Number.isInteger(highBit) ||
+      bitsStored < 1 || highBit < bitsStored - 1 || highBit >= bitsAllocated) {
+    return { kind: 'unsupported', reason: t('pixelErrStoredBits'), codec: 'raw' };
+  }
+  const shift = highBit + 1 - bitsStored;
+  const rangeSize = 1 << bitsStored;
+  const readByteSample = (offset) => (rawBytes[swapWords ? oppositeWordByte(offset) : offset] >>> shift) & (rangeSize - 1);
   if (isColor) {
     const rgba = new Uint8ClampedArray(pixelCount * 4);
+    const scale = 255 / (rangeSize - 1);
+    const middle = rangeSize / 2;
     const writePixel = (i, a, b, c) => {
       const out = i * 4;
       if (photometric === 'RGB') {
-        rgba[out] = a;
-        rgba[out + 1] = b;
-        rgba[out + 2] = c;
+        rgba[out] = a * scale;
+        rgba[out + 1] = b * scale;
+        rgba[out + 2] = c * scale;
       } else {
-        const cb = b - 128;
-        const cr = c - 128;
-        rgba[out] = a + 1.402 * cr;
-        rgba[out + 1] = a - 0.344136 * cb - 0.714136 * cr;
-        rgba[out + 2] = a + 1.772 * cb;
+        const cb = b - middle;
+        const cr = c - middle;
+        rgba[out] = (a + 1.402 * cr) * scale;
+        rgba[out + 1] = (a - 0.344136 * cb - 0.714136 * cr) * scale;
+        rgba[out + 2] = (a + 1.772 * cb) * scale;
       }
       rgba[out + 3] = 255;
     };
@@ -647,37 +730,32 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
       // Each Y1, Y2, Cb, Cr group represents two adjacent pixels.
       for (let i = 0; i < pixelCount; i += 2) {
         const start = frameOffset + i * 2;
-        writePixel(i, rawBytes[start], rawBytes[start + 2], rawBytes[start + 3]);
-        writePixel(i + 1, rawBytes[start + 1], rawBytes[start + 2], rawBytes[start + 3]);
+        const cb = readByteSample(start + 2);
+        const cr = readByteSample(start + 3);
+        writePixel(i, readByteSample(start), cb, cr);
+        writePixel(i + 1, readByteSample(start + 1), cb, cr);
       }
     } else {
       const stride = planarConfig === 1 ? 1 : 3;
       const channelOffset = planarConfig === 1 ? pixelCount : 1;
       for (let i = 0; i < pixelCount; i++) {
         const start = frameOffset + i * stride;
-        writePixel(i, rawBytes[start], rawBytes[start + channelOffset], rawBytes[start + channelOffset * 2]);
+        writePixel(i, readByteSample(start), readByteSample(start + channelOffset), readByteSample(start + channelOffset * 2));
       }
     }
     return { kind: 'rgb', width: cols, height: rows, rgba };
   }
 
   // Grayscale (8-bit or 16-bit)
-  if (!Number.isInteger(bitsStored) || !Number.isInteger(highBit) ||
-      bitsStored < 1 || highBit < bitsStored - 1 || highBit >= bitsAllocated) {
-    return { kind: 'unsupported', reason: t('pixelErrStoredBits'), codec: 'raw' };
-  }
   const values = new Float32Array(pixelCount);
-  const view = new DataView(rawBytes.buffer, rawBytes.byteOffset + frameOffset, frameByteSize);
+  const view = bitsAllocated === 16 ? new DataView(rawBytes.buffer, rawBytes.byteOffset + frameOffset, frameByteSize) : null;
 
   let min = Infinity;
   let max = -Infinity;
-  const rangeSize = 1 << bitsStored;
   const signBit = rangeSize >> 1;
-  const shift = highBit + 1 - bitsStored;
 
   for (let i = 0; i < pixelCount; i++) {
-    const sample = bitsAllocated === 8 ? view.getUint8(i) : view.getUint16(i * 2, littleEndian);
-    let value = (sample >>> shift) & (rangeSize - 1);
+    let value = view ? (view.getUint16(i * 2, littleEndian) >>> shift) & (rangeSize - 1) : readByteSample(frameOffset + i);
     if (pixelRepresentation === 1 && (value & signBit)) value -= rangeSize;
     const modalityValue = value * rescaleSlope + rescaleIntercept;
     values[i] = modalityValue;
@@ -698,13 +776,16 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
     max,
     autoWC,
     autoWW,
+    windowCenter: meta.windowCenter ?? null,
+    windowWidth: meta.windowWidth ?? null,
+    voiFunction: meta.voiFunction || 'LINEAR',
   };
 }
 
 /**
  * Render decoded frame onto a target HTMLCanvasElement with Window/Level, Invert, and Overlays.
  */
-export function renderFrameToCanvas(canvas, decoded, meta, { wc, ww, invert = false, showOverlays = true }) {
+export function renderFrameToCanvas(canvas, decoded, meta, { wc, ww, invert = false, showOverlays = true } = {}) {
   const ctx = canvas.getContext('2d');
   if (!ctx || !decoded || decoded.kind === 'unsupported') return;
 
@@ -746,23 +827,28 @@ export function renderFrameToCanvas(canvas, decoded, meta, { wc, ww, invert = fa
     return;
   }
 
-  // Scalar grayscale with linear VOI LUT (DICOM PS3.3 C.11.2.1.2)
+  // Scalar grayscale with VOI windowing (DICOM PS3.3 C.11.2).
   const imgData = ctx.createImageData(decoded.width, decoded.height);
   const dst = imgData.data;
   const vals = decoded.values;
-  const width = Math.max(1, ww);
-  const low = wc - 0.5 - (width - 1) / 2;
-  const high = wc - 0.5 + (width - 1) / 2;
-  const invSpan = 255 / Math.max(1e-6, width - 1);
+  const center = wc ?? decoded.windowCenter ?? meta.windowCenter ?? decoded.autoWC;
+  const width = ww ?? decoded.windowWidth ?? meta.windowWidth ?? decoded.autoWW;
+  const voi = decoded.voiFunction || meta.voiFunction || 'LINEAR';
+  const span = voi === 'LINEAR_EXACT' ? Math.max(Number.MIN_VALUE, width) : Math.max(1, width) - 1;
+  const midpoint = voi === 'LINEAR_EXACT' ? center : center - 0.5;
+  const low = midpoint - span / 2;
+  const high = midpoint + span / 2;
+  const sigmoidWidth = Math.max(Number.MIN_VALUE, width);
   const mono1 = meta.photometric === 'MONOCHROME1';
   const shouldInvert = mono1 ? !invert : invert;
 
   for (let i = 0; i < vals.length; i++) {
     const v = vals[i];
     let g;
-    if (v <= low) g = 0;
+    if (voi === 'SIGMOID') g = Math.round(255 / (1 + Math.exp(-4 * (v - center) / sigmoidWidth)));
+    else if (v <= low) g = 0;
     else if (v > high) g = 255;
-    else g = Math.round((v - (wc - 0.5)) * invSpan + 127.5);
+    else g = Math.round(((v - midpoint) / span + 0.5) * 255);
 
     if (shouldInvert) g = 255 - g;
     const p = i * 4;

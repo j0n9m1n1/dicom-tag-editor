@@ -53,12 +53,42 @@ async function isSameFile(entry, item) {
   }
 }
 
+const MAX_AUTO_EXPAND_ITEMS = 40;
+const MAX_AUTO_EXPAND_PER_SEQ = 20;
+const UNDO_COALESCE_MS = 800;
+
+function isWellKnownDicomUid(uid) {
+  return String(uid || '').startsWith('1.2.840.10008.');
+}
+
+function truncateAtWordBoundary(str, maxLen = 64) {
+  const clean = String(str || '').trim();
+  if (clean.length <= maxLen) return clean;
+  const slice = clean.slice(0, maxLen);
+  const lastSpace = slice.lastIndexOf(' ');
+  return (lastSpace > maxLen * 0.5 ? slice.slice(0, lastSpace) : slice).trimEnd();
+}
+
+function insertSorted(list, node) {
+  if (!list.includes(node)) {
+    list.push(node);
+    list.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+  }
+}
+
 function buildDefaultExpandedIds(doc) {
   const expanded = new Set(['__meta__', '__main__']);
+  let autoCount = 0;
   for (const n of doc.datasetNodes || []) {
     if (n.isSequence) {
-      expanded.add(n.id);
-      for (const item of n.items || []) expanded.add(item.id);
+      const items = n.items || [];
+      if (items.length <= MAX_AUTO_EXPAND_PER_SEQ && autoCount + items.length <= MAX_AUTO_EXPAND_ITEMS) {
+        expanded.add(n.id);
+        for (const item of items) {
+          expanded.add(item.id);
+          autoCount++;
+        }
+      }
     }
   }
   return expanded;
@@ -70,6 +100,7 @@ export function countDocChanges(doc) {
   const walk = (nodes) => {
     for (const n of nodes || []) {
       if (n.status !== 'unchanged') count++;
+      if (n.status === 'deleted') continue;
       if (n.isSequence && n.items) {
         for (const item of n.items) walk(item.children);
       }
@@ -104,8 +135,14 @@ export function getReadOnlyTagMessage(tag) {
   return null;
 }
 
-export function canEditNodeValue(node) {
-  return !node.isSequence && !node.isBinary && node.status !== 'deleted' && !getReadOnlyTagMessage(node.tag);
+export function canEditNodeValue(node, info = null) {
+  return (
+    !node.isSequence &&
+    !node.isBinary &&
+    node.status !== 'deleted' &&
+    !info?.ancestorDeleted &&
+    !getReadOnlyTagMessage(node.tag)
+  );
 }
 
 export class AppStore {
@@ -154,7 +191,13 @@ export class AppStore {
     this._sequenceBaselines = new WeakMap();
     this._pendingParses = new WeakMap();
     this.anonymizing = false;
+    this.lastAnonymizeDateSkips = 0;
     this._batchEditing = false;
+    this.lastEditedNodeId = null;
+  }
+
+  get isBusy() {
+    return Boolean(this.anonymizing || this._batchEditing);
   }
 
   subscribe(fn) {
@@ -703,32 +746,38 @@ export class AppStore {
 
     if (wasActive) {
       const opToken = ++this._activeOpToken;
+      // Unbind removed file immediately so no edits hit a detached zombie document during async parse.
+      this._bindEntryToActive(null);
       // Prefer a nearby file and continue past entries that cannot be parsed.
       const next = this.files.slice(idx).concat(this.files.slice(0, idx).reverse());
       let active = null;
+      const fallbackErrors = [];
       for (const entry of next) {
         try {
           await this.ensureEntryParsed(entry);
-          if (opToken !== this._activeOpToken) return;
+          if (opToken !== this._activeOpToken) return { fallbackErrors };
           if (this.files.includes(entry)) {
             active = entry;
             break;
           }
-        } catch {
-          if (opToken !== this._activeOpToken) return;
+        } catch (err) {
+          if (opToken !== this._activeOpToken) return { fallbackErrors };
+          fallbackErrors.push({ fileName: entry.name, size: entry.size, error: err });
           continue;
         }
       }
-      if (opToken !== this._activeOpToken) return;
+      if (opToken !== this._activeOpToken) return { fallbackErrors };
       if (!active) {
         this._resetEmptyWorkspace();
-        return;
+        return { fallbackErrors };
       }
       this._bindEntryToActive(active);
       this.pixelVersion++;
       this.emit('document');
+      return { fallbackErrors };
     } else {
       this.emit('files');
+      return { fallbackErrors: [] };
     }
   }
 
@@ -787,32 +836,37 @@ export class AppStore {
 
     if (wasActive) {
       const opToken = ++this._activeOpToken;
+      this._bindEntryToActive(null);
       const idx = Math.max(0, Math.min(firstRemovedIdx, this.files.length - 1));
       const next = this.files.slice(idx).concat(this.files.slice(0, idx).reverse());
       let active = null;
+      const fallbackErrors = [];
       for (const entry of next) {
         try {
           await this.ensureEntryParsed(entry);
-          if (opToken !== this._activeOpToken) return;
+          if (opToken !== this._activeOpToken) return { fallbackErrors };
           if (this.files.includes(entry)) {
             active = entry;
             break;
           }
-        } catch {
-          if (opToken !== this._activeOpToken) return;
+        } catch (err) {
+          if (opToken !== this._activeOpToken) return { fallbackErrors };
+          fallbackErrors.push({ fileName: entry.name, size: entry.size, error: err });
           continue;
         }
       }
-      if (opToken !== this._activeOpToken) return;
+      if (opToken !== this._activeOpToken) return { fallbackErrors };
       if (!active) {
         this._resetEmptyWorkspace();
-        return;
+        return { fallbackErrors };
       }
       this._bindEntryToActive(active);
       this.pixelVersion++;
       this.emit('document');
+      return { fallbackErrors };
     } else {
       this.emit('files');
+      return { fallbackErrors: [] };
     }
   }
 
@@ -890,7 +944,7 @@ export class AppStore {
   findNodeInfo(targetId) {
     if (!this.doc || !targetId) return null;
 
-    const searchList = (list, path, crumbs, section, inheritedCharsetNode = null) => {
+    const searchList = (list, path, crumbs, section, inheritedCharsetNode = null, ancestorDeleted = false) => {
       const charsetNode = list.find((n) => n.tag === '00080005' && n.status !== 'deleted') || inheritedCharsetNode;
       for (let i = 0; i < list.length; i++) {
         const node = list[i];
@@ -903,9 +957,11 @@ export class AppStore {
             breadcrumbs: [...crumbs, { id: node.id, label: node.formattedTag }],
             section,
             charsetNode,
+            ancestorDeleted,
           };
         }
         if (node.isSequence && node.items) {
+          const nextAncestorDeleted = ancestorDeleted || node.status === 'deleted';
           for (let j = 0; j < node.items.length; j++) {
             const item = node.items[j];
             const seqCrumb = { id: node.id, label: `${node.formattedTag} ${node.keyword}` };
@@ -919,6 +975,7 @@ export class AppStore {
                 path: [...path, node.formattedTag, `Item #${j}`],
                 breadcrumbs: [...crumbs, seqCrumb, itemCrumb],
                 section,
+                ancestorDeleted: nextAncestorDeleted,
               };
             }
             const found = searchList(
@@ -926,7 +983,8 @@ export class AppStore {
               [...path, `${node.formattedTag} ${node.keyword}`, `Item #${j}`],
               [...crumbs, seqCrumb, itemCrumb],
               section,
-              charsetNode
+              charsetNode,
+              nextAncestorDeleted
             );
             if (found) return found;
           }
@@ -939,6 +997,23 @@ export class AppStore {
       searchList(this.doc.metaNodes, ['File Meta (0002)'], [{ id: null, label: 'File Meta (0002)' }], 'meta') ||
       searchList(this.doc.datasetNodes, ['Main Dataset'], [{ id: null, label: 'Main Dataset' }], 'main')
     );
+  }
+
+  _isListUnderDeletedSeq(targetList) {
+    if (!this.doc || !targetList) return false;
+    const walk = (nodes, deleted) => {
+      for (const n of nodes || []) {
+        if (n.isSequence && n.items) {
+          const nextDeleted = deleted || n.status === 'deleted';
+          for (const item of n.items) {
+            if (item.children === targetList) return nextDeleted;
+            if (walk(item.children, nextDeleted)) return true;
+          }
+        }
+      }
+      return false;
+    };
+    return walk(this.doc.metaNodes, false) || walk(this.doc.datasetNodes, false);
   }
 
   getSpecificCharacterSet() {
@@ -955,9 +1030,18 @@ export class AppStore {
   }
 
   _noteEdit(doc) {
-    const uid = getSopInstanceUid(doc);
-    if (doc.hasPart10Header && uid) {
-      this._syncMediaStorageSopInstanceUid(doc, uid);
+    if (doc.hasPart10Header) {
+      const uid = getSopInstanceUid(doc);
+      if (uid) {
+        this._syncMediaStorageSopInstanceUid(doc, uid);
+      } else {
+        const metaNode = doc.metaNodes.find((n) => n.tag === '00020003');
+        if (metaNode && metaNode.value !== metaNode.originalValue) {
+          metaNode.value = metaNode.originalValue;
+          metaNode.status = 'unchanged';
+          metaNode.validation = validateVrValue('UI', metaNode.originalValue);
+        }
+      }
     }
     this._revisions.set(doc, this.getDocumentRevision(doc) + 1);
   }
@@ -976,6 +1060,7 @@ export class AppStore {
     this.undoStack.push(cmd);
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack = [];
+    this.lastEditedNodeId = cmd.editedNodeId || null;
     if (cmd.affectsPixel) this.pixelVersion++;
     this._saveActiveSnapshot();
     this.emit('edit');
@@ -990,62 +1075,85 @@ export class AppStore {
   }
 
   undo() {
+    if (this.isBusy) return;
     const cmd = this.undoStack.pop();
     if (!cmd) return;
     cmd.undo();
     this._noteEdit(this.doc);
     this.redoStack.push(cmd);
+    this.lastEditedNodeId = null;
     if (cmd.affectsPixel) this.pixelVersion++;
     this._saveActiveSnapshot();
     this.emit('edit');
   }
 
   redo() {
+    if (this.isBusy) return;
     const cmd = this.redoStack.pop();
     if (!cmd) return;
     cmd.redo();
     this._noteEdit(this.doc);
     this.undoStack.push(cmd);
+    this.lastEditedNodeId = null;
     if (cmd.affectsPixel) this.pixelVersion++;
     this._saveActiveSnapshot();
     this.emit('edit');
   }
 
-  updateNodeValue(nodeId, newValue) {
+  updateNodeValue(nodeId, newValue, { coalesce = false } = {}) {
+    if (this.isBusy) return false;
     const info = this.findNodeInfo(nodeId);
-    if (!info || info.isSeqItem || !canEditNodeValue(info.node)) return;
+    if (!info || info.isSeqItem || !canEditNodeValue(info.node, info)) return false;
 
     const node = info.node;
-    if (node.value === newValue) return;
+    if (node.value === newValue) return false;
 
-    const prevValue = node.value;
-    const prevStatus = node.status;
-    const nextStatus =
-      prevStatus === 'added'
+    const applyVal = (val, keepAdded) => {
+      node.value = val;
+      node.status = keepAdded && node.status === 'added'
         ? 'added'
-        : newValue === node.originalValue
+        : val === node.originalValue
           ? 'unchanged'
           : 'modified';
+      node.validation = validateVrValue(node.vr, val, node.tag);
+    };
 
-    this._executeCommand({
+    const affectsPixel = this._isPixelDisplayTag(node.tag);
+    const now = Date.now();
+    const top = coalesce ? this.undoStack[this.undoStack.length - 1] : null;
+    const coalesceKey = `edit:${node.id}`;
+    if (top && top.coalesceKey === coalesceKey && now - top.timestamp < UNDO_COALESCE_MS) {
+      top.nextValue = newValue;
+      top.timestamp = now;
+      applyVal(newValue, true);
+      this._noteEdit(this.doc);
+      this.redoStack = [];
+      this.lastEditedNodeId = node.id;
+      if (affectsPixel) this.pixelVersion++;
+      this._saveActiveSnapshot();
+      this.emit('edit');
+      return true;
+    }
+
+    const prevValue = node.value;
+    const cmd = {
       label: `Edit ${node.formattedTag}`,
-      affectsPixel: this._isPixelDisplayTag(node.tag),
-      redo: () => {
-        node.value = newValue;
-        node.status = nextStatus;
-        node.validation = validateVrValue(node.vr, newValue, node.tag);
-      },
-      undo: () => {
-        node.value = prevValue;
-        node.status = prevStatus;
-        node.validation = validateVrValue(node.vr, prevValue, node.tag);
-      },
-    });
+      affectsPixel,
+      editedNodeId: node.id,
+      coalesceKey: coalesce ? coalesceKey : null,
+      timestamp: now,
+      nextValue: newValue,
+      redo: () => applyVal(cmd.nextValue, true),
+      undo: () => applyVal(prevValue, true),
+    };
+    this._executeCommand(cmd);
+    return true;
   }
 
   revertNode(nodeId) {
+    if (this.isBusy) return;
     const info = this.findNodeInfo(nodeId);
-    if (!info || info.isSeqItem || getReadOnlyTagMessage(info.node.tag)) return;
+    if (!info || info.isSeqItem || info.ancestorDeleted || getReadOnlyTagMessage(info.node.tag)) return;
     const node = info.node;
 
     if (node.status === 'added') {
@@ -1059,8 +1167,8 @@ export class AppStore {
           if (this.selectedId === node.id) this.selectedId = null;
         },
         undo: () => {
-          parentList.push(node);
-          parentList.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+          node.status = 'added';
+          insertSorted(parentList, node);
           this.selectedId = node.id;
         },
       });
@@ -1086,8 +1194,16 @@ export class AppStore {
       },
       undo: () => {
         node.value = prevValue;
-        if (originalItems) node.items = prevItems;
-        node.status = prevStatus;
+        if (originalItems) {
+          if (!this._sequenceBaselines.has(node)) this._sequenceBaselines.set(node, node.items);
+          node.items = prevItems;
+        }
+        node.status =
+          prevStatus === 'deleted'
+            ? 'deleted'
+            : node.value === node.originalValue && this._sequenceStatus(node) === 'unchanged'
+              ? 'unchanged'
+              : 'modified';
         node.validation = node.isBinary || node.isSequence
           ? { valid: true, severity: 'ok', messages: [] }
           : validateVrValue(node.vr, prevValue, node.tag);
@@ -1096,8 +1212,9 @@ export class AppStore {
   }
 
   toggleDeleteNode(nodeId) {
+    if (this.isBusy) return;
     const info = this.findNodeInfo(nodeId);
-    if (!info || info.isSeqItem) return;
+    if (!info || info.isSeqItem || info.ancestorDeleted) return;
     const node = info.node;
     if (getReadOnlyTagMessage(node.tag)) return;
 
@@ -1106,34 +1223,45 @@ export class AppStore {
       return;
     }
 
+    const { parentList } = info;
     const prevStatus = node.status;
     if (
       prevStatus === 'deleted' &&
-      info.parentList.some((n) => n !== node && n.tag === node.tag && n.status !== 'deleted')
+      parentList.some((n) => n !== node && n.tag === node.tag && n.status !== 'deleted')
     ) {
       return;
     }
-    const nextStatus =
-      prevStatus === 'deleted'
-        ? node.value === node.originalValue && this._sequenceStatus(node) === 'unchanged'
-          ? 'unchanged'
-          : 'modified'
-        : 'deleted';
+    const deleting = prevStatus !== 'deleted';
+    const restoreNode = () => {
+      if (!parentList.includes(node)) {
+        node.status = 'added';
+        insertSorted(parentList, node);
+      } else {
+        node.status =
+          node.value === node.originalValue && this._sequenceStatus(node) === 'unchanged'
+            ? 'unchanged'
+            : 'modified';
+      }
+    };
+    const deleteNode = () => {
+      if (node.status === 'added') {
+        const idx = parentList.indexOf(node);
+        if (idx >= 0) parentList.splice(idx, 1);
+      } else {
+        node.status = 'deleted';
+      }
+    };
 
     this._executeCommand({
-      label: `${nextStatus === 'deleted' ? 'Delete' : 'Restore'} ${node.formattedTag}`,
+      label: `${deleting ? 'Delete' : 'Restore'} ${node.formattedTag}`,
       affectsPixel: this._isPixelDisplayTag(node.tag),
-      redo: () => {
-        node.status = nextStatus;
-      },
-      undo: () => {
-        node.status = prevStatus;
-      },
+      redo: deleting ? deleteNode : restoreNode,
+      undo: deleting ? restoreNode : deleteNode,
     });
   }
 
   addTag({ group, element, vr, value, targetList = null, targetSection = null }) {
-    if (!this.doc) return null;
+    if (!this.doc || this.isBusy) return null;
     const hex = tagHex(group, element);
     if (getReadOnlyTagMessage(hex)) return { locked: true };
     if (targetList && group === 0x0002) {
@@ -1141,6 +1269,9 @@ export class AppStore {
     }
     if (!targetList && group === 0x0002 && !this.doc.hasPart10Header) {
       return { invalidLocation: 'metaTagNoPart10Err' };
+    }
+    if (targetList && this._isListUnderDeletedSeq(targetList)) {
+      return { invalidLocation: 'deletedSeqEditErr' };
     }
     const dict = lookupTag(group, element);
     const isMeta = targetList ? targetSection === 'meta' : group === 0x0002;
@@ -1159,19 +1290,28 @@ export class AppStore {
     if (deletedExisting) {
       const prevValue = deletedExisting.value;
       const nextVal = value ?? '';
-      const nextStatus = nextVal === deletedExisting.originalValue ? 'unchanged' : 'modified';
       this._executeCommand({
         label: `Restore & Edit ${deletedExisting.formattedTag}`,
         affectsPixel: this._isPixelDisplayTag(hex),
         redo: () => {
           deletedExisting.value = nextVal;
-          deletedExisting.status = nextStatus;
+          if (!list.includes(deletedExisting)) {
+            deletedExisting.status = 'added';
+            insertSorted(list, deletedExisting);
+          } else {
+            deletedExisting.status = nextVal === deletedExisting.originalValue ? 'unchanged' : 'modified';
+          }
           deletedExisting.validation = validateVrValue(deletedExisting.vr, nextVal, deletedExisting.tag);
           this.selectedId = deletedExisting.id;
         },
         undo: () => {
           deletedExisting.value = prevValue;
-          deletedExisting.status = 'deleted';
+          if (deletedExisting.status === 'added') {
+            const idx = list.indexOf(deletedExisting);
+            if (idx >= 0) list.splice(idx, 1);
+          } else {
+            deletedExisting.status = 'deleted';
+          }
           deletedExisting.validation = validateVrValue(deletedExisting.vr, prevValue, deletedExisting.tag);
         },
       });
@@ -1212,8 +1352,12 @@ export class AppStore {
       label: `Add ${newNode.formattedTag}`,
       affectsPixel: this._isPixelDisplayTag(hex),
       redo: () => {
-        list.push(newNode);
-        list.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+        if (!list.includes(newNode)) {
+          newNode.status = 'added';
+          insertSorted(list, newNode);
+        } else if (newNode.status === 'deleted') {
+          newNode.status = newNode.value === newNode.originalValue ? 'unchanged' : 'modified';
+        }
         this.selectedId = newNode.id;
         if (isSeq) {
           this.expandedIds.add(newNode.id);
@@ -1221,9 +1365,13 @@ export class AppStore {
         }
       },
       undo: () => {
-        const idx = list.indexOf(newNode);
-        if (idx >= 0) list.splice(idx, 1);
-        if (this.selectedId === newNode.id) this.selectedId = null;
+        if (newNode.status === 'added') {
+          const idx = list.indexOf(newNode);
+          if (idx >= 0) list.splice(idx, 1);
+          if (this.selectedId === newNode.id) this.selectedId = null;
+        } else {
+          newNode.status = 'deleted';
+        }
       },
     });
 
@@ -1244,53 +1392,57 @@ export class AppStore {
   }
 
   addSequenceItem(seqNodeId) {
+    if (this.isBusy) return;
     const info = this.findNodeInfo(seqNodeId);
-    if (!info || info.isSeqItem || !info.node.isSequence || info.node.status === 'deleted') return;
+    if (!info || info.isSeqItem || info.ancestorDeleted || !info.node.isSequence || info.node.status === 'deleted') return;
     const seqNode = info.node;
     const newItem = { id: genNodeId(), undefinedLength: false, children: [] };
     const prevItems = seqNode.items || [];
     if (!this._sequenceBaselines.has(seqNode)) this._sequenceBaselines.set(seqNode, prevItems);
-    const prevStatus = seqNode.status;
 
     this._executeCommand({
       label: `Add Item to ${seqNode.formattedTag}`,
       affectsPixel: false,
       redo: () => {
+        if (!this._sequenceBaselines.has(seqNode)) this._sequenceBaselines.set(seqNode, seqNode.items || []);
         seqNode.items = [...prevItems, newItem];
-        seqNode.status = prevStatus === 'added' ? 'added' : this._sequenceStatus(seqNode);
+        seqNode.status = seqNode.status === 'added' ? 'added' : this._sequenceStatus(seqNode);
         this.expandedIds.add(seqNode.id);
         this.expandedIds.add(newItem.id);
         this.selectedId = newItem.id;
       },
       undo: () => {
+        if (!this._sequenceBaselines.has(seqNode)) this._sequenceBaselines.set(seqNode, seqNode.items || []);
         seqNode.items = prevItems;
-        seqNode.status = prevStatus;
+        seqNode.status = seqNode.status === 'added' ? 'added' : this._sequenceStatus(seqNode);
         if (this.selectedId === newItem.id) this.selectedId = seqNode.id;
       },
     });
   }
 
   removeSequenceItem(itemId) {
+    if (this.isBusy) return;
     const info = this.findNodeInfo(itemId);
-    if (!info || !info.isSeqItem) return;
+    if (!info || !info.isSeqItem || info.ancestorDeleted) return;
     const { parentSeq, item, itemIndex } = info;
     if (parentSeq.status === 'deleted') return;
     const prevItems = parentSeq.items;
     if (!this._sequenceBaselines.has(parentSeq)) this._sequenceBaselines.set(parentSeq, prevItems);
     const nextItems = prevItems.filter((entry) => entry !== item);
-    const prevStatus = parentSeq.status;
 
     this._executeCommand({
       label: `Remove Item #${itemIndex} from ${parentSeq.formattedTag}`,
       affectsPixel: false,
       redo: () => {
+        if (!this._sequenceBaselines.has(parentSeq)) this._sequenceBaselines.set(parentSeq, parentSeq.items || []);
         parentSeq.items = nextItems;
-        parentSeq.status = prevStatus === 'added' ? 'added' : this._sequenceStatus(parentSeq);
+        parentSeq.status = parentSeq.status === 'added' ? 'added' : this._sequenceStatus(parentSeq);
         if (this.selectedId === item.id) this.selectedId = parentSeq.id;
       },
       undo: () => {
+        if (!this._sequenceBaselines.has(parentSeq)) this._sequenceBaselines.set(parentSeq, parentSeq.items || []);
         parentSeq.items = prevItems;
-        parentSeq.status = prevStatus;
+        parentSeq.status = parentSeq.status === 'added' ? 'added' : this._sequenceStatus(parentSeq);
         this.expandedIds.add(parentSeq.id);
         this.selectedId = item.id;
       },
@@ -1298,14 +1450,40 @@ export class AppStore {
   }
 
   ensureUtf8Charset() {
-    if (!this.doc) return;
+    if (!this.doc || this.isBusy) return;
     const info = this.findNodeInfo(this.selectedId);
     const existing = info?.charsetNode || this.doc.datasetNodes.find((n) => n.tag === '00080005');
     if (existing) {
       if (existing.status === 'deleted') {
-        this.toggleDeleteNode(existing.id);
+        const list = this.doc.datasetNodes;
+        const prevValue = existing.value;
+        this._executeCommand({
+          label: 'Set UTF-8 SpecificCharacterSet',
+          affectsPixel: false,
+          redo: () => {
+            existing.value = 'ISO_IR 192';
+            if (!list.includes(existing)) {
+              existing.status = 'added';
+              insertSorted(list, existing);
+            } else {
+              existing.status = existing.value === existing.originalValue ? 'unchanged' : 'modified';
+            }
+            existing.validation = validateVrValue(existing.vr, 'ISO_IR 192', existing.tag);
+          },
+          undo: () => {
+            existing.value = prevValue;
+            if (existing.status === 'added') {
+              const idx = list.indexOf(existing);
+              if (idx >= 0) list.splice(idx, 1);
+            } else {
+              existing.status = 'deleted';
+            }
+            existing.validation = validateVrValue(existing.vr, prevValue, existing.tag);
+          },
+        });
+      } else {
+        this.updateNodeValue(existing.id, 'ISO_IR 192');
       }
-      this.updateNodeValue(existing.id, 'ISO_IR 192');
     } else {
       this.addTag({ group: 0x0008, element: 0x0005, vr: 'CS', value: 'ISO_IR 192' });
     }
@@ -1313,7 +1491,8 @@ export class AppStore {
 
   /**
    * Internal helper: build an undoable anonymization command for any given doc.
-   * Supports PHI replacement, Private tag stripping, and consistent Study/Series/SOP UID regeneration.
+   * Supports recursive PHI presets (replace/empty/remove), Private tag stripping,
+   * consistent UID regeneration across all non-well-known UI tags, and deidentified flag.
    */
   _buildAnonymizeCommandForDoc(doc, rules, opts = {}) {
     const {
@@ -1324,31 +1503,49 @@ export class AppStore {
       shiftDates = false,
       dateShiftDays = 0,
       sharedUidMap = new Map(),
-      sopUidMap = new Map(),
+      onDateSkipped,
     } = opts;
 
-    const ruleMap = new Map(rules.map((r) => [r.tag, r.replacement]));
+    const ruleMap = new Map(
+      (rules || []).map((r) => [
+        r.tag,
+        {
+          action: r.action || 'replace',
+          replacement: r.replacement ?? '',
+        },
+      ])
+    );
     const snapshots = [];
-    const privateDeletes = [];
+    const removedNodes = [];
+    const restoredDeletes = [];
     let dateShiftCount = 0;
     let uidChangeCount = 0;
+    let privateDeleteCount = 0;
+    let ruleDeleteCount = 0;
 
-    const mapUid = (origUid) => {
-      if (origUid && sharedUidMap.has(origUid)) return sharedUidMap.get(origUid);
+    const mapSingleUid = (raw) => {
+      const trimmed = String(raw || '').trim();
+      if (!trimmed || isWellKnownDicomUid(trimmed)) return raw;
+      if (sharedUidMap.has(trimmed)) return sharedUidMap.get(trimmed);
       const next = generateDicomUid();
-      if (origUid) sharedUidMap.set(origUid, next);
+      sharedUidMap.set(trimmed, next);
       return next;
     };
-
-    const originalSopUid = getSopInstanceUid(doc);
-    const ownSopUid = sopUidMap.get(originalSopUid) || (regenerateUids && originalSopUid ? generateDicomUid() : null);
 
     const walk = (nodes) => {
       for (const n of nodes || []) {
         if (n.status === 'deleted') continue;
 
         if (stripPrivate && n.isPrivate) {
-          privateDeletes.push({ node: n, prevStatus: n.status });
+          removedNodes.push({ node: n, parentList: nodes, prevStatus: n.status });
+          privateDeleteCount++;
+          continue;
+        }
+
+        const rule = ruleMap.get(n.tag);
+        if (rule && rule.action === 'remove' && !getReadOnlyTagMessage(n.tag)) {
+          removedNodes.push({ node: n, parentList: nodes, prevStatus: n.status });
+          ruleDeleteCount++;
           continue;
         }
 
@@ -1358,21 +1555,21 @@ export class AppStore {
         }
         if (n.isBinary || getReadOnlyTagMessage(n.tag)) continue;
 
-        let nextVal = ruleMap.get(n.tag);
+        let nextVal = rule
+          ? rule.action === 'empty'
+            ? ''
+            : rule.replacement
+          : undefined;
         let isDateShift = false;
         let isUidChange = false;
 
-        if (regenerateUids && n.vr === 'UI') {
-          if (n.tag === '0020000D' || n.tag === '0020000E' || n.tag === '00200052') {
-            nextVal = mapUid(n.value);
-            isUidChange = true;
-          } else if (n.tag === '00080018' && ownSopUid && nodes === doc.datasetNodes) {
-            nextVal = ownSopUid;
-            isUidChange = true;
-          } else if (n.tag === '00081155') {
-            nextVal = n.value.split('\\').map((uid) => (
-              sopUidMap.get(uid.trim()) || (uid.trim() === originalSopUid && ownSopUid) || uid
-            )).join('\\');
+        if (regenerateUids && n.vr === 'UI' && n.value) {
+          const remapped = String(n.value)
+            .split('\\')
+            .map(mapSingleUid)
+            .join('\\');
+          if (remapped !== n.value) {
+            nextVal = remapped;
             isUidChange = true;
           }
         }
@@ -1384,7 +1581,7 @@ export class AppStore {
           (n.vr === 'DA' || n.vr === 'DT') &&
           n.value
         ) {
-          const shifted = shiftDicomDateValue(n.value, n.vr, dateShiftDays);
+          const shifted = shiftDicomDateValue(n.value, n.vr, dateShiftDays, onDateSkipped);
           if (shifted !== n.value) {
             nextVal = shifted;
             isDateShift = true;
@@ -1399,7 +1596,6 @@ export class AppStore {
             prevValue: n.value,
             prevStatus: n.status,
             nextValue: nextVal,
-            nextStatus: n.status === 'added' ? 'added' : nextVal === n.originalValue ? 'unchanged' : 'modified',
           });
         }
       }
@@ -1417,55 +1613,68 @@ export class AppStore {
             prevValue: existing.value,
             prevStatus: existing.status,
             nextValue: targetVal,
-            nextStatus: existing.status === 'added' ? 'added' : targetVal === existing.originalValue ? 'unchanged' : 'modified',
           });
         }
-      } else {
-        const dict = lookupTag(group, element);
-        addedNodes.push({
-          id: genNodeId(),
-          group,
-          element,
-          tag: hex,
-          formattedTag: formatTag(group, element),
-          keyword: dict.keyword,
-          name: dict.name,
-          vr,
-          vrSource: 'explicit',
-          vmSpec: dict.vm || '1',
-          isMeta: false,
-          isPrivate: false,
-          isSequence: false,
-          isBinary: false,
-          encapsulated: false,
-          undefinedLength: false,
-          rawLength: 0,
-          rawBytes: null,
-          originalValue: '',
-          value: targetVal,
-          status: 'added',
-          validation: validateVrValue(vr, targetVal, hex),
-        });
+        return;
       }
+      const deletedExisting = doc.datasetNodes.find(
+        (n) => n.tag === hex && n.status === 'deleted' && !n.isSequence && !n.isBinary
+      );
+      if (deletedExisting) {
+        restoredDeletes.push({
+          node: deletedExisting,
+          parentList: doc.datasetNodes,
+          prevValue: deletedExisting.value,
+          nextValue: targetVal,
+        });
+        return;
+      }
+      const dict = lookupTag(group, element);
+      addedNodes.push({
+        id: genNodeId(),
+        group,
+        element,
+        tag: hex,
+        formattedTag: formatTag(group, element),
+        keyword: dict.keyword,
+        name: dict.name,
+        vr,
+        vrSource: 'explicit',
+        vmSpec: dict.vm || '1',
+        isMeta: false,
+        isPrivate: false,
+        isSequence: false,
+        isBinary: false,
+        encapsulated: false,
+        undefinedLength: false,
+        rawLength: 0,
+        rawBytes: null,
+        originalValue: '',
+        value: targetVal,
+        status: 'added',
+        validation: validateVrValue(vr, targetVal, hex),
+      });
     };
 
     if (markDeidentified) {
       upsertRootTag(0x0012, 0x0062, '00120062', 'CS', 'YES');
-      const cleanMethod = String(methodText || '').trim().slice(0, 64);
+      const cleanMethod = truncateAtWordBoundary(methodText, 64);
       if (cleanMethod) {
         upsertRootTag(0x0012, 0x0063, '00120063', 'LO', cleanMethod);
       }
     }
 
-    const changeCount = snapshots.length + privateDeletes.length + addedNodes.length;
+    const changeCount = snapshots.length + removedNodes.length + restoredDeletes.length + addedNodes.length;
     if (changeCount === 0) return null;
+
+    const prevDeidentified = Boolean(doc.deidentified);
 
     return {
       changeCount,
       breakdown: {
-        tagChanges: snapshots.length - dateShiftCount - uidChangeCount + addedNodes.length,
+        tagChanges: snapshots.length - dateShiftCount - uidChangeCount + ruleDeleteCount + restoredDeletes.length + addedNodes.length,
         dateShifts: dateShiftCount,
-        privateDeletes: privateDeletes.length,
+        privateDeletes: privateDeleteCount,
         uidChanges: uidChangeCount,
         totalChanges: changeCount,
       },
@@ -1475,30 +1684,83 @@ export class AppStore {
         redo: () => {
           for (const s of snapshots) {
             s.node.value = s.nextValue;
-            s.node.status = s.nextStatus;
+            s.node.status = s.node.status === 'added'
+              ? 'added'
+              : s.nextValue === s.node.originalValue
+                ? 'unchanged'
+                : 'modified';
             s.node.validation = validateVrValue(s.node.vr, s.nextValue, s.node.tag);
           }
-          for (const d of privateDeletes) {
-            d.node.status = 'deleted';
+          for (const r of restoredDeletes) {
+            r.node.value = r.nextValue;
+            if (!r.parentList.includes(r.node)) {
+              r.node.status = 'added';
+              insertSorted(r.parentList, r.node);
+            } else {
+              r.node.status = r.nextValue === r.node.originalValue ? 'unchanged' : 'modified';
+            }
+            r.node.validation = validateVrValue(r.node.vr, r.nextValue, r.node.tag);
           }
-          if (addedNodes.length > 0) {
-            doc.datasetNodes.push(...addedNodes);
-            doc.datasetNodes.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+          for (const d of removedNodes) {
+            if (d.node.status === 'added') {
+              const idx = d.parentList.indexOf(d.node);
+              if (idx >= 0) d.parentList.splice(idx, 1);
+            } else {
+              d.node.status = 'deleted';
+            }
           }
+          for (const added of addedNodes) {
+            if (!doc.datasetNodes.includes(added)) {
+              added.status = 'added';
+              insertSorted(doc.datasetNodes, added);
+            } else if (added.status === 'deleted') {
+              added.status = added.value === added.originalValue ? 'unchanged' : 'modified';
+            }
+          }
+          doc.deidentified = true;
         },
         undo: () => {
           for (const s of snapshots) {
             s.node.value = s.prevValue;
-            s.node.status = s.prevStatus;
+            s.node.status = s.node.status === 'added'
+              ? 'added'
+              : s.prevValue === s.node.originalValue
+                ? 'unchanged'
+                : 'modified';
             s.node.validation = validateVrValue(s.node.vr, s.prevValue, s.node.tag);
           }
-          for (const d of privateDeletes) {
-            d.node.status = d.prevStatus;
+          for (const r of restoredDeletes) {
+            r.node.value = r.prevValue;
+            if (r.node.status === 'added') {
+              const idx = r.parentList.indexOf(r.node);
+              if (idx >= 0) r.parentList.splice(idx, 1);
+            } else {
+              r.node.status = 'deleted';
+            }
+            r.node.validation = validateVrValue(r.node.vr, r.prevValue, r.node.tag);
+          }
+          for (const d of removedNodes) {
+            if (!d.parentList.includes(d.node)) {
+              d.node.status = 'added';
+              insertSorted(d.parentList, d.node);
+            } else {
+              d.node.status =
+                d.prevStatus === 'added'
+                  ? 'added'
+                  : d.node.value === d.node.originalValue && this._sequenceStatus(d.node) === 'unchanged'
+                    ? 'unchanged'
+                    : 'modified';
+            }
           }
           for (const added of addedNodes) {
-            const idx = doc.datasetNodes.indexOf(added);
-            if (idx >= 0) doc.datasetNodes.splice(idx, 1);
+            if (added.status === 'added') {
+              const idx = doc.datasetNodes.indexOf(added);
+              if (idx >= 0) doc.datasetNodes.splice(idx, 1);
+            } else {
+              added.status = 'deleted';
+            }
           }
+          doc.deidentified = prevDeidentified;
         },
       },
     };
@@ -1513,18 +1775,21 @@ export class AppStore {
   }
 
   applyAnonymization(rules, opts = {}) {
-    if (!this.doc) return 0;
-    const built = this._buildAnonymizeCommandForDoc(this.doc, rules, opts);
+    this.lastAnonymizeDateSkips = 0;
+    if (!this.doc || this.isBusy) return 0;
+    let dateSkips = 0;
+    const built = this._buildAnonymizeCommandForDoc(this.doc, rules, { ...opts, onDateSkipped: () => dateSkips++ });
+    this.lastAnonymizeDateSkips = dateSkips;
     if (!built) return 0;
     this._executeCommand(built.cmd);
     return built.changeCount;
   }
 
   /**
-   * Apply anonymization across ALL open files (preserving Study/Series UID grouping across slices).
+   * Apply anonymization across ALL open files (preserving Study/Series/Reference UID consistency).
    */
   async applyAnonymizationAllFiles(rules, opts = {}) {
-    if (this.anonymizing) return { affectedFiles: 0, totalChanges: 0, skippedFiles: 0 };
+    if (this.isBusy) return { affectedFiles: 0, totalChanges: 0, skippedFiles: 0, dateSkips: 0 };
     this._saveActiveSnapshot();
     this.anonymizing = true;
     this.emit('files');
@@ -1541,17 +1806,12 @@ export class AppStore {
       }
 
       const openEntries = entries.filter((entry) => this.files.includes(entry));
-      const sopUidMap = new Map();
-      if (opts.regenerateUids) {
-        for (const { doc } of openEntries) {
-          const uid = getSopInstanceUid(doc);
-          if (uid && !sopUidMap.has(uid)) sopUidMap.set(uid, generateDicomUid());
-        }
-      }
       const sharedUidMap = new Map();
+      let dateSkips = 0;
+      const onDateSkipped = () => dateSkips++;
       const edits = openEntries.map((entry) => ({
         entry,
-        built: this._buildAnonymizeCommandForDoc(entry.doc, rules, { ...opts, sharedUidMap, sopUidMap }),
+        built: this._buildAnonymizeCommandForDoc(entry.doc, rules, { ...opts, sharedUidMap, onDateSkipped }),
       }));
       let affectedFiles = 0;
       let totalChanges = 0;
@@ -1565,9 +1825,11 @@ export class AppStore {
         affectedFiles++;
         totalChanges += built.changeCount;
       }
+      this._saveActiveSnapshot();
       const active = this.getActiveEntry();
       if (active) this._bindEntryToActive(active);
-      return { affectedFiles, totalChanges, skippedFiles };
+      this.lastEditedNodeId = null;
+      return { affectedFiles, totalChanges, skippedFiles, dateSkips };
     } finally {
       this.anonymizing = false;
       this.emit('edit');
@@ -1581,9 +1843,10 @@ export class AppStore {
   async batchEditAcrossFiles({ group, element, vr, value, mode }) {
     const hex = tagHex(group, element);
     if (getReadOnlyTagMessage(hex)) return { affectedFiles: 0, locked: true };
-    if (this._batchEditing || this.anonymizing) return { affectedFiles: 0 };
+    if (this.isBusy) return { affectedFiles: 0 };
     this._saveActiveSnapshot();
     this._batchEditing = true;
+    this.emit('files');
     const dict = lookupTag(group, element);
     const isMeta = group === 0x0002;
     let affectedFiles = 0;
@@ -1613,17 +1876,33 @@ export class AppStore {
                     if (idx >= 0) list.splice(idx, 1);
                   },
                   undo: () => {
-                    list.push(existing);
-                    list.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+                    existing.status = 'added';
+                    insertSorted(list, existing);
                   },
                 };
               } else {
-                const prevStatus = existing.status;
                 cmd = {
                   label: `Batch delete ${existing.formattedTag}`,
                   affectsPixel: this._isPixelDisplayTag(hex),
-                  redo: () => { existing.status = 'deleted'; },
-                  undo: () => { existing.status = prevStatus; },
+                  redo: () => {
+                    if (existing.status === 'added') {
+                      const idx = list.indexOf(existing);
+                      if (idx >= 0) list.splice(idx, 1);
+                    } else {
+                      existing.status = 'deleted';
+                    }
+                  },
+                  undo: () => {
+                    if (!list.includes(existing)) {
+                      existing.status = 'added';
+                      insertSorted(list, existing);
+                    } else {
+                      existing.status =
+                        existing.value === existing.originalValue && this._sequenceStatus(existing) === 'unchanged'
+                          ? 'unchanged'
+                          : 'modified';
+                    }
+                  },
                 };
               }
             }
@@ -1631,24 +1910,42 @@ export class AppStore {
             const target = existing || deletedExisting;
             if (deletedExisting || target.value !== value) {
               const prevValue = target.value;
-              const prevStatus = target.status;
-              const nextStatus =
-                prevStatus === 'added'
-                  ? 'added'
-                  : value === target.originalValue
-                    ? 'unchanged'
-                    : 'modified';
+              const wasDeleted = Boolean(deletedExisting);
               cmd = {
                 label: `Batch edit ${target.formattedTag}`,
                 affectsPixel: this._isPixelDisplayTag(hex),
                 redo: () => {
                   target.value = value;
-                  target.status = nextStatus;
+                  if (!list.includes(target)) {
+                    target.status = 'added';
+                    insertSorted(list, target);
+                  } else {
+                    target.status =
+                      target.status === 'added'
+                        ? 'added'
+                        : value === target.originalValue
+                          ? 'unchanged'
+                          : 'modified';
+                  }
                   target.validation = validateVrValue(target.vr, value, target.tag);
                 },
                 undo: () => {
                   target.value = prevValue;
-                  target.status = prevStatus;
+                  if (wasDeleted) {
+                    if (target.status === 'added') {
+                      const idx = list.indexOf(target);
+                      if (idx >= 0) list.splice(idx, 1);
+                    } else {
+                      target.status = 'deleted';
+                    }
+                  } else {
+                    target.status =
+                      target.status === 'added'
+                        ? 'added'
+                        : prevValue === target.originalValue
+                          ? 'unchanged'
+                          : 'modified';
+                  }
                   target.validation = validateVrValue(target.vr, prevValue, target.tag);
                 },
               };
@@ -1682,12 +1979,20 @@ export class AppStore {
               label: `Batch add ${newNode.formattedTag}`,
               affectsPixel: this._isPixelDisplayTag(hex),
               redo: () => {
-                list.push(newNode);
-                list.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));
+                if (!list.includes(newNode)) {
+                  newNode.status = 'added';
+                  insertSorted(list, newNode);
+                } else if (newNode.status === 'deleted') {
+                  newNode.status = newNode.value === newNode.originalValue ? 'unchanged' : 'modified';
+                }
               },
               undo: () => {
-                const idx = list.indexOf(newNode);
-                if (idx >= 0) list.splice(idx, 1);
+                if (newNode.status === 'added') {
+                  const idx = list.indexOf(newNode);
+                  if (idx >= 0) list.splice(idx, 1);
+                } else {
+                  newNode.status = 'deleted';
+                }
               },
             };
           }
@@ -1709,8 +2014,10 @@ export class AppStore {
       }
     } finally {
       this._batchEditing = false;
+      this._saveActiveSnapshot();
       const active = this.getActiveEntry();
       if (active) this._bindEntryToActive(active);
+      this.lastEditedNodeId = null;
       if (activePixelChanged) this.pixelVersion++;
       this.emit('edit');
     }
@@ -1748,6 +2055,8 @@ export class AppStore {
             path: pathPrefix ? `${pathPrefix} › ${n.formattedTag}` : n.formattedTag,
           });
         }
+
+        if (n.status === 'deleted') continue;
 
         if (n.isSequence && n.items) {
           n.items.forEach((item, idx) => {
@@ -1829,11 +2138,7 @@ export class AppStore {
       if (doc === this.doc) this.selectedId = fallback;
     }
 
-    entry.undoStack = [];
-    entry.redoStack = [];
     if (doc === this.doc) {
-      this.undoStack = [];
-      this.redoStack = [];
       this._saveActiveSnapshot();
     }
     return true;

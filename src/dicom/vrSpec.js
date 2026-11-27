@@ -3,6 +3,8 @@
  */
 
 import { t } from '../i18n.js';
+import { isValidDicomDateTime, parseDicomCalendarDate } from './calendar.js';
+import { isValidDicomUri } from './charset.js';
 
 export const VR_32BIT_LENGTH = new Set([
   'OB', 'OD', 'OF', 'OL', 'OV', 'OW', 'SQ', 'SV', 'UC', 'UN', 'UR', 'UT', 'UV',
@@ -36,8 +38,15 @@ export const LUT_DESCRIPTOR_SIGNED_TAGS = new Set([
   '00281101', // RedPaletteColorLookupTableDescriptor
   '00281102', // GreenPaletteColorLookupTableDescriptor
   '00281103', // BluePaletteColorLookupTableDescriptor
+  '00281104', // AlphaPaletteColorLookupTableDescriptor
   '00283002', // LUTDescriptor
 ]);
+
+const WORD_STREAM_SIZES = { OW: 2, OF: 4, OL: 4, OD: 8, OV: 8 };
+
+export function binaryValueUnitSize(vr) {
+  return WORD_STREAM_SIZES[vr] ?? (NUMERIC_VRS.has(vr) || vr === 'AT' ? VR_SPECS[vr].fixedLength : 1);
+}
 
 /** @type {Record<string, {
  *   code: string,
@@ -338,8 +347,7 @@ export function validateVrValue(vr, value, tag = '') {
           const y = Number(part.slice(0, 4));
           const m = Number(part.slice(4, 6));
           const d = Number(part.slice(6, 8));
-          const dt = new Date(Date.UTC(y, m - 1, d));
-          if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
+          if (!parseDicomCalendarDate(y, m, d)) {
             pushError(`${prefix}${t('valDaCalendar', { y, m, d })}`);
           }
         }
@@ -363,7 +371,7 @@ export function validateVrValue(vr, value, tag = '') {
         if (encoder.encode(part).length > 26) {
           pushError(`${prefix}${t('valDtLen')}`);
         }
-        if (!/^\d{4}(\d{2}(\d{2}(\d{2}(\d{2}(\d{2}(\.\d{1,6})?)?)?)?)?)?([+-]\d{4})?$/.test(part.trim())) {
+        if (!isValidDicomDateTime(part.trimEnd())) {
           pushError(`${prefix}${t('valDtFormat')}`);
         }
         break;
@@ -473,11 +481,16 @@ export function validateVrValue(vr, value, tag = '') {
       case 'FL':
       case 'FD': {
         const trimmed = part.trim();
-        if (trimmed === '' || Number.isNaN(Number(trimmed))) {
+        if (trimmed !== 'NaN' && !/^[+-]?(?:Infinity|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)$/.test(trimmed)) {
           pushError(`${prefix}${t('valFloatInvalid')}`);
         }
         break;
       }
+      case 'UR':
+        if (!isValidDicomUri(part)) {
+          pushError(`${prefix}${t('valAsciiOnly')}`);
+        }
+        break;
       default:
         break;
     }

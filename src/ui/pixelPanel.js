@@ -12,7 +12,7 @@ import {
 } from '../dicom/pixelRenderer.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLang } from '../i18n.js';
-import { downloadBlobBytes } from '../utils/uiHelpers.js';
+import { downloadBlobBytes, stripDicomBaseName } from '../utils/uiHelpers.js';
 
 const CT_PRESETS = [
   { key: 'pixelPresetBrain', wc: 40, ww: 80 },
@@ -20,6 +20,25 @@ const CT_PRESETS = [
   { key: 'pixelPresetLung', wc: -600, ww: 1500 },
   { key: 'pixelPresetBone', wc: 300, ww: 1500 },
 ];
+
+function getWlPrecision(decoded) {
+  const range = decoded && decoded.kind === 'scalar' ? Math.abs(decoded.max - decoded.min) : 255;
+  if (range < 20) return { step: 0.01, decimals: 2, minWw: 0.01 };
+  if (range < 200) return { step: 0.1, decimals: 1, minWw: 0.1 };
+  return { step: 1, decimals: 0, minWw: 1 };
+}
+
+// Per-frame (Enhanced) VOI resolved by the decoder wins over the root-level tag values.
+function getTagWindow(meta, decoded) {
+  const wc = decoded?.windowCenter ?? meta?.windowCenter ?? null;
+  const ww = decoded?.windowWidth ?? meta?.windowWidth ?? null;
+  return { wc, ww };
+}
+
+function formatWlNum(val, decimals) {
+  if (!Number.isFinite(val)) return '0';
+  return decimals === 0 ? String(Math.round(val)) : String(Number(val.toFixed(decimals)));
+}
 
 export class PixelPanel {
   /**
@@ -36,6 +55,7 @@ export class PixelPanel {
     this._lastFullMode = false;
     this._previewDoc = null;
     this._renderedFrame = null;
+    this._renderedUiSig = null;
     this._meta = null;
     this._decoded = null;
     this._frameIndex = 0;
@@ -48,6 +68,7 @@ export class PixelPanel {
     this._panY = 0;
     this._dragMode = null; // 'wl' | 'pan'
     this._dragStart = null;
+    this._cleanupDrag = null;
     this._renderToken = 0;
 
     this.container.addEventListener('click', (e) => {
@@ -78,7 +99,18 @@ export class PixelPanel {
     });
   }
 
+  _endActiveDrag() {
+    if (this._cleanupDrag) {
+      const fn = this._cleanupDrag;
+      this._cleanupDrag = null;
+      fn();
+    }
+    this._dragMode = null;
+    this._dragStart = null;
+  }
+
   _releaseDecoded() {
+    this._endActiveDrag();
     if (this._decoded?.kind === 'bitmap') {
       try {
         this._decoded.bitmap.close?.();
@@ -88,6 +120,21 @@ export class PixelPanel {
     }
     this._decoded = null;
     this._renderedFrame = null;
+  }
+
+  pruneStaleDoc() {
+    if (!this._previewDoc) return;
+    const files = this.store.files;
+    const stillOpen = Array.isArray(files)
+      ? files.some((f) => f.doc === this._previewDoc)
+      : this._previewDoc === this.store.doc;
+    if (!stillOpen) {
+      this._releaseDecoded();
+      this._previewDoc = null;
+      this._meta = null;
+      this._lastPixelVersion = -1;
+      this._renderedUiSig = null;
+    }
   }
 
   _headerHtml(meta, isCollapsed) {
@@ -141,7 +188,10 @@ export class PixelPanel {
       const shouldHide = !isFull && this.store.mobileTab !== 'pixel';
       this.container.classList.toggle('hidden', shouldHide);
       this.container.classList.remove('collapsed');
-      if (shouldHide) return;
+      if (shouldHide) {
+        this.pruneStaleDoc();
+        return;
+      }
     } else {
       this.container.classList.remove('hidden');
       const collapsed = !isFull && !this.store.showPixelPanel;
@@ -149,6 +199,11 @@ export class PixelPanel {
 
       if (collapsed) {
         this._lastFullMode = false;
+        this._releaseDecoded();
+        this._previewDoc = null;
+        this._meta = null;
+        this._lastPixelVersion = -1;
+        this._renderedUiSig = null;
         const meta = this.store.doc ? extractPixelMeta(this.store.doc) : null;
         this.container.innerHTML = this._headerHtml(meta, true);
         return;
@@ -160,6 +215,8 @@ export class PixelPanel {
       this._lastLang = null;
       this._lastFullMode = isFull;
       this._previewDoc = null;
+      this._meta = null;
+      this._renderedUiSig = null;
       this._releaseDecoded();
       this.container.innerHTML = `
         ${this._headerHtml(null, false)}
@@ -190,10 +247,16 @@ export class PixelPanel {
     this._lastLang = curLang;
     this._lastFullMode = isFull;
 
+    const docChanged = this._previewDoc !== this.store.doc;
     const meta = extractPixelMeta(this.store.doc);
     this._previewDoc = this.store.doc;
     this._meta = meta;
-    this._frameIndex = Math.min(this._frameIndex, Math.max(0, (meta?.numberOfFrames || 1) - 1));
+    if (docChanged) {
+      this._frameIndex = 0;
+      this._invert = false;
+    } else {
+      this._frameIndex = Math.min(this._frameIndex, Math.max(0, (meta?.numberOfFrames || 1) - 1));
+    }
     this._zoom = 1;
     this._panX = 0;
     this._panY = 0;
@@ -210,6 +273,7 @@ export class PixelPanel {
 
     if (!meta) {
       this._releaseDecoded();
+      this._renderedUiSig = null;
       this.container.innerHTML = `
         ${this._headerHtml(null, false)}
         <div class="pixel-empty">${escapeHtml(t('pixelEmptyNoTag'))}</div>
@@ -228,6 +292,7 @@ export class PixelPanel {
     this._decoded = decoded;
 
     if (decoded.kind === 'unsupported') {
+      this._renderedUiSig = null;
       this.container.innerHTML = `
         ${this._headerHtml(meta, false)}
         <div class="pixel-unsupported">
@@ -239,22 +304,70 @@ export class PixelPanel {
     }
 
     if (resetWindowFromMeta && decoded.kind === 'scalar') {
-      this._wc = meta.windowCenter !== null ? meta.windowCenter : decoded.autoWC;
-      this._ww = meta.windowWidth !== null && meta.windowWidth > 0 ? meta.windowWidth : decoded.autoWW;
+      const tagWl = getTagWindow(meta, decoded);
+      this._wc = tagWl.wc !== null ? tagWl.wc : decoded.autoWC;
+      this._ww = tagWl.ww !== null && tagWl.ww > 0 ? tagWl.ww : decoded.autoWW;
     }
 
-    this._renderUi(meta, decoded);
+    const uiSig = [
+      decoded.kind,
+      meta.numberOfFrames > 1 ? 1 : 0,
+      meta.overlays?.length || 0,
+      getTagWindow(meta, decoded).wc !== null ? 1 : 0,
+      this._lastLang || '',
+      this._lastFullMode ? 1 : 0,
+    ].join('|');
+
+    if (this._renderedUiSig === uiSig && this.container.querySelector('#pixel-canvas')) {
+      this._updateUiInPlace(meta, decoded);
+    } else {
+      this._renderUi(meta, decoded);
+      this._renderedUiSig = uiSig;
+    }
     this._redrawCanvas();
     this._renderedFrame = { doc, pixelVersion, frameIndex };
     this.fitCanvas();
     this._applyCanvasTransform();
   }
 
+  _updateUiInPlace(meta, decoded) {
+    const frameSlider = this.container.querySelector('#pixel-frame');
+    const frameLbl = this.container.querySelector('#pixel-frame-num');
+    if (frameSlider) {
+      frameSlider.max = String(Math.max(0, meta.numberOfFrames - 1));
+      if (Number(frameSlider.value) !== this._frameIndex) {
+        frameSlider.value = String(this._frameIndex);
+      }
+    }
+    if (frameLbl) {
+      frameLbl.textContent = `${this._frameIndex + 1}/${meta.numberOfFrames}`;
+    }
+    const invertBtn = this.container.querySelector('#btn-pixel-invert');
+    if (invertBtn) invertBtn.classList.toggle('btn-primary', this._invert);
+    const overlayBtn = this.container.querySelector('#btn-pixel-overlay');
+    if (overlayBtn) overlayBtn.classList.toggle('btn-primary', this._showOverlays);
+    if (decoded.kind === 'scalar') {
+      const prec = getWlPrecision(decoded);
+      const wcSlider = this.container.querySelector('#wl-wc');
+      const wwSlider = this.container.querySelector('#wl-ww');
+      if (wcSlider) wcSlider.step = String(prec.step);
+      if (wwSlider) {
+        wwSlider.min = String(prec.minWw);
+        wwSlider.step = String(prec.step);
+      }
+      this._updateWlReadout();
+    }
+  }
+
   _renderUi(meta, decoded) {
+    this._endActiveDrag();
     const isScalar = decoded.kind === 'scalar';
+    const prec = getWlPrecision(decoded);
     const minVal = isScalar ? Math.min(-1024, Math.floor(decoded.min), Math.floor(this._wc)) : 0;
     const maxVal = isScalar ? Math.max(1500, Math.ceil(decoded.max), Math.ceil(this._wc)) : 255;
     const maxW = isScalar ? Math.max(2000, Math.ceil((decoded.max - decoded.min) * 2), Math.ceil(this._ww)) : 512;
+    const wcStr = formatWlNum(this._wc, prec.decimals);
+    const wwStr = formatWlNum(this._ww, prec.decimals);
 
     const presetBtns = isScalar
       ? `<div class="pixel-presets">
@@ -268,20 +381,20 @@ export class PixelPanel {
       ${this._headerHtml(meta, false)}
       <div class="pixel-canvas-wrap" id="pixel-canvas-wrap" title="${escapeHtml(t('pixelCanvasHintV3'))}">
         <canvas id="pixel-canvas"></canvas>
-        ${isScalar ? `<div class="pixel-hud" id="pixel-hud">WC: ${Math.round(this._wc)} / WW: ${Math.round(this._ww)}</div>` : ''}
+        ${isScalar ? `<div class="pixel-hud" id="pixel-hud">WC: ${wcStr} / WW: ${wwStr}</div>` : ''}
         <div class="pixel-hud pixel-hud-tr hidden" id="pixel-probe"></div>
       </div>
       <div class="pixel-controls">
         ${isScalar ? `
           <label class="wl-row">
             <span>WC</span>
-            <input type="range" id="wl-wc" min="${minVal}" max="${maxVal}" step="1" value="${Math.round(this._wc)}" />
-            <span class="wl-num" id="wl-wc-num">${Math.round(this._wc)}</span>
+            <input type="range" id="wl-wc" min="${minVal}" max="${maxVal}" step="${prec.step}" value="${wcStr}" />
+            <span class="wl-num" id="wl-wc-num">${wcStr}</span>
           </label>
           <label class="wl-row">
             <span>WW</span>
-            <input type="range" id="wl-ww" min="1" max="${maxW}" step="1" value="${Math.round(this._ww)}" />
-            <span class="wl-num" id="wl-ww-num">${Math.round(this._ww)}</span>
+            <input type="range" id="wl-ww" min="${prec.minWw}" max="${maxW}" step="${prec.step}" value="${wwStr}" />
+            <span class="wl-num" id="wl-ww-num">${wwStr}</span>
           </label>
         ` : ''}
         ${meta.numberOfFrames > 1 ? `
@@ -296,7 +409,7 @@ export class PixelPanel {
           <button class="btn btn-xs ${this._invert ? 'btn-primary' : ''}" id="btn-pixel-invert">${icons.contrast(13)} ${escapeHtml(t('pixelInvert'))}</button>
           ${(meta.overlays?.length || 0) > 0 ? `<button class="btn btn-xs ${this._showOverlays ? 'btn-primary' : ''}" id="btn-pixel-overlay" title="${escapeHtml(t('pixelOverlayTitle', { n: meta.overlays.length }))}">${icons.layers(12)} ${escapeHtml(t('pixelOverlay'))}${meta.overlays.length > 1 ? ` (${meta.overlays.length})` : ''}</button>` : ''}
           ${isScalar ? `<button class="btn btn-xs" id="btn-pixel-auto">${escapeHtml(t('pixelAutoWl'))}</button>` : ''}
-          ${isScalar && meta.windowCenter !== null ? `<button class="btn btn-xs" id="btn-pixel-tag-wl">${escapeHtml(t('pixelTagWl'))}</button>` : ''}
+          ${isScalar && getTagWindow(meta, decoded).wc !== null ? `<button class="btn btn-xs" id="btn-pixel-tag-wl">${escapeHtml(t('pixelTagWl'))}</button>` : ''}
           <button class="btn btn-xs" id="btn-pixel-png" title="${escapeHtml(t('pixelExportPngTitle'))}">${icons.download(12)} PNG</button>
           <span class="pixel-zoom-group">
             <button class="btn btn-xs" id="btn-zoom-out" title="Zoom Out">-</button>
@@ -307,16 +420,33 @@ export class PixelPanel {
       </div>
     `;
 
-    this._bindControls(meta, decoded);
+    this._bindControls();
+  }
+
+  _clampPan() {
+    if (this._zoom <= 1) {
+      this._panX = 0;
+      this._panY = 0;
+      return;
+    }
+    const wrap = this.container.querySelector('#pixel-canvas-wrap');
+    const canvas = this.container.querySelector('#pixel-canvas');
+    const baseW = canvas?.clientWidth || wrap?.clientWidth || 256;
+    const baseH = canvas?.clientHeight || wrap?.clientHeight || 256;
+    const maxX = Math.max(0, (baseW * (this._zoom - 1)) / 2 + 24);
+    const maxY = Math.max(0, (baseH * (this._zoom - 1)) / 2 + 24);
+    this._panX = Math.max(-maxX, Math.min(maxX, this._panX));
+    this._panY = Math.max(-maxY, Math.min(maxY, this._panY));
   }
 
   _applyCanvasTransform() {
+    this._clampPan();
     const canvas = this.container.querySelector('#pixel-canvas');
     if (!canvas) return;
     canvas.style.transform = `translate(${this._panX}px, ${this._panY}px) scale(${this._zoom})`;
   }
 
-  _bindControls(meta, decoded) {
+  _bindControls() {
     const wrap = this.container.querySelector('#pixel-canvas-wrap');
     const canvas = this.container.querySelector('#pixel-canvas');
     const probeEl = this.container.querySelector('#pixel-probe');
@@ -341,16 +471,18 @@ export class PixelPanel {
     }
     if (wwSlider) {
       wwSlider.addEventListener('input', () => {
-        this._ww = Math.max(1, Number(wwSlider.value));
+        const prec = getWlPrecision(this._decoded);
+        this._ww = Math.max(prec.minWw, Number(wwSlider.value));
         this._updateWlReadout();
         this._redrawCanvas();
       });
     }
     if (frameSlider) {
       frameSlider.addEventListener('input', async () => {
-        this._frameIndex = Number(frameSlider.value);
+        const totalFrames = this._meta?.numberOfFrames || 1;
+        this._frameIndex = Math.max(0, Math.min(totalFrames - 1, Number(frameSlider.value)));
         const lbl = this.container.querySelector('#pixel-frame-num');
-        if (lbl) lbl.textContent = `${this._frameIndex + 1}/${meta.numberOfFrames}`;
+        if (lbl) lbl.textContent = `${this._frameIndex + 1}/${totalFrames}`;
         await this._loadAndDrawFrame(false);
       });
     }
@@ -379,18 +511,21 @@ export class PixelPanel {
         this._redrawCanvas();
       });
     }
-    if (autoBtn && decoded.kind === 'scalar') {
+    if (autoBtn) {
       autoBtn.addEventListener('click', () => {
-        this._wc = decoded.autoWC;
-        this._ww = decoded.autoWW;
+        if (this._decoded?.kind !== 'scalar') return;
+        this._wc = this._decoded.autoWC;
+        this._ww = this._decoded.autoWW;
         this._updateWlReadout();
         this._redrawCanvas();
       });
     }
-    if (tagWlBtn && meta.windowCenter !== null) {
+    if (tagWlBtn) {
       tagWlBtn.addEventListener('click', () => {
-        this._wc = meta.windowCenter;
-        this._ww = meta.windowWidth > 0 ? meta.windowWidth : decoded.autoWW;
+        const tagWl = this._meta ? getTagWindow(this._meta, this._decoded) : { wc: null, ww: null };
+        if (tagWl.wc === null) return;
+        this._wc = tagWl.wc;
+        this._ww = tagWl.ww > 0 ? tagWl.ww : (this._decoded?.autoWW ?? 1);
         this._updateWlReadout();
         this._redrawCanvas();
       });
@@ -401,10 +536,6 @@ export class PixelPanel {
 
     const setZoom = (next) => {
       this._zoom = Math.max(1, Math.min(5, Number(next.toFixed(2))));
-      if (this._zoom === 1) {
-        this._panX = 0;
-        this._panY = 0;
-      }
       this._applyCanvasTransform();
     };
     if (zoomInBtn) zoomInBtn.addEventListener('click', () => setZoom(this._zoom + 0.5));
@@ -428,7 +559,9 @@ export class PixelPanel {
 
       // Cursor (X, Y) + Pixel/HU probe HUD
       canvas.addEventListener('mousemove', (e) => {
-        if (!probeEl || this._dragMode) return;
+        const decoded = this._decoded;
+        const meta = this._meta;
+        if (!probeEl || this._dragMode || !decoded || !meta || decoded.kind === 'unsupported') return;
         const rect = canvas.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return;
         const x = Math.floor(((e.clientX - rect.left) / rect.width) * decoded.width);
@@ -455,7 +588,21 @@ export class PixelPanel {
         if (probeEl) probeEl.classList.add('hidden');
       });
 
-      // Mouse drag: Shift+Drag = Pan, Normal Drag = W/L
+      const applyWlDrag = (dx, dy, divisor) => {
+        const decoded = this._decoded;
+        if (!decoded || decoded.kind !== 'scalar' || !this._dragStart) return;
+        const prec = getWlPrecision(decoded);
+        const range = Math.max(prec.minWw, Math.abs(decoded.max - decoded.min));
+        const scale = range / divisor;
+        const rawWw = Math.max(prec.minWw, this._dragStart.ww + dx * scale);
+        const rawWc = this._dragStart.wc + dy * scale;
+        this._ww = prec.decimals === 0 ? Math.round(rawWw) : Number(rawWw.toFixed(prec.decimals));
+        this._wc = prec.decimals === 0 ? Math.round(rawWc) : Number(rawWc.toFixed(prec.decimals));
+        this._updateWlReadout();
+        this._redrawCanvas();
+      };
+
+      // Mouse drag: Shift+Drag = Pan (when zoomed), Normal Drag = W/L
       const onMove = (e) => {
         if (!this._dragMode || !this._dragStart) return;
         const dx = e.clientX - this._dragStart.x;
@@ -464,76 +611,83 @@ export class PixelPanel {
           this._panX = this._dragStart.panX + dx;
           this._panY = this._dragStart.panY + dy;
           this._applyCanvasTransform();
-        } else if (this._dragMode === 'wl' && decoded.kind === 'scalar') {
-          const scale = Math.max(1, (decoded.max - decoded.min) / 250);
-          this._ww = Math.max(1, Math.round(this._dragStart.ww + dx * scale));
-          this._wc = Math.round(this._dragStart.wc + dy * scale);
-          this._updateWlReadout();
-          this._redrawCanvas();
+        } else if (this._dragMode === 'wl') {
+          applyWlDrag(dx, dy, 250);
         }
       };
       const onUp = () => {
-        this._dragMode = null;
-        window.removeEventListener('mousemove', onMove);
-        window.removeEventListener('mouseup', onUp);
+        this._endActiveDrag();
       };
 
       wrap.addEventListener('mousedown', (e) => {
+        this._endActiveDrag();
         if (e.shiftKey || e.button === 1) {
+          if (this._zoom <= 1) return;
           e.preventDefault();
           this._dragMode = 'pan';
           this._dragStart = { x: e.clientX, y: e.clientY, panX: this._panX, panY: this._panY };
-        } else if (decoded.kind === 'scalar') {
+        } else if (e.button === 0 && this._decoded?.kind === 'scalar') {
           this._dragMode = 'wl';
           this._dragStart = { x: e.clientX, y: e.clientY, wc: this._wc, ww: this._ww };
         } else {
           return;
         }
-        window.addEventListener('mousemove', onMove);
-        window.addEventListener('mouseup', onUp);
+        window.addEventListener?.('mousemove', onMove);
+        window.addEventListener?.('mouseup', onUp);
+        window.addEventListener?.('blur', onUp);
+        this._cleanupDrag = () => {
+          window.removeEventListener?.('mousemove', onMove);
+          window.removeEventListener?.('mouseup', onUp);
+          window.removeEventListener?.('blur', onUp);
+        };
       });
 
       // Touch drag W/L adjustment for mobile devices
-      if (decoded.kind === 'scalar') {
-        canvas.addEventListener('touchstart', (e) => {
-          if (e.touches.length !== 1) return;
-          e.preventDefault();
-          const pt = e.touches[0];
-          this._dragMode = 'wl';
-          this._dragStart = { x: pt.clientX, y: pt.clientY, wc: this._wc, ww: this._ww };
-        }, { passive: false });
+      canvas.addEventListener('touchstart', (e) => {
+        if (this._decoded?.kind !== 'scalar' || e.touches.length !== 1) return;
+        e.preventDefault();
+        const pt = e.touches[0];
+        this._dragMode = 'wl';
+        this._dragStart = { x: pt.clientX, y: pt.clientY, wc: this._wc, ww: this._ww };
+      }, { passive: false });
 
-        canvas.addEventListener('touchmove', (e) => {
-          if (this._dragMode !== 'wl' || !this._dragStart || e.touches.length !== 1) return;
-          e.preventDefault();
-          const pt = e.touches[0];
-          const dx = pt.clientX - this._dragStart.x;
-          const dy = pt.clientY - this._dragStart.y;
-          const scale = Math.max(1, (decoded.max - decoded.min) / 220);
-          this._ww = Math.max(1, Math.round(this._dragStart.ww + dx * scale));
-          this._wc = Math.round(this._dragStart.wc + dy * scale);
-          this._updateWlReadout();
-          this._redrawCanvas();
-        }, { passive: false });
+      canvas.addEventListener('touchmove', (e) => {
+        if (this._dragMode !== 'wl' || !this._dragStart || e.touches.length !== 1) return;
+        e.preventDefault();
+        const pt = e.touches[0];
+        applyWlDrag(pt.clientX - this._dragStart.x, pt.clientY - this._dragStart.y, 220);
+      }, { passive: false });
 
-        canvas.addEventListener('touchend', () => {
-          this._dragMode = null;
-        });
-      }
+      const endTouch = () => {
+        this._dragMode = null;
+        this._dragStart = null;
+      };
+      canvas.addEventListener('touchend', endTouch);
+      canvas.addEventListener('touchcancel', endTouch);
     }
   }
 
   _updateWlReadout() {
+    const prec = getWlPrecision(this._decoded);
+    const wcStr = formatWlNum(this._wc, prec.decimals);
+    const wwStr = formatWlNum(this._ww, prec.decimals);
     const wcSlider = this.container.querySelector('#wl-wc');
     const wwSlider = this.container.querySelector('#wl-ww');
     const wcNum = this.container.querySelector('#wl-wc-num');
     const wwNum = this.container.querySelector('#wl-ww-num');
     const hud = this.container.querySelector('#pixel-hud');
-    if (wcSlider) wcSlider.value = String(Math.round(this._wc));
-    if (wwSlider) wwSlider.value = String(Math.round(this._ww));
-    if (wcNum) wcNum.textContent = String(Math.round(this._wc));
-    if (wwNum) wwNum.textContent = String(Math.round(this._ww));
-    if (hud) hud.textContent = `WC: ${Math.round(this._wc)} / WW: ${Math.round(this._ww)}`;
+    if (wcSlider) {
+      if (this._wc < Number(wcSlider.min)) wcSlider.min = String(Math.floor(this._wc));
+      if (this._wc > Number(wcSlider.max)) wcSlider.max = String(Math.ceil(this._wc));
+      wcSlider.value = wcStr;
+    }
+    if (wwSlider) {
+      if (this._ww > Number(wwSlider.max)) wwSlider.max = String(Math.ceil(this._ww));
+      wwSlider.value = wwStr;
+    }
+    if (wcNum) wcNum.textContent = wcStr;
+    if (wwNum) wwNum.textContent = wwStr;
+    if (hud) hud.textContent = `WC: ${wcStr} / WW: ${wwStr}`;
   }
 
   async exportPng() {
@@ -546,12 +700,12 @@ export class PixelPanel {
     const rendered = this._renderedFrame;
     const samePixels = rendered?.doc === doc && rendered.pixelVersion === pixelVersion;
     const settings = {
-      wc: samePixels ? this._wc : meta.windowCenter,
-      ww: samePixels ? this._ww : meta.windowWidth,
-      invert: this._invert,
+      wc: samePixels ? this._wc : null,
+      ww: samePixels ? this._ww : null,
+      invert: samePixels ? this._invert : false,
       showOverlays: this._showOverlays,
     };
-    const base = doc.fileName.split('/').at(-1).replace(/\.(dcm|dicom)(\.gz)?$/i, '');
+    const base = stripDicomBaseName(doc.fileName);
     const frameSuffix = meta.numberOfFrames > 1 ? `_f${frameIndex + 1}` : '';
     let canvas = samePixels && rendered.frameIndex === frameIndex
       ? this.container.querySelector('#pixel-canvas') : null;
@@ -564,10 +718,12 @@ export class PixelPanel {
         // A hidden preview or a pending frame can still show an older canvas.
         canvas = document.createElement('canvas');
         try {
+          const tagWl = getTagWindow(meta, decoded);
+          const ww = settings.ww ?? tagWl.ww;
           renderFrameToCanvas(canvas, decoded, meta, {
             ...settings,
-            wc: settings.wc ?? decoded.autoWC,
-            ww: settings.ww > 0 ? settings.ww : decoded.autoWW,
+            wc: settings.wc ?? tagWl.wc ?? decoded.autoWC,
+            ww: ww > 0 ? ww : decoded.autoWW,
           });
         } finally {
           if (decoded.kind === 'bitmap') decoded.bitmap.close();

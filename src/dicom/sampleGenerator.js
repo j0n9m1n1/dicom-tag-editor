@@ -165,9 +165,12 @@ export async function generateSampleDicomBuffer() {
     makeNode(0x0020, 0x000e, 'UI', '1.2.826.0.1.3680043.8.498.100001.1'),
     makeNode(0x0020, 0x0010, 'SH', 'STD001'),
     makeNode(0x0020, 0x0011, 'IS', '2'),
+    makeNode(0x0020, 0x0012, 'IS', '1'),
     makeNode(0x0020, 0x0013, 'IS', '14'),
     makeNode(0x0020, 0x0032, 'DS', '-125.0\\-125.0\\42.5'),
     makeNode(0x0020, 0x0037, 'DS', '1\\0\\0\\0\\1\\0'),
+    makeNode(0x0020, 0x0052, 'UI', '1.2.826.0.1.3680043.8.498.100001.1.1'),
+    makeNode(0x0020, 0x1040, 'LO', ''),
     makeNode(0x0020, 0x1041, 'DS', '42.5'),
     // 0028 Pixel attributes
     makeNode(0x0028, 0x0002, 'US', '1'),

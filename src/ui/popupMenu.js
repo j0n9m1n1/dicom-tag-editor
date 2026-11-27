@@ -140,6 +140,10 @@ export function openPopupMenu({
       focusBack?.focus?.();
       return;
     }
+    if (e.key === 'Tab') {
+      closePopupMenu();
+      return;
+    }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
       const enabled = Array.from(menu.querySelectorAll('.ctx-item:not(:disabled)'));
       if (enabled.length === 0) return;
@@ -162,6 +166,8 @@ export function openPopupMenu({
 
   const state = { el: menu, triggerEl, scrollEl, timer: null, onDismiss, onKeyDown };
   activeMenu = state;
+
+  menu.querySelector('.ctx-item:not(:disabled)')?.focus?.({ preventScroll: true });
 
   window.addEventListener('keydown', onKeyDown, true);
   scrollEl?.addEventListener('scroll', onDismiss, { passive: true });

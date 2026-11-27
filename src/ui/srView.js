@@ -7,7 +7,7 @@
  */
 
 import { extractSrDocument, formatSrMarkdown } from '../dicom/srParser.js';
-import { copyTextToClipboard, downloadBlobBytes } from '../utils/uiHelpers.js';
+import { copyTextToClipboard, downloadBlobBytes, stripDicomBaseName } from '../utils/uiHelpers.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
 
@@ -42,14 +42,18 @@ export class SrView {
 
     this.searchQuery = '';
     this.collapsedIds = new Set();
+    this.filterCollapsedIds = new Set();
+    this._searchTimer = null;
     this._lastDocRef = null;
     this._lastSr = null;
     this._shellBuilt = false;
   }
 
   reset() {
+    clearTimeout(this._searchTimer);
     this.searchQuery = '';
     this.collapsedIds.clear();
+    this.filterCollapsedIds.clear();
     this._lastDocRef = null;
     this._lastSr = null;
     if (this._shellBuilt) {
@@ -107,11 +111,15 @@ export class SrView {
 
     searchInp.addEventListener('input', () => {
       this.searchQuery = searchInp.value;
+      this.filterCollapsedIds.clear();
       clearBtn.classList.toggle('hidden', !this.searchQuery);
-      this._renderBody(false);
+      clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(() => this._renderBody(false), 120);
     });
     clearBtn.addEventListener('click', () => {
+      clearTimeout(this._searchTimer);
       this.searchQuery = '';
+      this.filterCollapsedIds.clear();
       searchInp.value = '';
       clearBtn.classList.add('hidden');
       searchInp.focus();
@@ -119,10 +127,12 @@ export class SrView {
     });
     expandBtn.addEventListener('click', () => {
       this.collapsedIds.clear();
+      this.filterCollapsedIds.clear();
       this._renderBody(true);
     });
     collapseBtn.addEventListener('click', () => {
-      this._collectParentIds(this._lastSr?.items || [], this.collapsedIds);
+      const target = this.searchQuery.trim() ? this.filterCollapsedIds : this.collapsedIds;
+      this._collectParentIds(this._lastSr?.items || [], target);
       this._renderBody(true);
     });
     copyBtn.addEventListener('click', () => this._copyMarkdown());
@@ -133,8 +143,9 @@ export class SrView {
       const toggleBtn = e.target.closest('[data-sr-toggle]');
       if (toggleBtn) {
         const id = toggleBtn.dataset.srToggle;
-        if (this.collapsedIds.has(id)) this.collapsedIds.delete(id);
-        else this.collapsedIds.add(id);
+        const target = this.searchQuery.trim() ? this.filterCollapsedIds : this.collapsedIds;
+        if (target.has(id)) target.delete(id);
+        else target.add(id);
         this._renderBody(true);
         return;
       }
@@ -215,8 +226,8 @@ export class SrView {
 
   _renderItem(item, filtering) {
     const hasChildren = item.children.length > 0;
-    const isCollapsed = hasChildren && !filtering && this.collapsedIds.has(item.id);
-    const vtCls = SR_BADGE_CLASS[item.valueType] || 'sr-vt-other';
+    const isCollapsed = hasChildren && (filtering ? this.filterCollapsedIds.has(item.id) : this.collapsedIds.has(item.id));
+    const vtCls = Object.hasOwn(SR_BADGE_CLASS, item.valueType) ? SR_BADGE_CLASS[item.valueType] : 'sr-vt-other';
     const chevron = hasChildren
       ? `<button type="button" class="sr-toggle" data-sr-toggle="${escapeHtml(item.id)}" aria-expanded="${!isCollapsed}">${isCollapsed ? icons.chevronRight(14) : icons.chevronDown(14)}</button>`
       : '<span class="sr-toggle-spacer"></span>';
@@ -329,7 +340,7 @@ export class SrView {
 
   exportMarkdown() {
     if (!this._lastSr || !this.store.doc) return;
-    const base = this.store.doc.fileName.split('/').at(-1).replace(/\.(dcm|dicom)$/i, '');
+    const base = stripDicomBaseName(this.store.doc.fileName);
     const md = formatSrMarkdown(this._lastSr, this.store.doc.fileName);
     downloadBlobBytes(md, 'text/markdown;charset=utf-8', `${base}_report.md`);
   }

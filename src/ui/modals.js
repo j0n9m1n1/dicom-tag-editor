@@ -26,6 +26,7 @@ export class ModalManager {
     this.store = store;
     this.callbacks = callbacks || {};
     this._backdropMouseDown = false;
+    this._previousFocus = null;
 
     this.root.addEventListener('mousedown', (e) => {
       this._backdropMouseDown = e.target === this.root;
@@ -40,18 +41,66 @@ export class ModalManager {
     });
 
     window.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !this.root.classList.contains('hidden')) {
+      if (this.root.classList.contains('hidden')) return;
+      if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
         this.close();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const focusables = this._getFocusableElements();
+        if (focusables.length === 0) {
+          e.preventDefault();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        if (!this.root.contains(active)) {
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        } else if (e.shiftKey && active === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     });
   }
 
+  _getFocusableElements() {
+    const sel =
+      'a[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+    return Array.from(this.root.querySelectorAll(sel)).filter(
+      (el) => !el.closest('.hidden') && (el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0)
+    );
+  }
+
+  _showModal(preferredFocusEl = null) {
+    if (this.root.classList.contains('hidden')) {
+      this._previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+    this.root.classList.remove('hidden');
+    const card = this.root.querySelector('.modal-card');
+    if (card && !card.hasAttribute('tabindex')) {
+      card.setAttribute('tabindex', '-1');
+    }
+    const target = preferredFocusEl || this._getFocusableElements()[0] || card;
+    target?.focus?.({ preventScroll: true });
+  }
+
   close() {
     this._backdropMouseDown = false;
+    const prev = this._previousFocus;
+    this._previousFocus = null;
     this.root.classList.add('hidden');
     this.root.innerHTML = '';
+    if (prev && prev.isConnected) {
+      prev.focus?.({ preventScroll: true });
+    }
   }
 
   isSettingsOpen() {
@@ -85,7 +134,7 @@ export class ModalManager {
           </div>
           <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
         </div>
-        <div class="modal-body">
+        <div class="modal-body modal-scroll">
           <div class="form-group">
             <label>${escapeHtml(t('modalAddSearchLabel'))}</label>
             <input type="text" class="input" id="add-dict-search" placeholder="${escapeHtml(t('modalAddSearchPh'))}" autocomplete="off" />
@@ -118,7 +167,7 @@ export class ModalManager {
       </div>
     `;
 
-    this.root.classList.remove('hidden');
+    this._showModal(this.root.querySelector('#add-dict-search'));
 
     const searchInp = this.root.querySelector('#add-dict-search');
     const listEl = this.root.querySelector('#add-dict-list');
@@ -310,7 +359,7 @@ export class ModalManager {
       </div>
     `;
 
-    this.root.classList.remove('hidden');
+    this._showModal();
 
     this.root.querySelectorAll('[data-jump]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -366,13 +415,18 @@ export class ModalManager {
       const curVal = exists ? currentMap.get(p.tag) : null;
       const formatted = `(${p.tag.slice(0, 4)},${p.tag.slice(4, 8)})`;
       const checked = p.profiles.includes(activeProfile) ? 'checked' : '';
+      const action = p.action || 'replace';
+      const isRemove = action === 'remove';
+      const valInputHtml = isRemove
+        ? `<input type="text" class="input input-sm" data-anon-val="${p.tag}" data-anon-action="remove" value="" placeholder="${escapeHtml(t('modalAnonRemoveAction'))}" disabled />`
+        : `<input type="text" class="input input-sm" data-anon-val="${p.tag}" data-anon-action="${escapeHtml(action)}" value="${escapeHtml(action === 'empty' ? '' : (p.replacement ?? ''))}" placeholder="${escapeHtml(t('modalAnonClearPh'))}" />`;
       return `
         <tr class="${exists ? '' : 'muted'}">
           <td><input type="checkbox" data-anon-check="${p.tag}" ${checked} /></td>
           <td class="mono">${formatted}</td>
           <td>${escapeHtml(p.label)}</td>
           <td class="mono small">${exists ? escapeHtml(curVal || '(empty)') : `<span class="muted">${escapeHtml(t('modalAnonMissing'))}</span>`}</td>
-          <td><input type="text" class="input input-sm" data-anon-val="${p.tag}" value="${escapeHtml(p.replacement)}" placeholder="${escapeHtml(t('modalAnonClearPh'))}" /></td>
+          <td>${valInputHtml}</td>
         </tr>
       `;
     }).join('');
@@ -455,7 +509,7 @@ export class ModalManager {
       </div>
     `;
 
-    this.root.classList.remove('hidden');
+    this._showModal();
 
     const markDeidCb = this.root.querySelector('#anon-mark-deid');
     const shiftDatesCb = this.root.querySelector('#anon-shift-dates');
@@ -470,7 +524,13 @@ export class ModalManager {
         if (cb.checked) {
           const tag = cb.dataset.anonCheck;
           const valInp = this.root.querySelector(`[data-anon-val="${tag}"]`);
-          rules.push({ tag, replacement: valInp ? valInp.value : '' });
+          const action = valInp?.dataset.anonAction || 'replace';
+          const replacement = valInp ? valInp.value : '';
+          rules.push({
+            tag,
+            action: action === 'remove' ? 'remove' : (action === 'empty' && replacement === '' ? 'empty' : 'replace'),
+            replacement,
+          });
         }
       });
       const profileDef = ANONYMIZE_PROFILES[activeProfile] || ANONYMIZE_PROFILES.basic;
@@ -538,6 +598,7 @@ export class ModalManager {
             res.affectedFiles > 0 ? 'ok' : 'info'
           );
           if (res.skippedFiles) this.callbacks.onToast?.(t('toastAnonSkipped', { count: res.skippedFiles }), 'warn');
+          if (res.dateSkips) this.callbacks.onToast?.(t('toastAnonDateSkipped', { count: res.dateSkips }), 'warn');
         } catch (err) {
           this.callbacks.onToast?.(t('toastAnonErr', { msg: err.message }), 'error');
         }
@@ -547,6 +608,8 @@ export class ModalManager {
           count > 0 ? t('toastAnonDone', { count }) : t('toastAnonNone'),
           count > 0 ? 'ok' : 'info'
         );
+        const dateSkips = this.store.lastAnonymizeDateSkips || 0;
+        if (dateSkips) this.callbacks.onToast?.(t('toastAnonDateSkipped', { count: dateSkips }), 'warn');
       }
     });
   }
@@ -607,7 +670,7 @@ export class ModalManager {
         </div>
       </div>
     `;
-    this.root.classList.remove('hidden');
+    this._showModal();
 
     this.root.querySelectorAll('[data-qa-jump]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -659,7 +722,7 @@ export class ModalManager {
         <div class="cmd-palette-list" id="cmd-palette-list" role="listbox"></div>
       </div>
     `;
-    this.root.classList.remove('hidden');
+    this._showModal(this.root.querySelector('#cmd-palette-input'));
 
     const input = this.root.querySelector('#cmd-palette-input');
     const listEl = this.root.querySelector('#cmd-palette-list');
@@ -801,7 +864,7 @@ export class ModalManager {
           </div>
           <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
         </div>
-        <div class="modal-body">
+        <div class="modal-body modal-scroll">
           <div class="form-group">
             <label>${escapeHtml(t('modalAddSearchLabel'))}</label>
             <input type="text" class="input" id="batch-dict-search" placeholder="${escapeHtml(t('modalAddSearchPh'))}" autocomplete="off" />
@@ -841,7 +904,7 @@ export class ModalManager {
       </div>
     `;
 
-    this.root.classList.remove('hidden');
+    this._showModal(this.root.querySelector('#batch-dict-search'));
 
     const searchInp = this.root.querySelector('#batch-dict-search');
     const listEl = this.root.querySelector('#batch-dict-list');
@@ -970,7 +1033,7 @@ export class ModalManager {
           </div>
           <button class="btn-icon" data-modal-close>${icons.x(18)}</button>
         </div>
-        <div class="modal-body">
+        <div class="modal-body modal-scroll">
           <div class="setting-row">
             <label class="setting-label">${escapeHtml(t('settingsLangLabel'))}</label>
             <div class="seg-group">
@@ -1030,7 +1093,7 @@ export class ModalManager {
       </div>
     `;
 
-    this.root.classList.remove('hidden');
+    this._showModal();
 
     this.root.querySelector('#btn-install-pwa')?.addEventListener('click', async () => {
       const accepted = await this.callbacks.onInstallPwa?.();
@@ -1239,7 +1302,7 @@ export class ModalManager {
       </div>
     `;
 
-    this.root.classList.remove('hidden');
+    this._showModal();
 
     const reportText = reportLines.join('\n').trim();
     this.root.querySelector('#btn-copy-err-diag')?.addEventListener('click', async () => {

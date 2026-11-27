@@ -8,9 +8,13 @@ import { formatDcmDump, formatDicomJson } from '../dicom/dcmdump.js';
 import { writeDicomDocument } from '../dicom/writer.js';
 import { formatByteSize } from '../dicom/parser.js';
 import { VR_32BIT_LENGTH } from '../dicom/vrSpec.js';
-import { copyTextToClipboard, downloadBlobBytes } from '../utils/uiHelpers.js';
+import { copyTextToClipboard, downloadBlobBytes, stripDicomBaseName } from '../utils/uiHelpers.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
+
+function escapeRegExp(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 export const HEX_PAGE_SIZE = 16384; // ~16 KB per page for smooth rendering of large DICOMs
 export const HEX_BYTES_PER_ROW_OPTIONS = [8, 16, 24, 32, 64];
@@ -255,6 +259,7 @@ export class RawView {
     this._hexCache = null; // { doc, rev, needsResave, bytes, landmarks }
     this._lastDocRef = null;
     this._renderToken = 0;
+    this._searchTimer = null;
     this._shellBuilt = false;
   }
 
@@ -397,7 +402,8 @@ export class RawView {
     searchInp.addEventListener('input', () => {
       this.searchQuery = searchInp.value;
       clearBtn.classList.toggle('hidden', !this.searchQuery);
-      this._renderTextContent();
+      clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(() => this._renderTextContent(), 120);
     });
     searchInp.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && this.matchCount > 0) {
@@ -406,6 +412,7 @@ export class RawView {
       }
     });
     clearBtn.addEventListener('click', () => {
+      clearTimeout(this._searchTimer);
       this.searchQuery = '';
       searchInp.value = '';
       clearBtn.classList.add('hidden');
@@ -567,7 +574,17 @@ export class RawView {
     const prevActiveIdx = preserveScroll ? this.activeMatchIdx : -1;
     preEl.classList.remove('raw-hex-pre');
 
-    const text = this._getCurrentText();
+    let text;
+    try {
+      text = this._getCurrentText();
+    } catch (err) {
+      preEl.textContent = t('rawTextFormatErr', { msg: err.message });
+      this.matchCount = 0;
+      this.activeMatchIdx = -1;
+      if (bodyEl) bodyEl.scrollTop = 0;
+      this._updateMatchNav();
+      return;
+    }
     const q = this.searchQuery.trim();
     this.matchCount = 0;
     this.activeMatchIdx = -1;
@@ -579,29 +596,30 @@ export class RawView {
       return;
     }
 
-    const qLower = q.toLowerCase();
-    const textLower = text.toLowerCase();
+    const re = new RegExp(escapeRegExp(q), 'gi');
     const parts = [];
     let pos = 0;
     let count = 0;
+    let m;
 
-    while (pos < text.length) {
-      const idx = textLower.indexOf(qLower, pos);
-      if (idx === -1) {
-        parts.push(escapeHtml(text.slice(pos)));
-        break;
-      }
+    while ((m = re.exec(text)) !== null) {
+      if (m[0].length === 0) break;
+      const idx = m.index;
       if (idx > pos) {
         parts.push(escapeHtml(text.slice(pos, idx)));
       }
       if (count < MAX_SEARCH_HIGHLIGHTS) {
-        parts.push(`<mark class="raw-hl" data-hl-idx="${count}">${escapeHtml(text.slice(idx, idx + q.length))}</mark>`);
+        parts.push(`<mark class="raw-hl" data-hl-idx="${count}">${escapeHtml(m[0])}</mark>`);
         count++;
       } else {
         parts.push(escapeHtml(text.slice(idx)));
+        pos = text.length;
         break;
       }
-      pos = idx + q.length;
+      pos = idx + m[0].length;
+    }
+    if (pos < text.length) {
+      parts.push(escapeHtml(text.slice(pos)));
     }
 
     this.matchCount = count;
@@ -796,7 +814,12 @@ export class RawView {
       text = formatHexSlice(cache.bytes, startOffset, pageSize, bpr).text;
       isHexPageOnly = cache.bytes.length > pageSize;
     } else {
-      text = this._getCurrentText();
+      try {
+        text = this._getCurrentText();
+      } catch (err) {
+        this.callbacks.onToast?.(t('rawTextFormatErr', { msg: err.message }), 'error');
+        return;
+      }
     }
 
     if (await copyTextToClipboard(text)) {
@@ -812,7 +835,7 @@ export class RawView {
   async exportCurrent() {
     const doc = this.store.doc;
     if (!doc) return;
-    const base = doc.fileName.split('/').at(-1).replace(/\.dcm$/i, '');
+    const base = stripDicomBaseName(doc.fileName);
 
     let content = '';
     let ext = 'txt';
@@ -837,15 +860,21 @@ export class RawView {
       content = `${header}\n\n${formatHexRuler(bpr)}\n${slice.text}\n`;
       ext = 'txt';
       suffix = 'hex';
-    } else if (this.mode === 'json') {
-      content = this._getCurrentText();
-      ext = 'json';
-      suffix = 'json';
-      mime = 'application/json;charset=utf-8';
     } else {
-      content = this._getCurrentText();
-      ext = 'txt';
-      suffix = 'dcmdump';
+      try {
+        content = this._getCurrentText();
+      } catch (err) {
+        this.callbacks.onToast?.(t('rawTextFormatErr', { msg: err.message }), 'error');
+        return;
+      }
+      if (this.mode === 'json') {
+        ext = 'json';
+        suffix = 'json';
+        mime = 'application/json;charset=utf-8';
+      } else {
+        ext = 'txt';
+        suffix = 'dcmdump';
+      }
     }
 
     downloadBlobBytes(content, mime, `${base}_${suffix}.${ext}`);

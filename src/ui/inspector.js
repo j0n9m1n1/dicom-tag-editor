@@ -179,10 +179,12 @@ export class InspectorPanel {
 
     const node = info.node;
 
-    // Preserve focus during live typing in the same node
+    // Preserve focus during live typing in the same node (only when still editable)
     const activeEl = document.activeElement;
+    const isEffectivelyDeleted = node.status === 'deleted' || Boolean(info.ancestorDeleted);
     const isTypingInside =
       reason === 'edit' &&
+      !isEffectivelyDeleted &&
       this._renderedNodeId === node.id &&
       activeEl &&
       this.container.contains(activeEl) &&
@@ -191,7 +193,7 @@ export class InspectorPanel {
         activeEl.matches('[data-pn-input]'));
 
     if (isTypingInside) {
-      this._updateLiveMetrics(node);
+      this._syncLiveInputsAndMetrics(node, info);
       return;
     }
 
@@ -212,6 +214,7 @@ export class InspectorPanel {
   _renderSeqItem(info) {
     const { item, parentSeq, itemIndex } = info;
     const childCount = (item.children || []).filter((c) => c.status !== 'deleted').length;
+    const isDisabled = parentSeq.status === 'deleted' || Boolean(info.ancestorDeleted);
     this.container.innerHTML = `
       <div class="insp-section">
         <div class="insp-breadcrumb">${this._renderBreadcrumbs(info)}</div>
@@ -223,13 +226,51 @@ export class InspectorPanel {
           ${t('inspSeqItemDesc', { tag: escapeHtml(parentSeq.formattedTag), count: childCount })}
         </p>
         <div class="insp-actions">
-          <button class="btn btn-primary btn-sm" data-action="add-tag-in-item">
+          <button class="btn btn-primary btn-sm" data-action="add-tag-in-item" ${isDisabled ? 'disabled' : ''}>
             ${icons.plus(14)} ${escapeHtml(t('inspAddTagInItem'))}
           </button>
-          <button class="btn btn-danger-ghost btn-sm" data-action="delete-seq-item">
+          <button class="btn btn-danger-ghost btn-sm" data-action="delete-seq-item" ${isDisabled ? 'disabled' : ''}>
             ${icons.trash(14)} ${escapeHtml(t('inspDeleteSeqItem'))}
           </button>
         </div>
+      </div>
+    `;
+  }
+
+  _renderStatusBadge(status) {
+    const statusBadgeMap = {
+      unchanged: `<span class="status-pill st-unchanged">${escapeHtml(t('stUnchanged'))}</span>`,
+      modified: `<span class="status-pill st-modified">${escapeHtml(t('stModified'))}</span>`,
+      added: `<span class="status-pill st-added">${escapeHtml(t('stAdded'))}</span>`,
+      deleted: `<span class="status-pill st-deleted">${escapeHtml(t('stDeleted'))}</span>`,
+    };
+    return statusBadgeMap[status] || '';
+  }
+
+  _renderTopActionsHtml(node, info) {
+    const isDeleted = node.status === 'deleted';
+    const canDelete = !info.ancestorDeleted && !getReadOnlyTagMessage(node.tag);
+    const canRevert = canDelete && (node.status === 'modified' || node.status === 'added');
+    return `
+      ${canRevert ? `
+        <button class="btn btn-xs" data-action="revert-node" title="${escapeHtml(node.status === 'added' ? t('inspCancelAdd') : t('inspRevertOrig'))}">
+          ${icons.rotateCcw(12)} ${escapeHtml(node.status === 'added' ? t('inspCancelAdd') : t('inspRevertOrig'))}
+        </button>
+      ` : ''}
+      ${canDelete ? `
+        <button class="btn btn-xs ${isDeleted ? 'btn-primary' : 'btn-danger-ghost'}" data-action="toggle-delete">
+          ${isDeleted ? `${icons.rotateCcw(12)} ${escapeHtml(t('inspRestoreDel'))}` : `${icons.trash(12)} ${escapeHtml(t('inspDeleteTag'))}`}
+        </button>
+      ` : ''}
+    `;
+  }
+
+  _renderOrigInlineHtml(node) {
+    if (node.status !== 'modified' || node.isBinary || node.isSequence) return '';
+    return `
+      <div class="insp-orig-inline">
+        <span class="muted">${escapeHtml(t('inspOrigCompareTitle'))}:</span>
+        <code>${escapeHtml(node.originalValue || '(empty)')}</code>
       </div>
     `;
   }
@@ -238,20 +279,13 @@ export class InspectorPanel {
     const { node } = info;
     const spec = getVrSpec(node.vr);
     const vrText = getLocalizedVrText(spec);
-    const isDeleted = node.status === 'deleted';
+    const isDeleted = node.status === 'deleted' || Boolean(info.ancestorDeleted);
     const charset = this.store.getSpecificCharacterSet();
     const needsUtf8Warn =
       info.section === 'main' &&
       usesSpecificCharacterSet(node.vr) &&
       hasNonAscii(node.value) &&
       !isUtf8Charset(charset);
-
-    const statusBadgeMap = {
-      unchanged: `<span class="status-pill st-unchanged">${escapeHtml(t('stUnchanged'))}</span>`,
-      modified: `<span class="status-pill st-modified">${escapeHtml(t('stModified'))}</span>`,
-      added: `<span class="status-pill st-added">${escapeHtml(t('stAdded'))}</span>`,
-      deleted: `<span class="status-pill st-deleted">${escapeHtml(t('stDeleted'))}</span>`,
-    };
 
     const maxLenText = spec.fixedLength
       ? t('inspLenFixed', { n: spec.fixedLength })
@@ -266,8 +300,6 @@ export class InspectorPanel {
           ? t('inspPadSpace')
           : t('inspPadNone');
 
-    const canDelete = !getReadOnlyTagMessage(node.tag);
-    const canRevert = canDelete && (node.status === 'modified' || node.status === 'added');
     const phiInfo = getPhiTagInfo(node.tag);
 
     this.container.innerHTML = `
@@ -279,22 +311,13 @@ export class InspectorPanel {
             <code class="insp-tag-code">${node.formattedTag}</code>
             <button class="btn-icon insp-copy-btn" data-action="copy-tag" title="${escapeHtml(t('inspCopyTagTitle'))}">${icons.copy(13)}</button>
             ${!node.isBinary && !node.isSequence ? `<button class="btn-icon insp-copy-btn" data-action="copy-val" title="${escapeHtml(t('inspCopyValTitle'))}">${icons.code(13)}</button>` : ''}
-            ${statusBadgeMap[node.status] || ''}
+            <span id="insp-status-slot">${this._renderStatusBadge(node.status)}</span>
             ${phiInfo ? `<span class="mini-badge badge-phi" title="${escapeHtml(t('inspPhiActionTitle', { action: phiInfo.action }))}">PHI · ${escapeHtml(phiInfo.action)}</span>` : ''}
             ${node.isPrivate ? '<span class="mini-badge badge-private">Private</span>' : ''}
             ${node.isMeta ? '<span class="mini-badge badge-meta">Meta 0002</span>' : ''}
           </div>
-          <div class="insp-top-actions">
-            ${canRevert ? `
-              <button class="btn btn-xs" data-action="revert-node" title="${escapeHtml(node.status === 'added' ? t('inspCancelAdd') : t('inspRevertOrig'))}">
-                ${icons.rotateCcw(12)} ${escapeHtml(node.status === 'added' ? t('inspCancelAdd') : t('inspRevertOrig'))}
-              </button>
-            ` : ''}
-            ${canDelete ? `
-              <button class="btn btn-xs ${isDeleted ? 'btn-primary' : 'btn-danger-ghost'}" data-action="toggle-delete">
-                ${isDeleted ? `${icons.rotateCcw(12)} ${escapeHtml(t('inspRestoreDel'))}` : `${icons.trash(12)} ${escapeHtml(t('inspDeleteTag'))}`}
-              </button>
-            ` : ''}
+          <div class="insp-top-actions" id="insp-top-actions">
+            ${this._renderTopActionsHtml(node, info)}
           </div>
         </div>
         <div class="insp-title">${escapeHtml(node.name)}</div>
@@ -309,12 +332,7 @@ export class InspectorPanel {
         </div>
         ${this._renderValueEditor(node, spec, isDeleted)}
         <div id="insp-live-metrics">${this._renderLiveMetricsHtml(node, spec, needsUtf8Warn)}</div>
-        ${node.status === 'modified' && !node.isBinary && !node.isSequence ? `
-          <div class="insp-orig-inline">
-            <span class="muted">${escapeHtml(t('inspOrigCompareTitle'))}:</span>
-            <code>${escapeHtml(node.originalValue || '(empty)')}</code>
-          </div>
-        ` : ''}
+        <div id="insp-orig-slot">${this._renderOrigInlineHtml(node)}</div>
       </div>
 
       <!-- 3. Raw Bytes (Hex) Accordion (above VR Spec) -->
@@ -613,6 +631,53 @@ export class InspectorPanel {
     `;
   }
 
+  _syncLiveInputsAndMetrics(node, info) {
+    const val = node.value || '';
+    const mainInp = this.container.querySelector('[data-inspector-input]');
+    if (mainInp && mainInp.value !== val) {
+      mainInp.value = val;
+    }
+    if (node.vr === 'PN' && this._pnStructuredMode) {
+      const parsed = parsePnComponents(val);
+      ['0', '1', '2', '3', '4'].forEach((idx) => {
+        const aEl = this.container.querySelector(`[data-pn-input="a${idx}"]`);
+        if (aEl && aEl !== document.activeElement && aEl.value !== parsed.alpha[Number(idx)]) {
+          aEl.value = parsed.alpha[Number(idx)];
+        }
+      });
+      ['0', '1'].forEach((idx) => {
+        const iEl = this.container.querySelector(`[data-pn-input="i${idx}"]`);
+        if (iEl && iEl !== document.activeElement && iEl.value !== parsed.ideo[Number(idx)]) {
+          iEl.value = parsed.ideo[Number(idx)];
+        }
+      });
+    } else if (this._multiValueMode) {
+      const mvInputs = [...this.container.querySelectorAll('[data-mv-input]')];
+      const parts = val.split('\\');
+      if (mvInputs.length !== parts.length) {
+        this._renderNode(info);
+        return;
+      }
+      mvInputs.forEach((inp, idx) => {
+        if (inp.value !== parts[idx]) inp.value = parts[idx];
+      });
+    }
+
+    const statusSlot = this.container.querySelector('#insp-status-slot');
+    if (statusSlot) statusSlot.innerHTML = this._renderStatusBadge(node.status);
+    const actionsSlot = this.container.querySelector('#insp-top-actions');
+    if (actionsSlot) actionsSlot.innerHTML = this._renderTopActionsHtml(node, info);
+    const origSlot = this.container.querySelector('#insp-orig-slot');
+    if (origSlot) origSlot.innerHTML = this._renderOrigInlineHtml(node);
+
+    const trimmed = val.trim();
+    this.container.querySelectorAll('[data-preset-val]').forEach((chip) => {
+      chip.classList.toggle('active', chip.dataset.presetVal === trimmed);
+    });
+
+    this._updateLiveMetrics(node);
+  }
+
   _updateLiveMetrics(node) {
     const el = this.container.querySelector('#insp-live-metrics');
     if (el) {
@@ -637,10 +702,10 @@ export class InspectorPanel {
 
   _onInput(e) {
     const info = this.store.findNodeInfo(this.store.selectedId);
-    if (!info || info.isSeqItem) return;
+    if (!info || info.isSeqItem || info.ancestorDeleted) return;
 
     if (e.target.matches('[data-inspector-input]')) {
-      this.store.updateNodeValue(info.node.id, e.target.value);
+      this.store.updateNodeValue(info.node.id, e.target.value, { coalesce: true });
       if (info.node.vr === 'PN' && this._pnStructuredMode) {
         const parsed = parsePnComponents(e.target.value);
         ['0', '1', '2', '3', '4'].forEach((idx) => {
@@ -672,14 +737,14 @@ export class InspectorPanel {
       const composed = existingParts.join('\\');
       const rawInp = this.container.querySelector('[data-inspector-input]');
       if (rawInp) rawInp.value = composed;
-      this.store.updateNodeValue(info.node.id, composed);
+      this.store.updateNodeValue(info.node.id, composed, { coalesce: true });
       return;
     }
 
     if (e.target.matches('[data-mv-input]')) {
       const inputs = [...this.container.querySelectorAll('[data-mv-input]')];
       const joined = inputs.map((i) => i.value).join('\\');
-      this.store.updateNodeValue(info.node.id, joined);
+      this.store.updateNodeValue(info.node.id, joined, { coalesce: true });
     }
   }
 

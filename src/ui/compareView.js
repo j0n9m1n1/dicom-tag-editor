@@ -17,9 +17,13 @@ export const INTERNAL_FILE_DRAG_MIME = 'application/x-dcm-file-id';
 function flattenDoc(doc) {
   const map = new Map();
   const walk = (nodes, section, sortPrefix, displayPrefix, depth) => {
+    const tagOcc = new Map();
     for (const n of nodes || []) {
       if (n.status === 'deleted') continue;
-      const key = `${sortPrefix}/${n.tag}`;
+      const occ = tagOcc.get(n.tag) || 0;
+      tagOcc.set(n.tag, occ + 1);
+      const dupSuffix = occ > 0 ? `#${String(occ).padStart(6, '0')}` : '';
+      const key = `${sortPrefix}/${n.tag}${dupSuffix}`;
       const displayPath = displayPrefix ? `${displayPrefix} › ${n.formattedTag}` : n.formattedTag;
       if (n.isSequence) {
         map.set(key, {
@@ -89,7 +93,7 @@ export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = ''
   let changed = 0;
   let onlyA = 0;
   let onlyB = 0;
-  let hiddenEqualMatches = 0;
+  const hiddenEqualKeys = new Set();
   const rows = [];
 
   const matchesSearch = (a, b) => {
@@ -146,7 +150,7 @@ export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = ''
     entryByKey.set(k, rowObj);
 
     if (diffOnly && kind === 'equal') {
-      if (tokens.length > 0 && matchesSearch(a, b)) hiddenEqualMatches++;
+      if (tokens.length > 0 && matchesSearch(a, b)) hiddenEqualKeys.add(k);
       continue;
     }
     if (!matchesSearch(a, b)) continue;
@@ -158,12 +162,14 @@ export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = ''
       if (!includedKeys.has(ancKey) && entryByKey.has(ancKey)) {
         const anc = entryByKey.get(ancKey);
         includedKeys.add(ancKey);
+        hiddenEqualKeys.delete(ancKey);
         rows.push(anc.kind === 'equal' ? { ...anc, isContext: true } : anc);
       }
     }
 
     if (!includedKeys.has(k)) {
       includedKeys.add(k);
+      hiddenEqualKeys.delete(k);
       rows.push(rowObj);
     }
   }
@@ -175,7 +181,7 @@ export function buildCompareRows(docA, docB, { diffOnly = true, searchQuery = ''
     onlyA,
     onlyB,
     diffs: changed + onlyA + onlyB,
-    hiddenEqualMatches,
+    hiddenEqualMatches: hiddenEqualKeys.size,
   };
 }
 
@@ -194,7 +200,9 @@ export class CompareView {
     this.diffIndices = [];
     this.activeRowIdx = -1;
     this._renderToken = 0;
-    this._syncingScroll = false;
+    this._hoveredIdx = -1;
+    this._hoveredEls = [];
+    this._searchTimer = null;
     this._shellBuilt = false;
   }
 
@@ -321,9 +329,11 @@ export class CompareView {
     searchInp.addEventListener('input', () => {
       this.searchQuery = searchInp.value;
       clearBtn.classList.toggle('hidden', !this.searchQuery);
-      this._renderComparison();
+      clearTimeout(this._searchTimer);
+      this._searchTimer = setTimeout(() => this._renderComparison(), 120);
     });
     clearBtn.addEventListener('click', () => {
+      clearTimeout(this._searchTimer);
       this.searchQuery = '';
       searchInp.value = '';
       clearBtn.classList.add('hidden');
@@ -347,14 +357,11 @@ export class CompareView {
       this.store.setCompareFiles(this.store.compareFileAId, selB.value);
     });
 
-    // Synchronized vertical scroll
+    // Synchronized vertical scroll (compare positions directly so fast wheel ticks are never dropped)
     const syncScroll = (src, dst) => {
-      if (this._syncingScroll) return;
-      this._syncingScroll = true;
-      dst.scrollTop = src.scrollTop;
-      requestAnimationFrame(() => {
-        this._syncingScroll = false;
-      });
+      if (Math.abs(dst.scrollTop - src.scrollTop) >= 1) {
+        dst.scrollTop = src.scrollTop;
+      }
     };
     bodyA.addEventListener('scroll', () => syncScroll(bodyA, bodyB));
     bodyB.addEventListener('scroll', () => syncScroll(bodyB, bodyA));
@@ -452,9 +459,21 @@ export class CompareView {
   }
 
   _setHoveredIdx(idx) {
-    this.container.querySelectorAll('.cmp-row.cmp-hover').forEach((el) => el.classList.remove('cmp-hover'));
+    if (this._hoveredIdx === idx) return;
+    for (const el of this._hoveredEls) el.classList.remove('cmp-hover');
+    this._hoveredEls = [];
+    this._hoveredIdx = idx;
     if (idx < 0) return;
-    this.container.querySelectorAll(`.cmp-row[data-row-idx="${idx}"]`).forEach((el) => el.classList.add('cmp-hover'));
+    const rowA = this.container.querySelector(`#cmp-body-a .cmp-row[data-row-idx="${idx}"]`);
+    const rowB = this.container.querySelector(`#cmp-body-b .cmp-row[data-row-idx="${idx}"]`);
+    if (rowA) {
+      rowA.classList.add('cmp-hover');
+      this._hoveredEls.push(rowA);
+    }
+    if (rowB) {
+      rowB.classList.add('cmp-hover');
+      this._hoveredEls.push(rowB);
+    }
   }
 
   _getPageStep() {
@@ -632,6 +651,8 @@ export class CompareView {
     if (!entryA || !entryB || !bodyA || !bodyB) return;
 
     const prevScrollTop = preserveScroll ? bodyA.scrollTop : 0;
+    const prevActiveIdx = preserveScroll ? this.activeRowIdx : -1;
+    const hiddenBanner = this.container.querySelector('#cmp-hidden-banner');
 
     let docA, docB;
     try {
@@ -642,8 +663,19 @@ export class CompareView {
       const errHtml = `<div class="compare-empty text-danger">${escapeHtml(err.message)}</div>`;
       bodyA.innerHTML = errHtml;
       bodyB.innerHTML = errHtml;
+      if (summaryEl) {
+        summaryEl.innerHTML = '';
+        summaryEl.title = '';
+      }
+      if (hiddenBanner) {
+        hiddenBanner.classList.add('hidden');
+        hiddenBanner.innerHTML = '';
+      }
       this.rows = [];
       this.diffIndices = [];
+      this.activeRowIdx = -1;
+      this._hoveredIdx = -1;
+      this._hoveredEls = [];
       this._updateNavStatus();
       return;
     }
@@ -655,7 +687,6 @@ export class CompareView {
     });
     const { rows, total, changed, onlyA, onlyB, diffs: totalDiffs, hiddenEqualMatches } = result;
     const q = this.searchQuery.trim();
-    const hiddenBanner = this.container.querySelector('#cmp-hidden-banner');
     if (hiddenBanner) {
       if (this.diffOnly && q && hiddenEqualMatches > 0) {
         hiddenBanner.innerHTML = `
@@ -766,9 +797,15 @@ export class CompareView {
 
     bodyA.innerHTML = htmlA.join('');
     bodyB.innerHTML = htmlB.join('');
+    this._hoveredIdx = -1;
+    this._hoveredEls = [];
     bodyA.scrollTop = prevScrollTop;
     bodyB.scrollTop = prevScrollTop;
-    this._updateNavStatus();
+    if (preserveScroll && prevActiveIdx >= 0 && rows.length > 0) {
+      this._setActiveRow(Math.min(prevActiveIdx, rows.length - 1), false);
+    } else {
+      this._updateNavStatus();
+    }
 
     const splitEl = this.container.querySelector('#compare-split');
     const active = document.activeElement;

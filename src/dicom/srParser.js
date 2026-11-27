@@ -49,12 +49,12 @@ function formatDicomTime(val) {
 }
 
 function formatDicomDateTime(val) {
-  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?(.*)$/.exec(val);
+  const m = /^(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\.\d{1,6})?([+-]\d{4})?$/.exec(val);
   if (!m) return val;
-  const date = `${m[1]}-${m[2]}-${m[3]}`;
-  if (!m[4]) return date;
-  const time = `${m[4]}:${m[5] || '00'}${m[6] ? `:${m[6]}` : ''}${m[7] || ''}`;
-  return `${date} ${time}`;
+  const [, year, month, day, hour, minute, second, fraction = '', offset = ''] = m;
+  const date = [year, month, day].filter(Boolean).join('-');
+  const time = [hour, minute, second].filter(Boolean).join(':');
+  return `${date}${time ? ` ${time}${fraction}` : ''}${offset}`;
 }
 
 /**
@@ -72,7 +72,8 @@ export function isSrDocument(doc) {
 }
 
 function parseSrItem(nodes, itemId, depth) {
-  const valueType = getActiveValue(nodes, '0040A040').toUpperCase() || 'CONTAINER';
+  const reference = findActive(nodes, '0040DB73');
+  const valueType = getActiveValue(nodes, '0040A040').toUpperCase() || (reference ? 'REFERENCE' : 'CONTAINER');
   const relationship = getActiveValue(nodes, '0040A010').toUpperCase();
   const concept = extractCodeTriplet(findActive(nodes, '0040A043'));
   const continuity = getActiveValue(nodes, '0040A050').toUpperCase();
@@ -82,6 +83,11 @@ function parseSrItem(nodes, itemId, depth) {
   let jumpNodeId = itemId || findActive(nodes, '0040A040')?.id || findActive(nodes, '0040A043')?.id || null;
 
   switch (valueType) {
+    case 'REFERENCE': {
+      valueText = String(reference?.value || '').split('\\').filter(Boolean).join('.');
+      jumpNodeId = reference?.id ?? jumpNodeId;
+      break;
+    }
     case 'TEXT': {
       const n = findActive(nodes, '0040A160');
       valueText = n ? String(n.value || '') : '';
@@ -203,8 +209,9 @@ function parseSrItem(nodes, itemId, depth) {
       const tType = getActiveValue(nodes, '0040A130');
       const samplePos = getActiveValue(nodes, '0040A132');
       const timeOff = getActiveValue(nodes, '0040A138');
+      const absoluteTime = getActiveValue(nodes, '0040A13A');
       valueText = tType || 'TCOORD';
-      valueDetail = samplePos || timeOff || '';
+      valueDetail = samplePos || timeOff || absoluteTime.split('\\').map(formatDicomDateTime).join(' · ');
       break;
     }
     case 'CONTAINER': {

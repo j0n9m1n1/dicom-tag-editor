@@ -154,7 +154,7 @@ export class FileTabsBar {
       return;
     }
     if (this.store.activeFileId) {
-      await confirmAndCloseFile(this.store, this.store.activeFileId);
+      await confirmAndCloseFile(this.store, this.store.activeFileId, this.callbacks.onCloseErrors);
     }
   }
 
@@ -209,7 +209,7 @@ export class FileTabsBar {
     const closeBtn = e.target.closest('[data-tab-close]');
     if (closeBtn) {
       e.stopPropagation();
-      await confirmAndCloseFile(this.store, closeBtn.dataset.tabClose);
+      await confirmAndCloseFile(this.store, closeBtn.dataset.tabClose, this.callbacks.onCloseErrors);
       return;
     }
 
@@ -223,7 +223,7 @@ export class FileTabsBar {
     const tab = e.target.closest('.file-tab[data-file-id]');
     if (!tab) return;
     e.preventDefault();
-    await confirmAndCloseFile(this.store, tab.dataset.fileId);
+    await confirmAndCloseFile(this.store, tab.dataset.fileId, this.callbacks.onCloseErrors);
   }
 
   _onDragStart(e) {
@@ -320,17 +320,17 @@ export class FileTabsBar {
           : []),
         {
           label: t('tabCtxClose'),
-          action: () => confirmAndCloseFile(this.store, fileId),
+          action: () => confirmAndCloseFile(this.store, fileId, this.callbacks.onCloseErrors),
         },
         {
           label: t('tabCtxCloseOthers'),
           disabled: !hasOthers,
-          action: () => confirmAndCloseFiles(this.store, files.filter((f) => f.id !== fileId)),
+          action: () => confirmAndCloseFiles(this.store, files.filter((f) => f.id !== fileId), this.callbacks.onCloseErrors),
         },
         {
           label: t('tabCtxCloseRight'),
           disabled: !hasRight,
-          action: () => confirmAndCloseFiles(this.store, files.slice(idx + 1)),
+          action: () => confirmAndCloseFiles(this.store, files.slice(idx + 1), this.callbacks.onCloseErrors),
         },
       ],
     });

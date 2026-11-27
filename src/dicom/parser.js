@@ -11,6 +11,7 @@ import {
   NUMERIC_VRS,
   LUT_DESCRIPTOR_SIGNED_TAGS,
   VR_SPECS,
+  binaryValueUnitSize,
   validateVrValue,
 } from './vrSpec.js';
 import {
@@ -20,7 +21,8 @@ import {
   getTransferSyntaxInfo,
   PIXEL_REP_SIGNED_TAGS,
 } from './dictionary.js';
-import { decodeDicomString, usesSpecificCharacterSet } from './charset.js';
+import { decodeDicomText, usesSpecificCharacterSet } from './charset.js';
+import { basicOffsetFrameStarts } from './encapsulation.js';
 
 let _nextNodeId = 1;
 export function genNodeId() {
@@ -32,6 +34,8 @@ export function resetNodeIdCounter() {
 }
 
 const VALID_VR_SET = new Set(Object.keys(VR_SPECS));
+const MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
+const MAX_SEQUENCE_DEPTH = 128;
 
 export class DicomParseError extends Error {
   /**
@@ -133,44 +137,63 @@ function isKnownVr(twoChars) {
   return VALID_VR_SET.has(twoChars);
 }
 
-/**
- * Inflate Deflated Explicit VR Little Endian stream using browser DecompressionStream.
- * @param {Uint8Array} compressed
- * @returns {Promise<Uint8Array>}
- */
-async function inflateRawBytes(compressed, offset = 0) {
+async function decompressBytes(input, format, limit, offset) {
   if (typeof DecompressionStream === 'undefined') {
     throw new DicomParseError(
       'DEFLATE_FAILED',
-      'This browser does not support DecompressionStream for Deflated Transfer Syntax.',
+      `This browser does not support DICOM ${format} decompression.`,
       { offset }
     );
   }
-  const inflate = async (input) => {
-    const stream = new Blob([input]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
-  };
+  const stream = new Blob([input]).stream().pipeThrough(new DecompressionStream(format));
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
   try {
-    return await inflate(compressed);
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > limit) {
+        await reader.cancel().catch(() => {});
+        throw new DicomParseError('RESOURCE_LIMIT', `Decompressed DICOM data exceeds the ${formatByteSize(limit)} limit.`, {
+          offset, limit, format,
+        });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let position = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, position);
+    position += chunk.length;
+  }
+  return bytes;
+}
+
+async function inflateRawBytes(compressed, offset, limit) {
+  try {
+    return await decompressBytes(compressed, 'deflate-raw', limit, offset);
   } catch (err) {
-    // PS3.5 A.5 pads an odd-length Deflate stream with one trailing NUL.
+    if (err instanceof DicomParseError) throw err;
+    // PS3.5 A.5 permits one trailing NUL after an odd-length stream.
     if (compressed.length % 2 === 0 && compressed.at(-1) === 0) {
       try {
-        return await inflate(compressed.subarray(0, -1));
-      } catch (err2) {
-        throw new DicomParseError(
-          'DEFLATE_FAILED',
-          `Deflated dataset decompression failed: ${err2.message || err2}`,
-          { offset }
-        );
+        return await decompressBytes(compressed.subarray(0, -1), 'deflate-raw', limit, offset);
+      } catch (retryError) {
+        if (retryError instanceof DicomParseError) throw retryError;
+        err = retryError;
       }
     }
-    throw new DicomParseError(
-      'DEFLATE_FAILED',
-      `Deflated dataset decompression failed: ${err.message || err}`,
-      { offset }
-    );
+    throw new DicomParseError('DEFLATE_FAILED', `Deflated dataset decompression failed: ${err.message || err}`, { offset });
   }
+}
+
+function formatFloat(value) {
+  return Object.is(value, -0) ? '-0' : String(value);
 }
 
 /**
@@ -203,13 +226,12 @@ export function decodeBinaryNumeric(bytes, vr, littleEndian, tag = '') {
       break;
     case 'FL':
       for (let i = 0; i + 4 <= bytes.length; i += 4) {
-        const num = view.getFloat32(i, littleEndian);
-        vals.push(Number.isInteger(num) ? String(num) : String(Number(num.toPrecision(7))));
+        vals.push(formatFloat(view.getFloat32(i, littleEndian)));
       }
       break;
     case 'FD':
       for (let i = 0; i + 8 <= bytes.length; i += 8) {
-        vals.push(String(view.getFloat64(i, littleEndian)));
+        vals.push(formatFloat(view.getFloat64(i, littleEndian)));
       }
       break;
     case 'SV':
@@ -248,18 +270,62 @@ export function computeVm(node) {
   return val.split('\\').length;
 }
 
-/**
- * Heuristic to detect if raw dataset without DICM preamble uses Explicit VR.
- */
-function detectRawExplicitVr(bytes, startOffset) {
-  if (startOffset + 6 > bytes.length) return true;
-  const c1 = bytes[startOffset + 4];
-  const c2 = bytes[startOffset + 5];
-  if (c1 >= 65 && c1 <= 90 && c2 >= 65 && c2 <= 90) {
-    const vr = String.fromCharCode(c1, c2);
-    return isKnownVr(vr);
+function readExplicitHeader(bytes, view, pos, end, littleEndian, tag) {
+  const code = String.fromCharCode(bytes[pos], bytes[pos + 1]);
+  const known = isKnownVr(code);
+  if (!known && (!/^[A-Z]{2}$/.test(code) || bytes[pos + 2] !== 0 || bytes[pos + 3] !== 0)) {
+    throw new DicomParseError('INVALID_VR', `Invalid Explicit VR at ${tag}.`, { tag, offset: pos });
   }
-  return false;
+  if (known && !VR_32BIT_LENGTH.has(code)) {
+    return { vr: code, length: view.getUint16(pos + 2, littleEndian), next: pos + 4 };
+  }
+  if (pos + 8 > end) {
+    throw new DicomParseError('TRUNCATED_HEADER', `Truncated DICOM header at ${tag}.`, {
+      tag, offset: pos - 4, availableBytes: end - pos + 4,
+    });
+  }
+  return { vr: known ? code : 'UN', encodedVr: known ? undefined : code, length: view.getUint32(pos + 4, littleEndian), next: pos + 8 };
+}
+
+/** Rank raw transfer syntaxes by a bounded, allocation-free probe of element headers. */
+function detectRawSyntax(bytes, view, startOffset) {
+  const probe = (explicit, littleEndian) => {
+    let position = startOffset;
+    let score = 0;
+    let previous = -1;
+    for (let i = 0; i < 12 && position + 8 <= bytes.length; i++) {
+      const group = view.getUint16(position, littleEndian);
+      const element = view.getUint16(position + 2, littleEndian);
+      const tagNumber = group * 65536 + element;
+      const info = lookupTag(group, element);
+      if (group === 0xfffe || group === 0xffff) return score - 8;
+      if (tagNumber <= previous) score -= 3;
+      previous = tagNumber;
+      let header;
+      try {
+        header = explicit ? readExplicitHeader(bytes, view, position + 4, bytes.length, littleEndian, info.formattedTag)
+          : { vr: info.vr, length: view.getUint32(position + 4, littleEndian), next: position + 8 };
+      } catch {
+        return score - 8;
+      }
+      if (info.keyword !== 'UnknownTag') score += header.vr === info.vr ? 6 : 3;
+      if (explicit && !header.encodedVr) score += 1;
+      if (header.length === 0xffffffff && (header.vr === 'SQ' || header.vr === 'UN' || info.tag === '7FE00010')) {
+        return score + (header.next + 8 <= bytes.length ? 1 : -8);
+      }
+      position = header.next + header.length;
+      if (header.length % 2 || position > bytes.length) return score - 8;
+      score += 2;
+      if (position === bytes.length) return score + 3;
+    }
+    return score;
+  };
+  const candidates = [
+    ['1.2.840.10008.1.2.1', probe(true, true)],
+    ['1.2.840.10008.1.2', probe(false, true)],
+    ['1.2.840.10008.1.2.2', probe(true, false)],
+  ];
+  return candidates.reduce((best, candidate) => candidate[1] > best[1] ? candidate : best)[0];
 }
 
 function checkedValueEnd(start, length, limit, tag) {
@@ -280,8 +346,8 @@ function checkedValueEnd(start, length, limit, tag) {
  */
 function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleEndian) {
   let pos = startOffset;
-  const fragments = [];
-  let basicOffsetTable = null;
+  const fragmentRanges = [];
+  let tableEnd = null;
 
   while (pos + 8 <= endOffset) {
     const itemStart = pos;
@@ -290,8 +356,17 @@ function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleE
     const len = view.getUint32(pos + 4, littleEndian);
     pos += 8;
 
-    if (g === 0xfffe && e === 0xe0dd && len === 0 && basicOffsetTable !== null) {
-      return { nextOffset: pos, rawBytes: bytes.slice(startOffset, pos), fragments, basicOffsetTable };
+    if (g === 0xfffe && e === 0xe0dd && len === 0 && tableEnd !== null) {
+      if (!fragmentRanges.length) {
+        throw new DicomParseError('INVALID_ENCAP_PIXEL', 'Encapsulated Pixel Data has no fragments.', { offset: itemStart });
+      }
+      const rawBytes = bytes.slice(startOffset, pos);
+      const basicOffsetTable = rawBytes.subarray(8, tableEnd);
+      const fragments = fragmentRanges.map(([start, end]) => rawBytes.subarray(start, end));
+      return { nextOffset: pos, rawBytes, fragments, basicOffsetTable };
+    }
+    if (tableEnd === null ? len % 4 !== 0 : (len < 2 || len % 2 !== 0)) {
+      throw new DicomParseError('INVALID_ENCAP_PIXEL', 'Invalid Basic Offset Table or fragment Item length.', { offset: itemStart });
     }
     if (g !== 0xfffe || e !== 0xe000) {
       throw new DicomParseError(
@@ -301,11 +376,10 @@ function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleE
       );
     }
     const fragEnd = checkedValueEnd(pos, len, endOffset, '(7FE0,0010)');
-    const fragBytes = bytes.slice(pos, fragEnd);
-    if (basicOffsetTable === null) {
-      basicOffsetTable = fragBytes;
+    if (tableEnd === null) {
+      tableEnd = fragEnd - startOffset;
     } else {
-      fragments.push(fragBytes);
+      fragmentRanges.push([pos - startOffset, fragEnd - startOffset]);
     }
     pos = fragEnd;
   }
@@ -316,18 +390,39 @@ function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleE
   );
 }
 
-function applyPixelRepToImplicitNodes(nodes, pixelRep, littleEndian, itemHasOwnPixelRepMap) {
-  const targetVr = pixelRep === 1 ? 'SS' : 'US';
+function resolveImplicitPixelVrs(nodes, littleEndian, inherited = {}) {
+  const firstNumber = (tag, list = nodes) => {
+    const value = list.find((node) => node.tag === tag)?.value.split('\\')[0].trim();
+    return value ? Number(value) : NaN;
+  };
+  const representation = firstNumber('00280103');
+  const pixelRep = representation === 0 || representation === 1 ? representation : inherited.pixelRep;
+  const bitsStored = firstNumber('00280101') || inherited.bitsStored;
+  const transform = nodes.find((node) => node.tag === '00289145')?.items?.[0]?.children || nodes;
+  const slope = firstNumber('00281053', transform);
+  const intercept = firstNumber('00281052', transform);
+  let voiSigned = inherited.voiSigned;
+  if (Number.isFinite(slope) && Number.isFinite(intercept) && bitsStored >= 1 && bitsStored <= 64) {
+    const min = pixelRep === 1 ? -(2 ** (bitsStored - 1)) : 0;
+    const max = pixelRep === 1 ? -min - 1 : 2 ** bitsStored - 1;
+    voiSigned = Math.min(min * slope, max * slope) + intercept < 0;
+  } else if (Number.isFinite(intercept) && intercept < 0) {
+    voiSigned = true;
+  } else if (nodes.some((node) => node.tag === '00283000' && node.items?.length)) {
+    voiSigned = false; // Modality LUT output is unsigned (PS3.3 C.11.1).
+  }
   for (const node of nodes || []) {
     if (node.isSequence && node.items) {
       const itemLittleEndian = node.sequenceEncodedAsUn || littleEndian;
       for (const item of node.items) {
-        if (!itemHasOwnPixelRepMap.get(item)) {
-          applyPixelRepToImplicitNodes(item.children, pixelRep, itemLittleEndian, itemHasOwnPixelRepMap);
-        }
+        resolveImplicitPixelVrs(item.children, itemLittleEndian, {
+          pixelRep, bitsStored, voiSigned, isVoiLut: node.tag === '00283010',
+        });
       }
       continue;
     }
+    const signed = node.tag === '00283002' && inherited.isVoiLut && voiSigned !== undefined ? voiSigned : pixelRep === 1;
+    const targetVr = signed ? 'SS' : 'US';
     if (
       node.vrSource === 'dict' &&
       PIXEL_REP_SIGNED_TAGS.has(node.tag) &&
@@ -353,15 +448,16 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     isMetaSection = false,
     stopAfterGroup0002 = false,
     inheritedCharset = '',
-    inheritedPixelRepresentation = null,
     expectItemDelimiter = false,
-    itemHasOwnPixelRepMap = new WeakMap(),
+    depth = 0,
   } = opts;
+  if (depth > MAX_SEQUENCE_DEPTH) {
+    throw new DicomParseError('RESOURCE_LIMIT', `DICOM sequence nesting exceeds ${MAX_SEQUENCE_DEPTH} levels.`, { offset: startOffset });
+  }
 
   let pos = startOffset;
   let charset = inheritedCharset;
-  let pixelRepresentation = inheritedPixelRepresentation;
-  let hasOwnPixelRepresentation = false;
+  let declaredMetaEnd = null;
   const nodes = [];
   const privateCreators = new Map();
 
@@ -371,15 +467,18 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     const element = view.getUint16(pos + 2, littleEndian);
 
     if (stopAfterGroup0002 && group !== 0x0002) {
-      return { nodes, nextOffset: tagStart, hasOwnPixelRepresentation };
+      if (declaredMetaEnd !== null) {
+        throw new DicomParseError('INVALID_META_LENGTH', 'File Meta Information Group Length extends into the dataset.', { offset: tagStart });
+      }
+      return { nodes, nextOffset: tagStart };
+    }
+    if (!isMetaSection && group === 0x0002) {
+      throw new DicomParseError('INVALID_META_LENGTH', 'File Meta element found outside the File Meta Information section.', { offset: tagStart });
     }
 
     if (group === 0xfffe) {
       if (expectItemDelimiter && element === 0xe00d && view.getUint32(pos + 4, littleEndian) === 0) {
-        if (hasOwnPixelRepresentation && pixelRepresentation !== inheritedPixelRepresentation) {
-          applyPixelRepToImplicitNodes(nodes, pixelRepresentation, littleEndian, itemHasOwnPixelRepMap);
-        }
-        return { nodes, nextOffset: pos + 8, hasOwnPixelRepresentation };
+        return { nodes, nextOffset: pos + 8 };
       }
       throw new DicomParseError(
         'UNEXPECTED_ITEM',
@@ -390,37 +489,12 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
 
     pos += 4;
     let vr = '';
+    let encodedVr;
     let vrSource = 'explicit';
     let length = 0;
 
     if (explicit) {
-      const candidate = String.fromCharCode(bytes[pos], bytes[pos + 1]);
-      if (isKnownVr(candidate)) {
-        vr = candidate;
-        pos += 2;
-        if (VR_32BIT_LENGTH.has(vr)) {
-          pos += 2; // 2 reserved bytes
-          if (pos + 4 > endOffset) {
-            throw new DicomParseError(
-              'TRUNCATED_HEADER',
-              `Truncated DICOM header at ${formatTag(group, element)}.`,
-              { tag: formatTag(group, element), offset: tagStart, availableBytes: Math.max(0, endOffset - tagStart) }
-            );
-          }
-          length = view.getUint32(pos, littleEndian);
-          pos += 4;
-        } else {
-          length = view.getUint16(pos, littleEndian);
-          pos += 2;
-        }
-      } else {
-        // Fallback if an element inside explicit dataset is unexpectedly implicit
-        const info = lookupTag(group, element, privateCreators);
-        vr = info.vr;
-        vrSource = 'dict';
-        length = view.getUint32(pos, littleEndian);
-        pos += 4;
-      }
+      ({ vr, encodedVr, length, next: pos } = readExplicitHeader(bytes, view, pos, endOffset, littleEndian, formatTag(group, element)));
     } else {
       const info = lookupTag(group, element, privateCreators);
       vr = info.vr;
@@ -432,14 +506,10 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     const undefinedLength = length === 0xffffffff;
     const hex = tagHex(group, element);
 
-    if (vrSource === 'dict' && PIXEL_REP_SIGNED_TAGS.has(hex) && pixelRepresentation === 1) {
-      vr = 'SS';
-    }
-
     // PS3.5 6.2.2 defines an explicit UN sequence's value as Implicit VR Little Endian.
-    const sequenceEncodedAsUn = explicit && vrSource === 'explicit' && vr === 'UN' && undefinedLength && hex !== '7FE00010';
+    const sequenceEncodedAsUn = explicit && !encodedVr && vr === 'UN' && undefinedLength && hex !== '7FE00010';
     if (
-      sequenceEncodedAsUn || (
+      sequenceEncodedAsUn || (encodedVr && undefinedLength && hex !== '7FE00010') || (
         !explicit && undefinedLength && vr !== 'SQ' && hex !== '7FE00010' &&
         pos + 4 <= endOffset && view.getUint16(pos, littleEndian) === 0xfffe &&
         [0xe000, 0xe0dd].includes(view.getUint16(pos + 2, littleEndian))
@@ -486,14 +556,10 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
           explicit: itemExplicit,
           littleEndian: itemLittleEndian,
           inheritedCharset: charset,
-          inheritedPixelRepresentation: pixelRepresentation,
           expectItemDelimiter: itemUndef,
-          itemHasOwnPixelRepMap,
+          depth: depth + 1,
         });
-        const itemObj = { id: genNodeId(), undefinedLength: itemUndef, children: itemResult.nodes };
-        if (itemResult.hasOwnPixelRepresentation) {
-          itemHasOwnPixelRepMap.set(itemObj, true);
-        }
+        const itemObj = { id: genNodeId(), offset: itemStart, undefinedLength: itemUndef, children: itemResult.nodes };
         items.push(itemObj);
         sqPos = itemResult.nextOffset;
       }
@@ -521,6 +587,7 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
         keyword: dictInfo.keyword,
         name: dictInfo.name,
         vr: 'SQ',
+        encodedVr,
         vrSource,
         sequenceEncodedAsUn,
         vmSpec: dictInfo.vm,
@@ -561,6 +628,7 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
         isSequence: false,
         isBinary: true,
         encapsulated: true,
+        offset: tagStart,
         undefinedLength: true,
         rawLength: enc.rawBytes.length,
         rawBytes: enc.rawBytes,
@@ -584,19 +652,25 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       );
     }
     const valEnd = checkedValueEnd(pos, length, endOffset, label);
+    if (length % 2 || length % binaryValueUnitSize(vr)) {
+      throw new DicomParseError('INVALID_VALUE_LENGTH', `Invalid Value Length ${length} for ${vr} at ${label}.`, {
+        tag: label, offset: pos, length,
+      });
+    }
     const rawBytes = bytes.slice(pos, valEnd);
     pos = valEnd;
 
     const isBinary = BINARY_VRS.has(vr) || hex === '7FE00010';
-    const rawCharset = usesSpecificCharacterSet(vr) ? charset : undefined;
+    const rawCharset = usesSpecificCharacterSet(vr, hex) ? charset : undefined;
     let decodedValue = '';
+    let charsetError = false;
 
     if (isBinary) {
       decodedValue = `[Binary ${vr}: ${formatByteSize(rawBytes.length)}]`;
     } else if (NUMERIC_VRS.has(vr) || vr === 'AT') {
       decodedValue = decodeBinaryNumeric(rawBytes, vr, littleEndian, hex);
     } else {
-      decodedValue = decodeDicomString(rawBytes, vr, charset);
+      ({ value: decodedValue, charsetError } = decodeDicomText(rawBytes, vr, charset, hex));
     }
 
     // Track SpecificCharacterSet for subsequent tags in this dataset
@@ -604,26 +678,12 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       charset = decodedValue;
     }
 
-    // Track PixelRepresentation (0 = unsigned US, 1 = signed SS) for Implicit VR US/SS tags
-    if (hex === '00280103' && !isBinary) {
-      const firstVal = decodedValue.split('\\')[0]?.trim();
-      const rep = firstVal !== '' ? Number(firstVal) : NaN;
-      if (rep === 0 || rep === 1) {
-        pixelRepresentation = rep;
-        hasOwnPixelRepresentation = true;
-      }
-    }
-
     // Track Private Creator IDs
     if (isPrivate && element >= 0x0010 && element <= 0x00ff) {
-      const creatorName = decodeDicomString(rawBytes, 'LO', charset).trim();
+      const creatorName = vr === 'LO' ? decodedValue.trim() : '';
       const creatorKey = `${group.toString(16).toUpperCase().padStart(4, '0')}:${element.toString(16).toUpperCase().padStart(2, '0')}`;
       if (creatorName) {
         privateCreators.set(creatorKey, creatorName);
-        if (isBinary && vr === 'UN') {
-          // Even if encoded as UN in implicit VR, private creator is a readable string
-          decodedValue = creatorName;
-        }
       }
     }
 
@@ -640,6 +700,7 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       keyword: dictInfo.keyword,
       name: dictInfo.name,
       vr,
+      encodedVr,
       vrSource,
       vmSpec: dictInfo.vm,
       isMeta: isMetaSection,
@@ -651,6 +712,8 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       rawLength: rawBytes.length,
       rawBytes,
       rawCharset,
+      charsetError,
+      floatEncoding: vr === 'FL' || vr === 'FD' ? { rawBytes, originalValue: decodedValue } : undefined,
       originalValue: decodedValue,
       value: decodedValue,
       status: 'unchanged',
@@ -658,7 +721,8 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     });
 
     if (stopAfterGroup0002 && hex === '00020000' && length === 4 && nodes.length === 1) {
-      endOffset = checkedValueEnd(pos, view.getUint32(valEnd - 4, true), endOffset, label);
+      declaredMetaEnd = checkedValueEnd(pos, view.getUint32(valEnd - 4, true), endOffset, label);
+      endOffset = declaredMetaEnd;
     }
   }
 
@@ -669,17 +733,23 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       { offset: pos }
     );
   }
-  if (!stopAfterGroup0002 && pos !== endOffset) {
+  if ((!stopAfterGroup0002 || declaredMetaEnd !== null) && pos !== endOffset) {
     throw new DicomParseError(
       'TRUNCATED_HEADER',
       `Truncated DICOM element header (${endOffset - pos} trailing byte(s) remaining).`,
       { offset: pos, availableBytes: endOffset - pos }
     );
   }
-  if (hasOwnPixelRepresentation && pixelRepresentation !== inheritedPixelRepresentation) {
-    applyPixelRepToImplicitNodes(nodes, pixelRepresentation, littleEndian, itemHasOwnPixelRepMap);
+  const frameCount = Number(nodes.find((node) => node.tag === '00280008')?.value || '1');
+  for (const node of nodes) {
+    if (!node.encapsulated) continue;
+    try {
+      basicOffsetFrameStarts(node.basicOffsetTable, node.fragments, frameCount);
+    } catch (error) {
+      throw new DicomParseError('INVALID_ENCAP_PIXEL', error.message, { tag: node.formattedTag, offset: node.offset });
+    }
   }
-  return { nodes, nextOffset: pos, hasOwnPixelRepresentation };
+  return { nodes, nextOffset: pos };
 }
 
 export function formatByteSize(bytes) {
@@ -688,18 +758,11 @@ export function formatByteSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-async function gunzipBytes(compressed) {
-  if (typeof DecompressionStream === 'undefined') {
-    throw new DicomParseError(
-      'DEFLATE_FAILED',
-      'This browser does not support DecompressionStream for .dcm.gz files.',
-      { offset: 0 }
-    );
-  }
+async function gunzipBytes(compressed, limit) {
   try {
-    const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
+    return await decompressBytes(compressed, 'gzip', limit, 0);
   } catch (err) {
+    if (err instanceof DicomParseError) throw err;
     throw new DicomParseError(
       'DEFLATE_FAILED',
       `Gzip decompression failed: ${err.message || err}`,
@@ -714,31 +777,16 @@ async function gunzipBytes(compressed) {
  * Throws a DicomParseError with rich diagnostics on failure.
  * @param {ArrayBuffer} arrayBuffer
  * @param {string} fileName
+ * @param {{ transferSyntaxUid?: string, maxDecompressedBytes?: number }} [options]
  */
-export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
+export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm', options = {}) {
   const inputBytes = new Uint8Array(arrayBuffer);
   let bytes = inputBytes;
   let wasGzipped = false;
-
-  // Transparently decompress .dcm.gz (Gzip magic 1F 8B) before DICOM parsing
-  if (inputBytes.length >= 18 && inputBytes[0] === 0x1f && inputBytes[1] === 0x8b) {
-    try {
-      const gunzipped = await gunzipBytes(inputBytes);
-      if (gunzipped.length >= 16) {
-        bytes = gunzipped;
-        wasGzipped = true;
-      }
-    } catch {
-      // Fall through so detectNonDicomSignature can classify non-DICOM .gz archives cleanly
-    }
-  }
-
-  const hasPart10Header =
-    bytes.length >= 132 &&
-    bytes[128] === 0x44 && // D
-    bytes[129] === 0x49 && // I
-    bytes[130] === 0x43 && // C
-    bytes[131] === 0x4d;   // M
+  let hasPart10Header = false;
+  const requestedLimit = options.maxDecompressedBytes;
+  const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
+    ? Math.min(requestedLimit, MAX_DECOMPRESSED_BYTES) : MAX_DECOMPRESSED_BYTES;
 
   let metaNodes = [];
   let transferSyntaxUid = '';
@@ -749,7 +797,7 @@ export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
     const baseCode = err instanceof DicomParseError ? err.code : 'UNKNOWN';
     const baseDetails = err instanceof DicomParseError && err.details ? err.details : {};
     const finalCode =
-      !hasPart10Header && detectedFormat && baseCode !== 'TOO_SMALL'
+      !hasPart10Header && detectedFormat && !['TOO_SMALL', 'DEFLATE_FAILED', 'RESOURCE_LIMIT'].includes(baseCode)
         ? 'NON_DICOM_FORMAT'
         : baseCode;
 
@@ -768,7 +816,14 @@ export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
   };
 
   try {
-    if (bytes.length < 16) {
+    if (inputBytes[0] === 0x1f && inputBytes[1] === 0x8b) {
+      bytes = await gunzipBytes(inputBytes, limit);
+      wasGzipped = true;
+    }
+    hasPart10Header = bytes.length >= 132 &&
+      bytes[128] === 0x44 && bytes[129] === 0x49 && bytes[130] === 0x43 && bytes[131] === 0x4d;
+
+    if (bytes.length < 8) {
       throw new DicomParseError(
         'TOO_SMALL',
         `File is too small (${bytes.length} byte(s)) to be a valid DICOM file.`,
@@ -800,8 +855,7 @@ export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
     if (hasPart10Header && transferSyntaxUid) {
       tsInfo = getTransferSyntaxInfo(transferSyntaxUid);
     } else {
-      const rawExplicit = detectRawExplicitVr(bytes, mainOffset);
-      transferSyntaxUid = rawExplicit ? '1.2.840.10008.1.2.1' : '1.2.840.10008.1.2';
+      transferSyntaxUid = options.transferSyntaxUid || detectRawSyntax(bytes, view, mainOffset);
       tsInfo = getTransferSyntaxInfo(transferSyntaxUid);
     }
 
@@ -812,7 +866,7 @@ export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
     let datasetEnd = bytes.length;
 
     if (tsInfo.deflated) {
-      const inflated = await inflateRawBytes(bytes.subarray(mainOffset), mainOffset);
+      const inflated = await inflateRawBytes(bytes.subarray(mainOffset), mainOffset, limit);
       datasetBytes = inflated;
       datasetView = new DataView(inflated.buffer, inflated.byteOffset, inflated.byteLength);
       datasetStart = 0;
@@ -827,13 +881,14 @@ export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm') {
       inheritedCharset: '',
     });
 
-    if (metaNodes.length === 0 && mainResult.nodes.length === 0) {
+    if (mainResult.nodes.length === 0) {
       throw new DicomParseError(
         'NO_TAGS',
         'No readable DICOM data elements were found in this file.',
         { offset: mainOffset }
       );
     }
+    resolveImplicitPixelVrs(mainResult.nodes, tsInfo.littleEndian);
 
     return {
       fileName: wasGzipped ? fileName.replace(/\.gz$/i, '') : fileName,

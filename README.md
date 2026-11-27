@@ -27,7 +27,7 @@ All parsing, editing, VR validation, multi-file comparison, anonymization, pixel
   - Automatically unlocks an **`SR`** view mode (`Tree | SR | Raw | Compare`) whenever a DICOM Structured Report (`(0040,A730) ContentSequence`) is opened
   - Decodes all SR Value Types (`CONTAINER`, `TEXT`, `CODE`, `NUM` + measurement units, `PNAME`, `DATE`/`TIME`/`DATETIME`, `UIDREF`, `IMAGE`/`COMPOSITE`, `SCOORD`/`TCOORD`) with live search, Markdown copy/export (`.md`), and 1-click jump to the source tag in `Tree` view
 - **Upgraded Anonymizer, DICOM QA Check & Command Palette (`Ctrl+K`)**
-  - **Anonymize Profiles (`Basic` / `HIPAA` / `Teaching`):** One-click profile presets, UTC day-offset **Date Shifting** (`DA`/`DT`), `(0012,0063) DeidentificationMethod`, Private tag stripping, UID regeneration, and live impact preview
+  - **Partial De-identification Profiles (`Basic` / `Extended` / `Teaching`, PS3.15-based):** One-click presets applied recursively inside nested sequences, UTC day-offset **Date Shifting** (`DA`/`DT`), `(0012,0063) DeidentificationMethod`, Private tag stripping, consistent UID remapping across all open files (DICOM-defined `1.2.840.10008.*` UIDs preserved), zeroed Part 10 preamble with identifying File Meta removed on export, and live impact preview. These presets do **not** claim full PS3.15 Basic Profile or HIPAA Safe Harbor compliance
   - **DICOM QA Check (`Edit ▾`):** High-signal conformance check for VR errors, Part 10 Meta↔Main UID consistency, non-ASCII charset mismatch, pixel geometry/bit-depth rules, SR flags, and remaining PHI count
   - **Command Palette (`Ctrl+K`):** Quickly execute any action or jump directly to any tag in the active DICOM file
   - **Direct `.dcm.gz` Open:** Transparently decompresses gzip-compressed DICOM files right in the browser
@@ -45,7 +45,7 @@ All parsing, editing, VR validation, multi-file comparison, anonymization, pixel
   - Assign File A / B via top dropdowns OR by dragging files directly from the top tab bar or `Open Files` sidebar
 - **Inline Raw View (`dcmdump` · DICOM JSON · Binary Hex) + Error Diagnostics**
   - Switch seamlessly across **`Tree` / `Raw` / `Compare`** view modes right from the topbar
-  - Inspect, search, copy, or export the live dataset as DCMTK `dcmdump` text, structured DICOM JSON, or paginated **Binary Hex dump** with quick jumps (`0x0000 Preamble`, `0x0080 DICM`, `Main`, `PixelData`)
+  - Inspect, search, copy, or export the live dataset as DCMTK `dcmdump` text, PS3.18 DICOM JSON model (`InlineBinary`, PN component groups), or paginated **Binary Hex dump** with quick jumps (`0x0000 Preamble`, `0x0080 DICM`, `Main`, `PixelData`)
   - Built-in **File Open Error Diagnostics** modal inspecting Part 10 `DICM` header, detected non-DICOM signatures, failure offset, and hex preview
 - **Collapsible Pixel Preview Dock & Full-Pane `Pixel` View Mode**
   - Switch to full-pane **`Pixel`** mode from the topbar (`Tree | Pixel | Raw | Compare`) or expand directly from the dock header to inspect high-res slices and burned-in PHI text

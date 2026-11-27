@@ -29,15 +29,26 @@ const patientName = (doc) => doc.datasetNodes.find((node) => node.tag === '00100
 const parse = (bytes) => parseDicomBuffer(Uint8Array.from(bytes).buffer);
 const hex = (value) => Buffer.from(value.replaceAll(' ', ''), 'hex');
 
-function fileMeta(uid = explicitLittleEndian) {
-  const syntax = Buffer.from(uid.length % 2 ? `${uid}\0` : uid, 'ascii');
-  const header = Buffer.alloc(152);
+function fileMeta(uid = explicitLittleEndian, sopClass = '1.2.840.10008.5.1.4.1.1.2') {
+  const ui = (element, value) => {
+    const bytes = Buffer.from(value.length % 2 ? `${value}\0` : value, 'ascii');
+    const header = hex('02 00 00 00 55 49 00 00');
+    header.writeUInt16LE(element, 2);
+    header.writeUInt16LE(bytes.length, 6);
+    return Buffer.concat([header, bytes]);
+  };
+  const body = Buffer.concat([
+    hex('02 00 01 00 4f 42 00 00 02 00 00 00 00 01'),
+    ui(0x0002, sopClass),
+    ui(0x0003, '2.25.7'),
+    ui(0x0010, uid),
+    ui(0x0012, '2.25.8'),
+  ]);
+  const header = Buffer.alloc(144);
   header.write('DICM', 128, 'ascii');
   hex('02 00 00 00 55 4c 04 00').copy(header, 132);
-  header.writeUInt32LE(8 + syntax.length, 140);
-  hex('02 00 10 00 55 49').copy(header, 144);
-  header.writeUInt16LE(syntax.length, 150);
-  return Buffer.concat([header, syntax]);
+  header.writeUInt32LE(body.length, 140);
+  return Buffer.concat([header, body]);
 }
 
 test('sample saves byte-for-byte and decodes its grayscale frame', async () => {
@@ -260,7 +271,7 @@ test('editing a SOP Instance UID keeps file metadata in sync through undo, batch
   assert.equal(reopened.metaNodes.find((node) => node.tag === '00020003').value, newUid);
 });
 
-test('batch anonymization applies the preset across files and updates only references to regenerated instances', async () => {
+test('batch anonymization remaps local and external references consistently and preserves DICOM-defined UIDs', async () => {
   const bytes = await generateSampleDicomBuffer();
   const source = await parseDicomBuffer(bytes);
   const target = await parseDicomBuffer(bytes);
@@ -273,6 +284,7 @@ test('batch anonymization applies the preset across files and updates only refer
   const externalUid = referenced(target).value;
   const oldTargetUid = sop(target).value;
   store.loadDocument(source);
+  store.addTag({ group: 0x0008, element: 0x0058, vr: 'UI', value: `${externalUid}\\${explicitLittleEndian}` });
   store.updateNodeValue(sop(source).id, '2.25.2001');
   store.updateNodeValue(referenced(source).id, oldTargetUid);
   store.loadDocument(target, null, { append: true });
@@ -288,7 +300,10 @@ test('batch anonymization applies the preset across files and updates only refer
   assert.notEqual(sop(savedTarget).value, oldTargetUid);
   assert.notEqual(sop(savedTarget).value, sop(savedSource).value);
   assert.equal(referenced(savedSource).value, sop(savedTarget).value);
-  assert.equal(referenced(savedTarget).value, externalUid);
+  assert.notEqual(referenced(savedTarget).value, externalUid);
+  const remappedList = savedSource.datasetNodes.find((node) => node.tag === '00080058');
+  assert.deepEqual(remappedList.value.split('\\'), [referenced(savedTarget).value, explicitLittleEndian]);
+  assert.equal(references(savedTarget).find((node) => node.tag === '00081150').value, '1.2.840.10008.5.1.4.1.1.2');
   assert.equal(study(savedSource).value, study(savedTarget).value);
 });
 
@@ -386,8 +401,8 @@ test('formatDicomJson keeps backslashes intact for single-value text VRs and 000
   const comment = doc.datasetNodes.find((n) => n.tag === '00104000');
   comment.value = 'C:\\scans\\brain\\note';
   const parsedJson = JSON.parse(formatDicomJson(doc));
-  assert.deepEqual(parsedJson.dataset['00104000'].Value, ['C:\\scans\\brain\\note']);
-  assert.deepEqual(parsedJson.dataset['00080008'].Value, ['ORIGINAL', 'PRIMARY', 'AXIAL']);
+  assert.deepEqual(parsedJson['00104000'].Value, ['C:\\scans\\brain\\note']);
+  assert.deepEqual(parsedJson['00080008'].Value, ['ORIGINAL', 'PRIMARY', 'AXIAL']);
 });
 
 test('buildZipArchive normalizes Windows slashes and strips path traversal segments', () => {
@@ -607,10 +622,10 @@ test('Implicit VR signed pixel-dependent tags resolve SS/US by PixelRepresentati
   assert.equal(validateVrValue('SS', '40000\\40000\\16', '00283002').valid, false);
 
   const json = JSON.parse(formatDicomJson(doc));
-  assert.equal(json.dataset['00280120'].vr, 'SS');
-  assert.deepEqual(json.dataset['00280120'].Value, ['-1024']);
-  assert.deepEqual(json.dataset['00281101'].Value, ['40000', '-1', '16']);
-  assert.deepEqual(json.dataset['00283010'].Value[0]['00283002'].Value, ['40000', '-1', '16']);
+  assert.equal(json['00280120'].vr, 'SS');
+  assert.deepEqual(json['00280120'].Value, [-1024]);
+  assert.deepEqual(json['00281101'].Value, [40000, -1, 16]);
+  assert.deepEqual(json['00283010'].Value[0]['00283002'].Value, [40000, -1, 16]);
 
   // Edit & round-trip save preserves unsigned #1/#3 (no 32767 clamp) and signed #2
   const store = new AppStore();
@@ -1283,7 +1298,7 @@ test('Post-feature audit fixes: .dcm.gz markSaved handle retention, SR viewMode 
   srStore.updateNodeValue(srDoc.datasetNodes[0].id, 'OT');
   assert.equal(srStore.viewMode, 'tree');
 
-  // 3) QA checker flags invalid VerificationFlag, avoids Number('')===0 false positives on missing pixel tags, and skips DICOMDIR
+  // 3) QA flags invalid VerificationFlag and missing required pixel attributes, and skips DICOMDIR root IOD checks.
   srDoc.datasetNodes[0].value = 'SR';
   const srQa = runDicomQaCheck(srDoc);
   assert.ok(srQa.warnings.some((w) => w.code === 'qaSrFlagInvalid' && w.tag === '(0040,A493)'));
@@ -1303,16 +1318,13 @@ test('Post-feature audit fixes: .dcm.gz markSaved handle retention, SR viewMode 
     ],
   };
   const missingBitsQa = runDicomQaCheck(missingBitsDoc);
-  assert.equal(missingBitsQa.errors.length, 0);
+  assert.ok(missingBitsQa.errors.some((error) => error.code === 'qaPixelBitsInvalid'));
+  assert.ok(missingBitsQa.errors.some((error) => error.tag === '(0028,0103)'));
 
-  const dicomDirDoc = {
-    hasPart10Header: true,
-    metaNodes: [
-      mkNode('00020002', 'UI', '1.2.840.10008.1.3.10'),
-      mkNode('00020010', 'UI', explicitLittleEndian),
-    ],
-    datasetNodes: [mkNode('00041220', 'SQ', '', { isSequence: true, items: [] })],
-  };
+  const dicomDirDoc = await parse(Buffer.concat([
+    fileMeta(explicitLittleEndian, '1.2.840.10008.1.3.10'),
+    hex('04 00 20 12 53 51 00 00 00 00 00 00'),
+  ]));
   const dirQa = runDicomQaCheck(dicomDirDoc);
   assert.equal(dirQa.errors.length, 0);
   assert.equal(dirQa.warnings.length, 0);
@@ -1676,6 +1688,7 @@ test('PNG export uses the active document even when its preview is hidden or sti
     transferSyntaxInfo: { compressed: true, codec: 'jpeg-baseline' },
     datasetNodes: [
       { tag: '00280010', value: '1' }, { tag: '00280011', value: '1' },
+      { tag: '00280002', value: '3' }, { tag: '00280004', value: 'RGB' },
       { tag: '7FE00010', encapsulated: true, fragments: [Uint8Array.of(sample)] },
     ],
   });

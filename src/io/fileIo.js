@@ -12,7 +12,7 @@ import { parseDicomBuffer } from '../dicom/parser.js';
 import { writeDicomDocument } from '../dicom/writer.js';
 import { generateSampleDicomBuffer } from '../dicom/sampleGenerator.js';
 import { buildZipArchive } from '../utils/zipWriter.js';
-import { downloadBlobBytes } from '../utils/uiHelpers.js';
+import { downloadBlobBytes, stripDicomBaseName } from '../utils/uiHelpers.js';
 import { INTERNAL_FILE_DRAG_MIME } from '../ui/compareView.js';
 import { t } from '../i18n.js';
 
@@ -21,7 +21,8 @@ function countDocInvalid(doc) {
   let invalid = 0;
   const walk = (nodes) => {
     for (const n of nodes || []) {
-      if (n.status !== 'deleted' && n.validation && !n.validation.valid) invalid++;
+      if (n.status === 'deleted') continue;
+      if (n.validation && !n.validation.valid) invalid++;
       if (n.isSequence && n.items) {
         for (const item of n.items) walk(item.children);
       }
@@ -30,6 +31,47 @@ function countDocInvalid(doc) {
   walk(doc.metaNodes);
   walk(doc.datasetNodes);
   return invalid;
+}
+
+async function fileExistsInDir(dirHandle, fileName) {
+  try {
+    await dirHandle.getFileHandle(fileName);
+    return true;
+  } catch (err) {
+    if (err?.name === 'NotFoundError') return false;
+    throw err;
+  }
+}
+
+async function resolveTargetFileName(targetDir, relPath, fileName, usedPaths, overwriteState) {
+  let candidateName = fileName;
+  let exists = await fileExistsInDir(targetDir, candidateName);
+  if (!exists) return candidateName;
+
+  if (overwriteState.decision === null) {
+    overwriteState.decision = window.confirm(t('confirmFolderOverwrite', { name: relPath }));
+  }
+  if (overwriteState.decision) {
+    return candidateName;
+  }
+
+  const slashIdx = relPath.lastIndexOf('/');
+  const dirPrefix = slashIdx >= 0 ? relPath.slice(0, slashIdx + 1) : '';
+  const dot = fileName.lastIndexOf('.');
+  const hasExt = dot > 0;
+  const base = hasExt ? fileName.slice(0, dot) : fileName;
+  const ext = hasExt ? fileName.slice(dot) : '';
+
+  let idx = 2;
+  while (true) {
+    const nextName = `${base}_${idx}${ext}`;
+    const nextRel = `${dirPrefix}${nextName}`;
+    if (!usedPaths.has(nextRel.toLowerCase()) && !(await fileExistsInDir(targetDir, nextName))) {
+      usedPaths.add(nextRel.toLowerCase());
+      return nextName;
+    }
+    idx++;
+  }
 }
 
 export function buildUniqueRelativePath(rawName, usedPaths) {
@@ -143,8 +185,25 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
     return true;
   }
 
+  function confirmInvalidBeforeBatchSave(entries) {
+    let totalInvalid = 0;
+    let affectedFiles = 0;
+    for (const entry of entries || []) {
+      if (!entry?.doc) continue;
+      const c = countDocInvalid(entry.doc);
+      if (c > 0) {
+        totalInvalid += c;
+        affectedFiles++;
+      }
+    }
+    if (totalInvalid > 0) {
+      return window.confirm(t('confirmInvalidBatchSave', { count: totalInvalid, files: affectedFiles }));
+    }
+    return true;
+  }
+
   async function runSave(task) {
-    if (saveInProgress || store.anonymizing) return;
+    if (saveInProgress || store.isBusy) return;
     saveInProgress = true;
     onBusyChange?.();
     try {
@@ -239,8 +298,9 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
 
   async function openFileDialog({ append = true } = {}) {
     if (window.isSecureContext && typeof window.showOpenFilePicker === 'function') {
+      let handles = null;
       try {
-        const handles = await window.showOpenFilePicker({
+        handles = await window.showOpenFilePicker({
           multiple: true,
           types: [
             {
@@ -253,20 +313,34 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
           ],
           excludeAcceptAllOption: false,
         });
-        const items = [];
-        for (const handle of handles) {
-          const file = await handle.getFile();
-          items.push({
-            name: file.name,
-            size: file.size,
-            sourceFile: file,
-            fileHandle: handle,
-          });
-        }
-        await loadSelectedFileItems(items, { append });
-        return;
       } catch (err) {
         if (err.name === 'AbortError') return;
+        handles = null;
+      }
+
+      if (handles) {
+        const items = [];
+        const failures = [];
+        for (const handle of handles) {
+          try {
+            const file = await handle.getFile();
+            items.push({
+              name: file.name,
+              size: file.size,
+              sourceFile: file,
+              fileHandle: handle,
+            });
+          } catch (err) {
+            failures.push({ fileName: handle?.name || 'unknown', size: null, error: err });
+          }
+        }
+        if (items.length > 0) {
+          await loadSelectedFileItems(items, { append });
+        }
+        if (failures.length > 0) {
+          modals.openFileError(failures);
+        }
+        return;
       }
     }
     fileInputAppendMode = append;
@@ -298,7 +372,7 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
   }
 
   async function saveFileEntry(entry, direct = false) {
-    if (saveInProgress || store.anonymizing || !entry) return;
+    if (saveInProgress || store.isBusy || !entry) return;
     if (!entry.doc) {
       try {
         await store.ensureEntryParsed(entry);
@@ -309,31 +383,38 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
     }
     const { doc, name, fileHandle } = entry;
     if (!doc || !confirmInvalidBeforeSave(doc)) return;
-    const baseName = name.split('/').at(-1).replace(/(\.dcm)?\.gz$/i, '').replace(/\.dcm$/i, '');
+    const baseName = stripDicomBaseName(name);
     const suggestedName = `${baseName}_edited.dcm`;
 
     return runSave(async () => {
-      const directHandle = direct ? fileHandle : null;
-      let handle = directHandle || await pickSaveFileHandle(suggestedName);
+      // Serialize before opening save picker so serialization failures never create/truncate a file on disk.
       const revision = store.getDocumentRevision(doc);
       const bytes = await writeDicomDocument(doc);
+      const directHandle = direct ? fileHandle : null;
+      let handle = directHandle || await pickSaveFileHandle(suggestedName);
+      let directWriteFailed = false;
 
       if (handle) {
         try {
           await writeToFileHandle(handle, bytes);
         } catch (err) {
           showToast(t('toastDirectFail', { msg: err.message }), 'warn');
+          directWriteFailed = Boolean(directHandle);
           handle = null;
         }
       }
 
       const savedName = handle?.name || (handle && directHandle ? name : suggestedName);
       if (!handle) downloadBlobBytes(bytes, 'application/dicom', savedName);
-      const file = handle ? { handle, name: savedName, size: bytes.length } : null;
-      const isCurrent = store.markSaved(doc, revision, file);
-      const message = handle ? (directHandle ? 'toastSavedDirect' : 'toastSavedAs') : 'toastDownloadStart';
-      showToast(t(message, { name: savedName, bytes: bytes.length.toLocaleString() }), 'ok');
-      if (!isCurrent) showToast(t('toastSavePending'), 'warn');
+      if (handle || !directWriteFailed) {
+        const file = handle ? { handle, name: savedName, size: bytes.length } : null;
+        const isCurrent = store.markSaved(doc, revision, file);
+        const message = handle ? (directHandle ? 'toastSavedDirect' : 'toastSavedAs') : 'toastDownloadStart';
+        showToast(t(message, { name: savedName, bytes: bytes.length.toLocaleString() }), 'ok');
+        if (!isCurrent) showToast(t('toastSavePending'), 'warn');
+      } else {
+        showToast(t('toastDownloadStart', { name: savedName, bytes: bytes.length.toLocaleString() }), 'info');
+      }
     });
   }
 
@@ -349,11 +430,13 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
     if (!window.isSecureContext || typeof window.showDirectoryPicker !== 'function') return;
     const files = store.files.slice();
     if (files.length === 0) return;
+    if (!confirmInvalidBeforeBatchSave(files)) return;
 
     return runSave(async () => {
       const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
       const usedPaths = new Set();
       const savedDocs = [];
+      const overwriteState = { decision: null };
       let writtenCount = 0;
       let skipped = 0;
 
@@ -363,17 +446,21 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
           skipped++;
           continue;
         }
-        if (result.savedDoc) savedDocs.push(result.savedDoc);
 
         const relPath = buildUniqueRelativePath(result.outName, usedPaths);
         const parts = relPath.split('/');
-        const fileName = parts.pop();
+        const baseFileName = parts.pop();
         let targetDir = dirHandle;
         for (const dirSeg of parts) {
           targetDir = await targetDir.getDirectoryHandle(dirSeg, { create: true });
         }
-        const fh = await targetDir.getFileHandle(fileName, { create: true });
+        const finalFileName = await resolveTargetFileName(targetDir, relPath, baseFileName, usedPaths, overwriteState);
+        const fh = await targetDir.getFileHandle(finalFileName, { create: true });
         await writeToFileHandle(fh, result.dataBytes);
+        // Only mark saved when the entry has no separate original fileHandle pointing elsewhere.
+        if (result.savedDoc && !entry.fileHandle) {
+          savedDocs.push(result.savedDoc);
+        }
         writtenCount++;
       }
 
@@ -382,7 +469,7 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
         return;
       }
 
-      const isCurrent = markBatchDocsSaved(savedDocs);
+      const isCurrent = savedDocs.length > 0 ? markBatchDocsSaved(savedDocs) : true;
       showToast(t('toastFolderSaveDone', { count: writtenCount, dir: dirHandle.name || 'folder' }), 'ok');
       if (skipped) showToast(t('toastFolderSkipped', { count: skipped }), 'warn');
       if (!isCurrent) showToast(t('toastSavePending'), 'warn');
@@ -392,10 +479,10 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
   async function saveAllAsZip() {
     const files = store.files.slice();
     if (files.length === 0) return;
+    if (!confirmInvalidBeforeBatchSave(files)) return;
 
     return runSave(async () => {
       const zipEntries = [];
-      const savedDocs = [];
       let skipped = 0;
 
       for (const entry of files) {
@@ -404,7 +491,6 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
           skipped++;
           continue;
         }
-        if (result.savedDoc) savedDocs.push(result.savedDoc);
         zipEntries.push({ name: result.outName, data: result.dataBytes });
       }
 
@@ -416,10 +502,8 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
       const zipBytes = buildZipArchive(zipEntries);
       const zipName = 'dicom_edited_batch.zip';
       downloadBlobBytes(zipBytes, 'application/zip', zipName);
-      const isCurrent = markBatchDocsSaved(savedDocs);
       showToast(t('toastZipDone', { count: zipEntries.length, name: zipName }), 'ok');
       if (skipped) showToast(t('toastZipSkipped', { count: skipped }), 'warn');
-      if (!isCurrent) showToast(t('toastSavePending'), 'warn');
     });
   }
 
@@ -496,6 +580,7 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
     window.launchQueue.setConsumer(async (launchParams) => {
       if (!launchParams?.files?.length) return;
       const items = [];
+      const failures = [];
       for (const handle of launchParams.files) {
         if (handle.kind !== 'file') continue;
         try {
@@ -508,10 +593,14 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
           });
         } catch (err) {
           console.warn('Failed to read launched file handle:', err);
+          failures.push({ fileName: handle?.name || 'unknown', size: null, error: err });
         }
       }
       if (items.length > 0) {
         await loadSelectedFileItems(items, { append: true });
+      }
+      if (failures.length > 0) {
+        modals.openFileError(failures);
       }
     });
   }

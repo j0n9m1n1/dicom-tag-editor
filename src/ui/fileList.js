@@ -118,7 +118,7 @@ export class FileListPanel {
     const removeBtn = e.target.closest('[data-remove-file]');
     if (removeBtn) {
       e.stopPropagation();
-      await confirmAndCloseFile(this.store, removeBtn.dataset.removeFile);
+      await confirmAndCloseFile(this.store, removeBtn.dataset.removeFile, this.callbacks.onCloseErrors);
       return;
     }
 
@@ -196,17 +196,17 @@ export class FileListPanel {
       { sep: true },
       {
         label: t('tabCtxClose'),
-        action: () => confirmAndCloseFile(this.store, fileId),
+        action: () => confirmAndCloseFile(this.store, fileId, this.callbacks.onCloseErrors),
       },
       {
         label: t('tabCtxCloseOthers'),
         disabled: !hasOthers,
-        action: () => confirmAndCloseFiles(this.store, files.filter((f) => f.id !== fileId)),
+        action: () => confirmAndCloseFiles(this.store, files.filter((f) => f.id !== fileId), this.callbacks.onCloseErrors),
       },
       {
         label: t('fileCtxCloseBelow'),
         disabled: !hasBelow,
-        action: () => confirmAndCloseFiles(this.store, files.slice(idx + 1)),
+        action: () => confirmAndCloseFiles(this.store, files.slice(idx + 1), this.callbacks.onCloseErrors),
       }
     );
 

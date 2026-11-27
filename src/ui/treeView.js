@@ -12,6 +12,8 @@ import { openPopupMenu, closePopupMenu } from './popupMenu.js';
 import { icons, escapeHtml } from './icons.js';
 import { t } from '../i18n.js';
 
+const TEXT_ENCODER = new TextEncoder();
+
 export class TreeView {
   /**
    * @param {HTMLElement} container
@@ -52,7 +54,7 @@ export class TreeView {
 
     const items = info.isSeqItem
       ? this._buildItemContextItems(info, this.visibleRows.find((row) => row.id === id), id)
-      : this._buildTagContextItems(info.node, id);
+      : this._buildTagContextItems(info.node, id, info);
 
     openPopupMenu({
       x: e.clientX,
@@ -63,7 +65,7 @@ export class TreeView {
   }
 
   _buildItemContextItems(info, row, id) {
-    const disabled = info.parentSeq.status === 'deleted';
+    const disabled = info.parentSeq.status === 'deleted' || Boolean(info.ancestorDeleted);
     const items = [];
     if (row?.hasChildren) {
       items.push({
@@ -104,7 +106,7 @@ export class TreeView {
       this._toggleRow(this.visibleRows.find((row) => row.id === info.item.id));
       return;
     }
-    if (info.parentSeq.status === 'deleted') return;
+    if (info.parentSeq.status === 'deleted' || info.ancestorDeleted) return;
     if (action === 'add-tag-in-item') {
       this.callbacks.onOpenAddTagForItem?.(info.item, info.parentSeq, info.section);
     } else if (action === 'delete-item') {
@@ -112,10 +114,11 @@ export class TreeView {
     }
   }
 
-  _buildTagContextItems(node, id) {
-    const canEdit = canEditNodeValue(node);
+  _buildTagContextItems(node, id, info = null) {
+    const ancestorDeleted = Boolean(info?.ancestorDeleted);
+    const canEdit = canEditNodeValue(node, info);
     const isDeleted = node.status === 'deleted';
-    const canDelete = !getReadOnlyTagMessage(node.tag);
+    const canDelete = !ancestorDeleted && !getReadOnlyTagMessage(node.tag);
     const canRevert = canDelete && (node.status === 'modified' || node.status === 'added');
 
     const runAction = (action) => () => {
@@ -326,6 +329,108 @@ export class TreeView {
     }
   }
 
+  _computeIndent(depth) {
+    const isMobile = typeof window !== 'undefined' && window.innerWidth <= 820;
+    const maxLevels = isMobile ? 4 : 6;
+    const step = isMobile ? 10 : 14;
+    return Math.min(Math.max(0, depth - 1), maxLevels) * step + 4;
+  }
+
+  _buildTagRowParts(row) {
+    const n = row.node;
+    const spec = getVrSpec(n.vr);
+    const invalid = n.status !== 'deleted' && n.validation && !n.validation.valid;
+    const phiInfo = isPhiNode(n) && (n.isBinary || String(n.value || '').trim() !== '') ? getPhiTagInfo(n.tag) : null;
+    const readOnlyReason = getReadOnlyTagMessage(n.tag);
+    const indent = this._computeIndent(row.depth);
+
+    const vm = computeVm(n);
+    const byteLen = n.isSequence
+      ? `${(n.items || []).length} itm`
+      : n.isBinary
+        ? n.rawLength
+        : n.status === 'unchanged' && n.rawBytes
+          ? n.rawBytes.length
+          : spec.fixedLength && (NUMERIC_VRS.has(n.vr) || n.vr === 'AT')
+            ? vm * spec.fixedLength
+            : TEXT_ENCODER.encode(n.value || '').length;
+
+    let valueHtml;
+    if (this.inlineEditId === n.id && canEditNodeValue(n)) {
+      valueHtml = `<input class="inline-edit-input" data-inline-id="${n.id}" value="${escapeHtml(n.value)}" />`;
+    } else if (n.isSequence) {
+      valueHtml = `<span class="val-seq">${(n.items || []).length} item(s)</span>`;
+    } else if (n.isBinary) {
+      valueHtml = `<span class="val-binary">${escapeHtml(n.value)}</span>`;
+    } else if (n.value === '') {
+      valueHtml = `<span class="val-empty">(empty)</span>`;
+    } else {
+      valueHtml = `<span class="val-text" title="${escapeHtml(n.value)}">${escapeHtml(n.value)}</span>`;
+    }
+
+    const nameHtml = `
+      <span class="tag-name">${escapeHtml(n.keyword !== 'UnknownTag' ? n.keyword : n.name)}</span>
+      ${phiInfo ? `<span class="mini-badge badge-phi" title="${escapeHtml(t('inspPhiActionTitle', { action: phiInfo.action }))}">PHI</span>` : ''}
+      ${n.isPrivate ? '<span class="mini-badge badge-private">PRIV</span>' : ''}
+      ${invalid ? `<span class="mini-badge badge-err" title="${escapeHtml(n.validation.messages.join(' / '))}">${icons.alertCircle(12)}</span>` : ''}
+    `;
+
+    const valCellHtml = `
+      ${readOnlyReason ? `<button type="button" class="mini-badge tree-readonly-badge" data-tree-readonly tabindex="-1" title="${escapeHtml(t(readOnlyReason))}">${escapeHtml(t('tagReadOnly'))}</button>` : ''}
+      ${valueHtml}
+    `;
+
+    return { n, spec, invalid, readOnlyReason, indent, vm, byteLen, nameHtml, valCellHtml };
+  }
+
+  /**
+   * Fast-path: patch a single edited tag row in-place during live typing without rebuilding the full tree DOM.
+   * @param {string | null} nodeId
+   * @returns {boolean}
+   */
+  tryPatchEditedNode(nodeId) {
+    if (!nodeId || this.inlineEditId || this.store.filterMode !== 'all' || this.store.searchQuery.trim()) {
+      return false;
+    }
+    const row = this.visibleRows.find((r) => r.kind === 'tag' && r.id === nodeId);
+    if (!row) return false;
+    const rowEl = this._getRowElement(nodeId);
+    if (!rowEl) return false;
+
+    const { n, invalid, readOnlyReason, vm, byteLen, nameHtml, valCellHtml } = this._buildTagRowParts(row);
+    rowEl.classList.remove('status-unchanged', 'status-modified', 'status-added', 'status-deleted', 'has-error');
+    rowEl.classList.add(`status-${n.status}`);
+    if (invalid) rowEl.classList.add('has-error');
+
+    const nameEl = rowEl.querySelector('.col-name');
+    const vmEl = rowEl.querySelector('.col-vm');
+    const lenEl = rowEl.querySelector('.col-len');
+    const valEl = rowEl.querySelector('.col-val');
+    if (!nameEl || !vmEl || !lenEl || !valEl) return false;
+
+    const hadMobBtn = Boolean(valEl.querySelector('[data-mob-inspect]'));
+    nameEl.innerHTML = nameHtml;
+    vmEl.textContent = String(vm);
+    lenEl.textContent = String(byteLen);
+    valEl.classList.toggle('has-readonly-badge', Boolean(readOnlyReason));
+    valEl.innerHTML = valCellHtml;
+    if (hadMobBtn) {
+      valEl.insertAdjacentHTML(
+        'beforeend',
+        `<button class="btn btn-xs btn-primary mob-edit-pill" data-mob-inspect="${rowEl.dataset.rowId}">${escapeHtml(t('mobEditTagBtn'))}</button>`
+      );
+    }
+
+    // If SOPInstanceUID (0008,0018) was edited, also patch synced MediaStorageSOPInstanceUID (0002,0003) if visible.
+    if (n.tag === '00080018' && this.store.doc?.hasPart10Header) {
+      const metaSop = this.store.doc.metaNodes.find((m) => m.tag === '00020003');
+      if (metaSop && metaSop.id !== nodeId) {
+        this.tryPatchEditedNode(metaSop.id);
+      }
+    }
+    return true;
+  }
+
   render(reason) {
     if (reason === 'selection') {
       this._syncSelection();
@@ -380,7 +485,7 @@ export class TreeView {
       }
 
       if (row.kind === 'item') {
-        const indent = Math.max(0, row.depth - 1) * 16 + 4;
+        const indent = this._computeIndent(row.depth);
         htmlParts.push(`
           <div class="tree-row tree-item-row" ${attrs}>
             <div class="col-tag" style="padding-left:${indent}px">
@@ -398,41 +503,12 @@ export class TreeView {
       }
 
       // Standard / Private / SQ tag row
-      const n = row.node;
-      const spec = getVrSpec(n.vr);
-      const invalid = n.status !== 'deleted' && n.validation && !n.validation.valid;
-      const phiInfo = isPhiNode(n) && (n.isBinary || String(n.value || '').trim() !== '') ? getPhiTagInfo(n.tag) : null;
-      const readOnlyReason = getReadOnlyTagMessage(n.tag);
+      const { n, spec, invalid, readOnlyReason, indent, vm, byteLen, nameHtml, valCellHtml } = this._buildTagRowParts(row);
       const statusCls = `status-${n.status}`;
       const invalidCls = invalid ? 'has-error' : '';
       const privateCls = n.isPrivate ? 'is-private' : '';
       const seqCls = n.isSequence ? 'is-sequence' : '';
       const metaCls = n.isMeta ? 'is-meta' : '';
-      const indent = Math.max(0, row.depth - 1) * 16 + 4;
-
-      const vm = computeVm(n);
-      const byteLen = n.isSequence
-        ? `${(n.items || []).length} itm`
-        : n.isBinary
-          ? n.rawLength
-          : n.status === 'unchanged' && n.rawBytes
-            ? n.rawBytes.length
-            : spec.fixedLength && (NUMERIC_VRS.has(n.vr) || n.vr === 'AT')
-              ? vm * spec.fixedLength
-              : new TextEncoder().encode(n.value || '').length;
-
-      let valueHtml;
-      if (this.inlineEditId === n.id && canEditNodeValue(n)) {
-        valueHtml = `<input class="inline-edit-input" data-inline-id="${n.id}" value="${escapeHtml(n.value)}" />`;
-      } else if (n.isSequence) {
-        valueHtml = `<span class="val-seq">${(n.items || []).length} item(s)</span>`;
-      } else if (n.isBinary) {
-        valueHtml = `<span class="val-binary">${escapeHtml(n.value)}</span>`;
-      } else if (n.value === '') {
-        valueHtml = `<span class="val-empty">(empty)</span>`;
-      } else {
-        valueHtml = `<span class="val-text" title="${escapeHtml(n.value)}">${escapeHtml(n.value)}</span>`;
-      }
 
       htmlParts.push(`
         <div class="tree-row ${statusCls} ${invalidCls} ${privateCls} ${seqCls} ${metaCls}" ${attrs}>
@@ -441,10 +517,7 @@ export class TreeView {
             <span class="tag-code">${n.formattedTag}</span>
           </div>
           <div class="col-name" title="${escapeHtml(n.name)} (${escapeHtml(n.keyword)})">
-            <span class="tag-name">${escapeHtml(n.keyword !== 'UnknownTag' ? n.keyword : n.name)}</span>
-            ${phiInfo ? `<span class="mini-badge badge-phi" title="${escapeHtml(t('inspPhiActionTitle', { action: phiInfo.action }))}">PHI</span>` : ''}
-            ${n.isPrivate ? '<span class="mini-badge badge-private">PRIV</span>' : ''}
-            ${invalid ? `<span class="mini-badge badge-err" title="${escapeHtml(n.validation.messages.join(' / '))}">${icons.alertCircle(12)}</span>` : ''}
+            ${nameHtml}
           </div>
           <div class="col-vr">
             <span class="vr-pill vr-cat-${spec.category}" title="${escapeHtml(spec.name)}">${escapeHtml(n.vr)}</span>
@@ -452,8 +525,7 @@ export class TreeView {
           <div class="col-vm">${vm}</div>
           <div class="col-len">${byteLen}</div>
           <div class="col-val${readOnlyReason ? ' has-readonly-badge' : ''}">
-            ${readOnlyReason ? `<button type="button" class="mini-badge tree-readonly-badge" data-tree-readonly tabindex="-1" title="${escapeHtml(t(readOnlyReason))}">${escapeHtml(t('tagReadOnly'))}</button>` : ''}
-            ${valueHtml}
+            ${valCellHtml}
           </div>
         </div>
       `);
@@ -520,20 +592,25 @@ export class TreeView {
     const id = this.inlineEditId;
     const val = inputEl.value;
     this.inlineEditId = null;
-    this.store.updateNodeValue(id, val);
-    // Ensure re-render even if value didn't change
-    this.render();
+    const changed = this.store.updateNodeValue(id, val);
+    // Only re-render manually if updateNodeValue did not emit an 'edit' event
+    if (!changed) this.render();
   }
 
   startInlineEdit(nodeId) {
+    if (this.store.isBusy) return;
     const info = this.store.findNodeInfo(nodeId);
     if (!info || info.isSeqItem) return;
+    if (info.ancestorDeleted) {
+      this.callbacks.onToast?.(t('deletedSeqEditErr'), 'info');
+      return;
+    }
     const readOnlyReason = getReadOnlyTagMessage(info.node.tag);
     if (readOnlyReason) {
       this.callbacks.onToast?.(t(readOnlyReason), 'info');
       return;
     }
-    if (!canEditNodeValue(info.node)) return;
+    if (!canEditNodeValue(info.node, info)) return;
     this.inlineEditId = nodeId;
     this.render();
   }

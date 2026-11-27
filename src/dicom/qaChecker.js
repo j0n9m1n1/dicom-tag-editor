@@ -4,9 +4,10 @@
  * without triggering flat-dataset false positives on nested macro/conditional tags.
  */
 
-import { hasNonAscii, isUtf8Charset, usesSpecificCharacterSet } from './charset.js';
+import { dicomStringEncodingError } from './charset.js';
 import { isPhiNode } from './phiSpec.js';
 import { isSrDocument } from './srParser.js';
+import { NUMERIC_VRS, validateVrValue } from './vrSpec.js';
 
 function findActive(nodes, hex) {
   return (nodes || []).find((n) => n.tag === hex && n.status !== 'deleted') || null;
@@ -40,15 +41,15 @@ export function runDicomQaCheck(doc) {
 
   // 1) Recursive VR validation errors & PHI count & charset checks
   let phiCount = 0;
-  let nonAsciiWithoutUtf8 = 0;
-  let firstNonAsciiNodeId = null;
+  let charsetIssueCount = 0;
+  let firstCharsetIssue = null;
 
-  const walk = (nodes, inheritedCharset, section) => {
+  const walk = (nodes, inheritedCharset) => {
     const csNode = findActive(nodes, '00080005');
     const charset = csNode ? String(csNode.value || '').trim() : inheritedCharset;
     for (const n of nodes || []) {
       if (n.status === 'deleted') continue;
-      if (isPhiNode(n) && (n.isBinary || String(n.value || '').trim() !== '')) {
+      if (isPhiNode(n) && (n.isBinary || n.isSequence || String(n.value || '').trim() !== '')) {
         phiCount++;
       }
       if (!n.isBinary && !n.isSequence) {
@@ -66,32 +67,33 @@ export function runDicomQaCheck(doc) {
             },
           });
         }
-        if (
-          section === 'main' &&
-          usesSpecificCharacterSet(n.vr) &&
-          hasNonAscii(n.value) &&
-          !isUtf8Charset(charset)
-        ) {
-          nonAsciiWithoutUtf8++;
-          if (!firstNonAsciiNodeId) firstNonAsciiNodeId = n.id;
+        if (!NUMERIC_VRS.has(n.vr) && n.vr !== 'AT') {
+          const charsetChanged = n.rawCharset !== undefined && n.rawCharset !== charset;
+          const usesOriginalText = n.status === 'unchanged' || n.value === n.originalValue;
+          const charsetIssue = (usesOriginalText && n.rawBytes && n.charsetError) ||
+            ((n.status !== 'unchanged' || charsetChanged) && dicomStringEncodingError(n.value, n.vr, charset, n.tag));
+          if (charsetIssue) {
+            charsetIssueCount++;
+            firstCharsetIssue ??= { id: n.id, charset };
+          }
         }
       }
       if (n.isSequence && n.items) {
-        for (const item of n.items) walk(item.children, charset, section);
+        for (const item of n.items) walk(item.children, charset);
       }
     }
   };
-  walk(meta, '', 'meta');
-  walk(main, '', 'main');
+  walk(meta, '');
+  walk(main, '');
   checkedRules += 2;
 
-  if (nonAsciiWithoutUtf8 > 0) {
+  if (charsetIssueCount > 0) {
     warnings.push({
       code: 'qaCharsetMismatch',
       severity: 'warning',
       tag: '(0008,0005)',
-      nodeId: findActive(main, '00080005')?.id || firstNonAsciiNodeId,
-      params: { count: nonAsciiWithoutUtf8, charset: getVal(main, '00080005') || '(default ASCII)' },
+      nodeId: firstCharsetIssue.id,
+      params: { count: charsetIssueCount, charset: firstCharsetIssue.charset || '(default ASCII)' },
     });
   }
 
@@ -122,13 +124,23 @@ export function runDicomQaCheck(doc) {
       });
     }
 
-    if (!getVal(meta, '00020010')) {
-      errors.push({
-        code: 'qaMissingTag',
-        severity: 'error',
-        tag: '(0002,0010)',
-        params: { tag: '(0002,0010)', keyword: 'TransferSyntaxUID' },
-      });
+    const requiredMeta = [
+      ['00020000', 'FileMetaInformationGroupLength'],
+      ['00020001', 'FileMetaInformationVersion'],
+      ['00020002', 'MediaStorageSOPClassUID'],
+      ['00020003', 'MediaStorageSOPInstanceUID'],
+      ['00020010', 'TransferSyntaxUID'],
+      ['00020012', 'ImplementationClassUID'],
+    ];
+    for (const [hex, keyword] of requiredMeta) {
+      const node = findActive(meta, hex);
+      const value = getVal(meta, hex);
+      const valid = hex === '00020000' ? node?.vr === 'UL' && Boolean(value)
+        : hex === '00020001' ? node?.vr === 'OB' && node.rawBytes?.length === 2 && (node.rawBytes[1] & 1)
+          : node?.vr === 'UI' && value && !value.includes('\\') && validateVrValue('UI', value, hex).valid;
+      if (valid) continue;
+      const tag = `(0002,${hex.slice(4)})`;
+      errors.push({ code: 'qaMissingTag', severity: 'error', tag, params: { tag, keyword }, nodeId: node?.id });
     }
   } else {
     infos.push({ code: 'qaRawNoPart10', severity: 'info' });
@@ -169,7 +181,12 @@ export function runDicomQaCheck(doc) {
     const bitsAlloc = parseNum(getVal(main, '00280100'));
     const bitsStored = parseNum(getVal(main, '00280101'));
     const highBit = parseNum(getVal(main, '00280102'));
-    if (!Number.isFinite(rows) || rows <= 0 || !Number.isFinite(cols) || cols <= 0) {
+    const samples = parseNum(getVal(main, '00280002'));
+    const pixelRep = parseNum(getVal(main, '00280103'));
+    const frames = parseNum(getVal(main, '00280008') || '1');
+    const photometric = getVal(main, '00280004');
+    const validGeometry = [rows, cols, samples, frames].every((value) => Number.isSafeInteger(value) && value > 0);
+    if (!validGeometry) {
       errors.push({
         code: 'qaPixelDimInvalid',
         severity: 'error',
@@ -177,7 +194,9 @@ export function runDicomQaCheck(doc) {
         nodeId: findActive(main, '00280010')?.id || pixelNode.id,
       });
     }
-    if (Number.isFinite(bitsAlloc) && bitsAlloc > 0 && Number.isFinite(bitsStored) && bitsStored > bitsAlloc) {
+    const validBits = Number.isInteger(bitsAlloc) && (bitsAlloc === 1 || (bitsAlloc > 0 && bitsAlloc % 8 === 0)) &&
+      Number.isInteger(bitsStored) && bitsStored >= 1 && bitsStored <= bitsAlloc;
+    if (!validBits) {
       errors.push({
         code: 'qaPixelBitsInvalid',
         severity: 'error',
@@ -186,14 +205,36 @@ export function runDicomQaCheck(doc) {
         params: { stored: bitsStored, alloc: bitsAlloc },
       });
     }
-    if (Number.isFinite(bitsAlloc) && bitsAlloc > 0 && Number.isFinite(highBit) && highBit >= bitsAlloc) {
+    if (!Number.isInteger(highBit) || highBit < bitsStored - 1 || highBit >= bitsAlloc) {
       errors.push({
         code: 'qaPixelHighBitInvalid',
         severity: 'error',
         tag: '(0028,0102)',
         nodeId: findActive(main, '00280102')?.id,
-        params: { highBit, alloc: bitsAlloc },
+        params: { highBit, stored: bitsStored, alloc: bitsAlloc },
       });
+    } else if (validBits && highBit !== bitsStored - 1) {
+      warnings.push({
+        code: 'qaPixelHighBitUnusual', severity: 'warning', tag: '(0028,0102)',
+        nodeId: findActive(main, '00280102')?.id, params: { highBit, stored: bitsStored, alloc: bitsAlloc },
+      });
+    }
+    if (pixelRep !== 0 && pixelRep !== 1) {
+      const tag = '(0028,0103)';
+      errors.push({ code: 'qaMissingTag', severity: 'error', tag, params: { tag, keyword: 'PixelRepresentation' } });
+    }
+    if (!photometric) {
+      const tag = '(0028,0004)';
+      errors.push({ code: 'qaMissingTag', severity: 'error', tag, params: { tag, keyword: 'PhotometricInterpretation' } });
+    }
+    if (!pixelNode.encapsulated && validGeometry && validBits && pixelNode.rawBytes) {
+      const channels = photometric === 'YBR_FULL_422' ? 2 : samples;
+      const byteLength = Math.ceil(rows * cols * channels * frames * bitsAlloc / 8);
+      const expected = byteLength + byteLength % 2;
+      if (!Number.isSafeInteger(expected) || pixelNode.rawBytes.length !== expected) {
+        errors.push({ code: 'qaPixelByteCountInvalid', severity: 'error', tag: '(7FE0,0010)', nodeId: pixelNode.id,
+          params: { expected, actual: pixelNode.rawBytes.length } });
+      }
     }
   }
 

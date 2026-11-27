@@ -3,7 +3,8 @@
  */
 
 import { computeVm } from './parser.js';
-import { getVrSpec, NUMERIC_VRS } from './vrSpec.js';
+import { BINARY_VRS, binaryValueUnitSize, getVrSpec, NUMERIC_VRS } from './vrSpec.js';
+import { parseTagString } from './dictionary.js';
 
 function padRight(str, len) {
   return str.length >= len ? str : str + ' '.repeat(len - str.length);
@@ -99,41 +100,68 @@ export function formatDcmDump(doc, { includeDeleted = false } = {}) {
   return lines.join('\n');
 }
 
-function nodesToJsonObj(nodes, includeDeleted) {
-  const out = {};
+const SORTED_DICOM_KEYS = { ownKeys: (dataset) => Object.keys(dataset).sort() };
+const PN_GROUP_NAMES = ['Alphabetic', 'Ideographic', 'Phonetic'];
+
+function jsonBinary(bytes, littleEndian, vr) {
+  const wordSize = binaryValueUnitSize(vr);
+  let value = bytes;
+  if (!littleEndian && wordSize > 1) {
+    value = new Uint8Array(bytes.length);
+    for (let i = 0; i + wordSize <= bytes.length; i += wordSize) {
+      for (let j = 0; j < wordSize; j++) value[i + j] = bytes[i + wordSize - 1 - j];
+    }
+  }
+  if (typeof value.toBase64 === 'function') return value.toBase64();
+  const chunks = [];
+  const chunkSize = 24 * 1024; // Multiple of 3, so only the final base64 chunk can contain padding.
+  for (let i = 0; i < value.length; i += chunkSize) {
+    chunks.push(btoa(String.fromCharCode(...value.subarray(i, i + chunkSize))));
+  }
+  return chunks.join('');
+}
+
+function jsonValue(value, vr) {
+  if (value === '') return null;
+  if (vr === 'PN') {
+    return Object.fromEntries(value.split('=').slice(0, 3)
+      .map((group, i) => [PN_GROUP_NAMES[i], group]).filter(([, group]) => group));
+  }
+  if (vr === 'AT') return parseTagString(value)?.hex;
+  if (NUMERIC_VRS.has(vr) && vr !== 'SV' && vr !== 'UV') {
+    const number = Number(value);
+    if (!Number.isFinite(number)) throw new Error(`Cannot represent non-finite ${vr} as a DICOM JSON number.`);
+    return number;
+  }
+  return value;
+}
+
+function nodesToJsonObj(nodes, includeDeleted, littleEndian) {
+  const out = Object.create(null);
   for (const n of nodes || []) {
     if (!includeDeleted && n.status === 'deleted') continue;
-    const entry = {
-      tag: n.formattedTag,
-      keyword: n.keyword,
-      vr: n.vr,
-    };
-    if (n.status !== 'unchanged') entry.status = n.status;
+    if (n.tag.endsWith('0000') || n.tag.startsWith('0002')) continue;
+    const vr = n.isBinary && !BINARY_VRS.has(n.vr) ? 'UN' : n.vr;
+    const entry = { vr };
     if (n.isSequence) {
-      entry.Value = (n.items || []).map((item) => nodesToJsonObj(item.children, includeDeleted));
+      if (n.items?.length) entry.Value = n.items.map((item) => nodesToJsonObj(item.children, includeDeleted,
+        n.sequenceEncodedAsUn || littleEndian));
     } else if (n.isBinary) {
-      entry.byteLength = n.rawLength;
-      if (n.encapsulated) entry.fragments = (n.fragments || []).length;
-    } else {
-      const spec = getVrSpec(n.vr);
-      entry.Value = n.value === '' ? [] : spec.allowMultiValue ? n.value.split('\\') : [n.value];
+      if (n.rawBytes?.length) entry.InlineBinary = jsonBinary(n.rawBytes, littleEndian, vr);
+    } else if (n.value !== '' && n.value != null) {
+      const values = getVrSpec(vr).allowMultiValue ? n.value.split('\\') : [n.value];
+      entry.Value = values.map((value) => jsonValue(value, vr));
     }
     out[n.tag] = entry;
   }
-  return out;
+  // ECMAScript orders numeric property names first by default; DICOM requires lexical order.
+  return new Proxy(out, SORTED_DICOM_KEYS);
 }
 
 /**
- * Format document into clean structured DICOM JSON text.
+ * Format the dataset as a PS3.18 DICOM JSON Model object.
  */
 export function formatDicomJson(doc, { includeDeleted = false } = {}) {
   if (!doc) return '{}';
-  const payload = {
-    fileName: doc.fileName,
-    transferSyntaxUID: doc.transferSyntaxUid,
-    transferSyntaxName: doc.transferSyntaxInfo?.name || '',
-    fileMetaInformation: nodesToJsonObj(doc.metaNodes, includeDeleted),
-    dataset: nodesToJsonObj(doc.datasetNodes, includeDeleted),
-  };
-  return JSON.stringify(payload, null, 2);
+  return JSON.stringify(nodesToJsonObj(doc.datasetNodes, includeDeleted, doc.littleEndian !== false), null, 2);
 }

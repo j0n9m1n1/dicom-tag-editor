@@ -157,32 +157,46 @@ function applyLanguage() {
 
   btnOpen.innerHTML = `${icons.folderOpen(15)}<span>${t('btnOpen')}</span>`;
   btnOpen.title = t('btnOpenTitle');
+  btnOpen.setAttribute('aria-label', t('btnOpen'));
   btnFiles.innerHTML = `${icons.files(15)}<span>${t('btnFiles')} (${store.files.length})</span>`;
   btnFiles.title = t('btnFilesTitle');
+  btnFiles.setAttribute('aria-label', t('btnFiles'));
   btnViewTree.innerHTML = `${icons.tree(14)}<span>${t('viewModeTree')}</span>`;
   btnViewTree.title = t('viewModeTreeTitle');
+  btnViewTree.setAttribute('aria-label', t('viewModeTree'));
   btnViewPixel.innerHTML = `${icons.image(14)}<span>${t('viewModePixel')}</span>`;
   btnViewPixel.title = t('viewModePixelTitle');
+  btnViewPixel.setAttribute('aria-label', t('viewModePixel'));
   btnViewSr.innerHTML = `${icons.fileText(14)}<span>${t('viewModeSr')}</span>`;
   btnViewSr.title = t('viewModeSrTitle');
+  btnViewSr.setAttribute('aria-label', t('viewModeSr'));
   btnViewRaw.innerHTML = `${icons.code(14)}<span>${t('viewModeRaw')}</span>`;
   btnViewRaw.title = t('viewModeRawTitle');
+  btnViewRaw.setAttribute('aria-label', t('viewModeRaw'));
   btnViewCompare.innerHTML = `${icons.compare(14)}<span>${t('btnCompare')}</span>`;
   btnViewCompare.title = store.files.length >= 2 ? t('btnCompareTitle') : t('btnCompareNeedTwoTitle');
+  btnViewCompare.setAttribute('aria-label', t('btnCompare'));
   btnUndo.innerHTML = `${icons.undo(15)}`;
   btnUndo.title = t('btnUndoTitle');
+  btnUndo.setAttribute('aria-label', t('btnUndoTitle'));
   btnRedo.innerHTML = `${icons.redo(15)}`;
   btnRedo.title = t('btnRedoTitle');
+  btnRedo.setAttribute('aria-label', t('btnRedoTitle'));
   btnEditMenu.innerHTML = `${icons.edit(15)}<span>${t('btnEdit')}</span>${icons.chevronDown(12)}`;
   btnEditMenu.title = t('btnEditTitle');
+  btnEditMenu.setAttribute('aria-label', t('btnEdit'));
   btnDiff.innerHTML = `${icons.diff(15)}<span>${t('btnDiff')}</span>`;
   btnDiff.title = t('btnDiffTitle');
+  btnDiff.setAttribute('aria-label', t('btnDiff'));
   btnSaveMain.innerHTML = `${icons.save(15)}<span>${t('btnSave')}</span>`;
   btnSaveMain.title = store.fileHandle ? t('btnSaveDirectTitle') : t('btnSaveAsTitle');
+  btnSaveMain.setAttribute('aria-label', t('btnSave'));
   btnSaveMenu.innerHTML = icons.chevronDown(13);
   btnSaveMenu.title = t('btnSaveMenuTitle');
+  btnSaveMenu.setAttribute('aria-label', t('btnSaveMenuTitle'));
   btnSettings.innerHTML = icons.settings(17);
   btnSettings.title = t('btnSettingsTitle');
+  btnSettings.setAttribute('aria-label', t('btnSettingsTitle'));
 
   document.querySelectorAll('[data-i18n]').forEach((el) => {
     const key = el.dataset.i18n;
@@ -254,11 +268,13 @@ const fileListPanel = new FileListPanel(fileListPane, store, {
   onToast: showToast,
   onSwitchError: (err, entry) =>
     modals.openFileError([{ fileName: entry?.name, size: entry?.size, error: err }]),
+  onCloseErrors: (failures) => modals.openFileError(failures),
 });
 
 const fileTabs = new FileTabsBar(fileTabsBar, store, {
   onSwitchError: (err, entry) =>
     modals.openFileError([{ fileName: entry?.name, size: entry?.size, error: err }]),
+  onCloseErrors: (failures) => modals.openFileError(failures),
 });
 
 const inspector = new InspectorPanel(inspectorContainer, store, {
@@ -357,9 +373,9 @@ function updateToolbarAndHeader() {
   btnViewRaw.setAttribute('aria-pressed', String(inRaw));
   btnViewCompare.setAttribute('aria-pressed', String(inCompare));
 
-  const busy = fileIo.isBusy() || store.anonymizing;
-  btnUndo.disabled = inCompare || !store.canUndo();
-  btnRedo.disabled = inCompare || !store.canRedo();
+  const busy = fileIo.isBusy() || store.isBusy;
+  btnUndo.disabled = inCompare || busy || !store.canUndo();
+  btnRedo.disabled = inCompare || busy || !store.canRedo();
   btnEditMenu.disabled = !hasDoc || busy;
   btnDiff.disabled = !hasDoc || inCompare;
   btnSaveMain.disabled = !hasDoc || inCompare || busy;
@@ -498,6 +514,9 @@ store.subscribe((reason) => {
   updateToolbarAndHeader();
   fileListPanel.render();
   fileTabs.render();
+  if (reason === 'document' || reason === 'files') {
+    pixelPanel.pruneStaleDoc();
+  }
   if (store.viewMode === 'compare' && store.files.length >= 2) {
     compareView.render(reason);
     return;
@@ -514,7 +533,10 @@ store.subscribe((reason) => {
     rawView.render(reason);
     return;
   }
-  treeView.render(reason);
+  const patched = reason === 'edit' && treeView.tryPatchEditedNode(store.lastEditedNodeId);
+  if (!patched) {
+    treeView.render(reason);
+  }
   inspector.render(reason);
   pixelPanel.sync(reason === 'document' || reason === 'lang');
 });
@@ -582,7 +604,7 @@ function openEditMenu() {
   const hasDoc = Boolean(store.doc);
   const fileCount = store.files.length;
   const inCompare = hasDoc && store.compareMode && fileCount >= 2;
-  const busy = fileIo.isBusy() || store.anonymizing;
+  const busy = fileIo.isBusy() || store.isBusy;
 
   openPopupMenu({
     triggerEl: btnEditMenu,
@@ -626,7 +648,7 @@ function openSaveMenu() {
   const inPixel = hasDoc && store.viewMode === 'pixel' && hasPixelData(store.doc);
   const inSr = hasDoc && store.viewMode === 'sr' && isSrDocument(store.doc);
   const inRaw = hasDoc && store.viewMode === 'raw';
-  const busy = fileIo.isBusy() || store.anonymizing;
+  const busy = fileIo.isBusy() || store.isBusy;
   const canDirectSave = hasDoc && Boolean(store.fileHandle);
   const canFolderSave = window.isSecureContext && typeof window.showDirectoryPicker === 'function';
 
@@ -712,8 +734,15 @@ mobileNav.addEventListener('click', (e) => {
   store.setMobileTab(nextTab);
 });
 
-searchInput.addEventListener('input', () => store.setSearchQuery(searchInput.value));
+let treeSearchTimer = null;
+searchInput.addEventListener('input', () => {
+  const val = searchInput.value;
+  btnSearchClear.classList.toggle('hidden', !val);
+  clearTimeout(treeSearchTimer);
+  treeSearchTimer = setTimeout(() => store.setSearchQuery(val), 100);
+});
 btnSearchClear.addEventListener('click', () => {
+  clearTimeout(treeSearchTimer);
   store.setSearchQuery('');
   searchInput.focus();
 });
@@ -733,7 +762,7 @@ function buildCommandPaletteItems() {
   const hasPixel = hasDoc && hasPixelData(store.doc);
   const isSr = hasDoc && isSrDocument(store.doc);
   const inCompare = hasDoc && store.viewMode === 'compare' && fileCount >= 2;
-  const busy = fileIo.isBusy() || store.anonymizing;
+  const busy = fileIo.isBusy() || store.isBusy;
   const items = [
     {
       id: 'open',
@@ -977,18 +1006,20 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
-  if (!mod) return;
+  if (!mod || e.altKey) return;
   const key = e.key.toLowerCase();
+  const code = e.code;
 
-  if (key === 'o') {
+  if (code === 'KeyO' || key === 'o') {
     e.preventDefault();
     fileIo.openFileDialog();
-  } else if (key === 's' && store.doc) {
+  } else if ((code === 'KeyS' || key === 's') && store.doc) {
     e.preventDefault();
-    if (store.compareMode) return;
+    if (store.compareMode || store.isBusy || fileIo.isBusy()) return;
     if (e.shiftKey || !store.fileHandle) fileIo.saveDocumentAs();
     else fileIo.saveDocumentDirect();
-  } else if (key === 'f' && store.doc) {
+  } else if ((code === 'KeyF' || key === 'f') && store.doc) {
+    if (store.viewMode === 'pixel') return;
     e.preventDefault();
     if (store.compareMode) {
       compareView.focusSearch();
@@ -1000,15 +1031,17 @@ window.addEventListener('keydown', (e) => {
       searchInput.focus();
       searchInput.select();
     }
-  } else if (key === 'z' && store.doc && !store.compareMode) {
+  } else if ((code === 'KeyZ' || key === 'z') && store.doc && !store.compareMode) {
     const tag = document.activeElement?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return;
+    if (store.isBusy || fileIo.isBusy()) return;
     e.preventDefault();
     if (e.shiftKey) store.redo();
     else store.undo();
-  } else if (key === 'y' && store.doc && !store.compareMode) {
+  } else if ((code === 'KeyY' || key === 'y') && store.doc && !store.compareMode) {
     const tag = document.activeElement?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || document.activeElement?.isContentEditable) return;
+    if (store.isBusy || fileIo.isBusy()) return;
     e.preventDefault();
     store.redo();
   }
@@ -1123,17 +1156,42 @@ pixelPanel.sync(true);
 // PWA: Service Worker Registration
 // ============================================================================
 if ('serviceWorker' in navigator && window.isSecureContext) {
+  const hadController = Boolean(navigator.serviceWorker.controller);
+  let refreshing = false;
+  let notifiedUpdate = false;
+
+  const handleWaitingWorker = (worker) => {
+    if (!worker) return;
+    if (store.files.length === 0) {
+      worker.postMessage({ type: 'SKIP_WAITING' });
+    } else if (!notifiedUpdate) {
+      notifiedUpdate = true;
+      showToast(t('toastUpdateAvailable'), 'info');
+    }
+  };
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || refreshing || store.files.length > 0) return;
+    refreshing = true;
+    window.location.reload();
+  });
+
   window.addEventListener('load', () => {
-    const hadController = Boolean(navigator.serviceWorker.controller);
-    let refreshing = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (!hadController || refreshing || store.files.length > 0) return;
-      refreshing = true;
-      window.location.reload();
-    });
     navigator.serviceWorker
       .register('./sw.js', { scope: './', updateViaCache: 'none' })
-      .then((reg) => reg.update().catch(() => {}))
+      .then((reg) => {
+        if (reg.waiting) handleWaitingWorker(reg.waiting);
+        reg.addEventListener('updatefound', () => {
+          const installing = reg.installing;
+          if (!installing) return;
+          installing.addEventListener('statechange', () => {
+            if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+              handleWaitingWorker(reg.waiting || installing);
+            }
+          });
+        });
+        return reg.update().catch(() => {});
+      })
       .catch((err) => {
         console.warn('Service worker registration failed:', err);
       });

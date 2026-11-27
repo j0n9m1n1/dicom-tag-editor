@@ -121,6 +121,7 @@ export const PIXEL_REP_SIGNED_TAGS = new Set([
   '00281101', // RedPaletteColorLookupTableDescriptor
   '00281102', // GreenPaletteColorLookupTableDescriptor
   '00281103', // BluePaletteColorLookupTableDescriptor
+  '00281104', // AlphaPaletteColorLookupTableDescriptor
   '00283002', // LUTDescriptor
   '00409211', // RealWorldValueLastValueMapped
   '00409216', // RealWorldValueFirstValueMapped

@@ -9,6 +9,8 @@
  * and Restart Intervals (DRI / RST0-RST7).
  */
 
+import { checkedPixelCount } from './pixelGeometry.js';
+
 /**
  * Build a canonical JPEG Huffman table with an 8-bit fast lookup table
  * and 1..16-bit canonical fallback (ITU-T T.81 Annex C / F.2.2.3).
@@ -25,6 +27,7 @@ function buildHuffmanTable(bits, huffVal) {
   for (let len = 1; len <= 16; len++) {
     const count = bits[len];
     if (count > 0) {
+      if (code + count > 1 << len) throw new Error('Oversubscribed JPEG Huffman table.');
       valPtr[len] = k;
       minCode[len] = code;
       for (let j = 0; j < count; j++) {
@@ -75,11 +78,12 @@ class JpegBitReader {
       const b = data[this.pos++];
       if (b === 0xff) {
         // Skip any 0xFF fill bytes per T.81 B.1.1.2
-        let next = 0;
+        let next = 0xff;
         while (this.pos < end) {
           next = data[this.pos++];
           if (next !== 0xff) break;
         }
+        if (next === 0xff) throw new Error('Truncated JPEG marker.');
         if (next === 0x00) {
           // Byte-stuffed literal 0xFF
           this.bitBuf = (this.bitBuf << 8) | 0xff;
@@ -120,7 +124,7 @@ class JpegBitReader {
       }
       this.bitCount--;
       code = (code << 1) | ((this.bitBuf >>> this.bitCount) & 1);
-      if (table.maxCode[len] >= 0 && code <= table.maxCode[len]) {
+      if (table.maxCode[len] >= 0 && code >= table.minCode[len] && code <= table.maxCode[len]) {
         const idx = table.valPtr[len] + (code - table.minCode[len]);
         return table.huffVal[idx];
       }
@@ -134,15 +138,12 @@ class JpegBitReader {
   receiveExtend(s) {
     if (s === 0) return 0;
     if (s === 16) return 32768; // -32768 mod 65536 (0 extra bits per T.81 Table H.1)
-    if (s > 16) {
+    if (!Number.isInteger(s) || s > 16) {
       throw new Error(`Invalid JPEG Lossless SSSS category: ${s}`);
     }
     if (this.bitCount < s) this.fillBits();
     if (this.bitCount < s) {
-      // Pad missing trailing bits with zeros near stream end if needed
-      const missing = s - this.bitCount;
-      this.bitBuf <<= missing;
-      this.bitCount = s;
+      throw new Error('Truncated JPEG Lossless sample magnitude.');
     }
     this.bitCount -= s;
     const v = (this.bitBuf >>> this.bitCount) & ((1 << s) - 1);
@@ -153,30 +154,17 @@ class JpegBitReader {
   /**
    * Consume a restart marker (RST0..RST7) between restart intervals.
    */
-  consumeRestartMarker() {
-    this.bitBuf = 0;
-    this.bitCount = 0;
-    if (this.marker >= 0xd0 && this.marker <= 0xd7) {
-      this.marker = 0;
-      return;
-    }
-    // Scan forward past any fill bytes to find the RST marker
-    const data = this.data;
-    while (this.pos + 1 < this.end) {
-      if (data[this.pos] === 0xff) {
-        const next = data[this.pos + 1];
-        if (next === 0xff) {
-          this.pos++;
-          continue;
-        }
-        if (next >= 0xd0 && next <= 0xd7) {
-          this.pos += 2;
-          this.marker = 0;
-          return;
-        }
-        break;
-      }
-      this.pos++;
+  consumeRestartMarker(index) {
+    this.requireScanBoundary();
+    if (this.marker !== 0xd0 + index) throw new Error(`Missing expected JPEG restart marker RST${index}.`);
+    this.bitBuf = this.bitCount = this.marker = 0;
+  }
+
+  requireScanBoundary() {
+    if (!this.marker) this.fillBits();
+    if (!this.marker || this.bitCount > 7) throw new Error('Missing JPEG marker at the end of entropy data.');
+    if (this.bitCount && (this.bitBuf & ((1 << this.bitCount) - 1)) !== (1 << this.bitCount) - 1) {
+      throw new Error('Invalid JPEG entropy padding.');
     }
   }
 
@@ -184,11 +172,9 @@ class JpegBitReader {
    * Return byte offset positioned at the next marker (0xFF <marker>) after the scan.
    */
   getNextMarkerOffset() {
-    if (this.marker !== 0) {
-      // Rewind 2 bytes so the outer marker parser sees 0xFF <marker>
-      return Math.max(0, this.pos - 2);
-    }
-    return this.pos;
+    this.requireScanBoundary();
+    if (this.marker >= 0xd0 && this.marker <= 0xd7) throw new Error('Unexpected JPEG restart marker after the scan.');
+    return this.pos - 2;
   }
 }
 
@@ -220,7 +206,7 @@ function predictSample(sv, ra, rb, rc) {
  * Decode a single JPEG Lossless (SOF3) frame bitstream into raw pixel bytes.
  *
  * @param {Uint8Array} bytes Encapsulated JPEG Lossless frame bytes
- * @param {{ rows?: number, cols?: number, bitsAllocated?: number }} [hints]
+ * @param {{ rows?: number, cols?: number, bitsAllocated?: number, firstOrderOnly?: boolean }} [hints]
  * @returns {{
  *   width: number,
  *   height: number,
@@ -252,29 +238,24 @@ export function decodeJpegLossless(bytes, hints = {}) {
   let restartInterval = 0;
   const huffTables = [null, null, null, null];
   let outSamples = null; // Uint16Array storing interleaved decoded samples
-  let hasDecodedScan = false;
+  const decodedComponents = new Set();
+  let reachedEoi = false;
 
   const readU16 = (offset) => (bytes[offset] << 8) | bytes[offset + 1];
 
   while (pos + 1 < len) {
-    // Advance to next 0xFF marker prefix
     if (bytes[pos] !== 0xff) {
-      pos++;
-      continue;
+      throw new Error('Expected a JPEG marker.');
     }
     while (pos < len && bytes[pos] === 0xff) pos++;
     if (pos >= len) break;
 
     const marker = bytes[pos++];
-    if (marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
-      continue;
-    }
+    if (marker === 0x01) continue;
+    if (marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0xd8) throw new Error('Unexpected JPEG marker.');
     if (marker === 0xd9) {
-      // EOI
+      reachedEoi = true;
       break;
-    }
-    if (marker === 0xd8) {
-      continue;
     }
 
     if (pos + 2 > len) break;
@@ -285,50 +266,52 @@ export function decodeJpegLossless(bytes, hints = {}) {
       throw new Error(`Truncated JPEG segment 0xFF${marker.toString(16).toUpperCase()}.`);
     }
 
-    if (marker === 0xc3 || marker === 0xc7) {
-      // SOF3 (Lossless Huffman) / SOF7 (Differential Lossless Huffman)
+    if (marker === 0xc3) {
+      if (outSamples || segLen < 11) throw new Error('Invalid JPEG Lossless frame header.');
       precision = bytes[segStart];
       height = readU16(segStart + 1) || hints.rows || 0;
-      width = readU16(segStart + 3) || hints.cols || 0;
+      width = readU16(segStart + 3);
       numComponents = bytes[segStart + 5];
-      if (precision < 2 || precision > 16 || width <= 0 || height <= 0 || numComponents < 1 || numComponents > 4) {
+      if (precision < 2 || precision > 16 || numComponents < 1 || numComponents > 4 || segLen !== 8 + 3 * numComponents) {
         throw new Error(`Unsupported JPEG Lossless SOF3 parameters (${width}x${height}, P=${precision}, C=${numComponents}).`);
       }
+      const pixelCount = checkedPixelCount(height, width);
       frameComponents = [];
       for (let i = 0; i < numComponents; i++) {
         const base = segStart + 6 + i * 3;
-        frameComponents.push({
-          id: bytes[base],
-          h: bytes[base + 1] >> 4,
-          v: bytes[base + 1] & 0x0f,
-        });
+        const id = bytes[base];
+        if (frameComponents.includes(id) || bytes[base + 1] !== 0x11 || bytes[base + 2] !== 0) {
+          throw new Error('Unsupported JPEG Lossless component layout.');
+        }
+        frameComponents.push(id);
       }
-      outSamples = new Uint16Array(width * height * numComponents);
+      outSamples = new Uint16Array(pixelCount * numComponents);
       pos = segEnd;
     } else if (marker === 0xc4) {
       // DHT — may contain multiple Huffman tables in a single segment
       let p = segStart;
       while (p < segEnd) {
+        if (p + 17 > segEnd) throw new Error('Truncated DHT Huffman table.');
         const tcTh = bytes[p++];
         const th = tcTh & 0x0f;
+        if (tcTh !== th || th >= huffTables.length) throw new Error('Invalid JPEG Lossless Huffman table selector.');
         const bits = new Uint8Array(17);
         let totalSyms = 0;
         for (let i = 1; i <= 16; i++) {
           bits[i] = bytes[p++];
           totalSyms += bits[i];
         }
-        if (p + totalSyms > segEnd) {
+        if (!totalSyms || p + totalSyms > segEnd) {
           throw new Error('Truncated DHT Huffman table.');
         }
         const huffVal = bytes.subarray(p, p + totalSyms);
         p += totalSyms;
-        if (th < 4) {
-          huffTables[th] = buildHuffmanTable(bits, huffVal);
-        }
+        if (huffVal.some((category) => category > 16)) throw new Error('Invalid JPEG Lossless Huffman category.');
+        huffTables[th] = buildHuffmanTable(bits, huffVal);
       }
       pos = segEnd;
     } else if (marker === 0xdd) {
-      // DRI — Define Restart Interval
+      if (segLen !== 4) throw new Error('Invalid JPEG restart interval segment.');
       restartInterval = readU16(segStart);
       pos = segEnd;
     } else if (marker === 0xda) {
@@ -337,27 +320,36 @@ export function decodeJpegLossless(bytes, hints = {}) {
         throw new Error('SOS encountered before SOF3 in JPEG Lossless stream.');
       }
       const ns = bytes[segStart];
+      if (ns < 1 || ns > numComponents || segLen !== 6 + 2 * ns) throw new Error('Invalid JPEG Lossless scan header.');
       const scanComps = [];
       for (let i = 0; i < ns; i++) {
         const cs = bytes[segStart + 1 + i * 2];
         const tdTa = bytes[segStart + 2 + i * 2];
         const td = (tdTa >> 4) & 0x0f;
-        let compIdx = frameComponents.findIndex((fc) => fc.id === cs);
-        if (compIdx < 0) compIdx = Math.min(i, numComponents - 1);
-        const table = huffTables[td] || huffTables[0];
+        const compIdx = frameComponents.indexOf(cs);
+        if (compIdx < 0 || (tdTa & 0x0f) !== 0 || decodedComponents.has(compIdx) ||
+            scanComps.some((component) => component.compIdx === compIdx)) {
+          throw new Error('Invalid or repeated JPEG Lossless scan component.');
+        }
+        const table = huffTables[td];
         if (!table) {
           throw new Error(`Missing Huffman table #${td} in JPEG Lossless scan.`);
         }
         scanComps.push({ compIdx, table });
       }
       const ss = bytes[segStart + 1 + ns * 2]; // Predictor Selection Value (1..7)
-      const al = bytes[segStart + 3 + ns * 2] & 0x0f; // Point transform shift
-      const initPred = 1 << Math.max(0, precision - al - 1);
+      const al = bytes[segStart + 3 + ns * 2]; // High nibble reserved; low nibble is point transform.
+      if (ss < 1 || ss > 7 || (hints.firstOrderOnly && ss !== 1) ||
+          bytes[segStart + 2 + ns * 2] !== 0 || al >= precision || restartInterval % width !== 0) {
+        throw new Error('Invalid JPEG Lossless predictor, point transform, or restart interval.');
+      }
+      const initPred = 1 << (precision - al - 1);
 
       const reader = new JpegBitReader(bytes, segEnd);
       const rowStride = width * numComponents;
       let mcuUntilRestart = restartInterval > 0 ? restartInterval : 0;
       let mcuInRestart = 0;
+      let restartIndex = 0;
 
       // Fast path for the most common DICOM case: 1-component grayscale + SV 1 (.70) + no restart
       if (numComponents === 1 && ns === 1 && ss === 1 && restartInterval === 0 && al === 0) {
@@ -406,7 +398,8 @@ export function decodeJpegLossless(bytes, hints = {}) {
               mcuInRestart++;
               mcuUntilRestart--;
               if (mcuUntilRestart === 0 && (y < height - 1 || x < width - 1)) {
-                reader.consumeRestartMarker();
+                 reader.consumeRestartMarker(restartIndex);
+                 restartIndex = (restartIndex + 1) % 8;
                 mcuUntilRestart = restartInterval;
                 mcuInRestart = 0;
               }
@@ -424,19 +417,19 @@ export function decodeJpegLossless(bytes, hints = {}) {
         }
       }
 
-      hasDecodedScan = true;
       pos = reader.getNextMarkerOffset();
+      for (const { compIdx } of scanComps) decodedComponents.add(compIdx);
     } else {
       // Skip APPn, COM, DQT, etc.
       pos = segEnd;
     }
   }
 
-  if (!hasDecodedScan || !outSamples) {
-    throw new Error('No decodable JPEG Lossless (SOF3) scan found.');
+  if (!reachedEoi || !outSamples || decodedComponents.size !== numComponents) {
+    throw new Error('Incomplete JPEG Lossless frame: EOI and scans for all components are required.');
   }
 
-  const use16Bit = (hints.bitsAllocated ? hints.bitsAllocated > 8 : precision > 8);
+  const use16Bit = precision > 8 || hints.bitsAllocated > 8;
   const bytesPerSample = use16Bit ? 2 : 1;
   const totalSamples = width * height * numComponents;
   const data = new Uint8Array(totalSamples * bytesPerSample);

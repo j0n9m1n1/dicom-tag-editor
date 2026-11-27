@@ -23,13 +23,16 @@ const PRECACHE_URLS = [
   './src/io/fileIo.js',
   './src/utils/uiHelpers.js',
   './src/utils/zipWriter.js',
+  './src/dicom/calendar.js',
   './src/dicom/charset.js',
   './src/dicom/dcmdump.js',
   './src/dicom/dictionary.js',
+  './src/dicom/encapsulation.js',
   './src/dicom/jpegLossless.js',
   './src/dicom/standardDict.js',
   './src/dicom/parser.js',
   './src/dicom/phiSpec.js',
+  './src/dicom/pixelGeometry.js',
   './src/dicom/pixelRenderer.js',
   './src/dicom/qaChecker.js',
   './src/dicom/sampleGenerator.js',
@@ -50,6 +53,8 @@ const PRECACHE_URLS = [
   './src/ui/treeView.js',
 ];
 
+const NETWORK_TIMEOUT_MS = 4000;
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
@@ -61,8 +66,13 @@ self.addEventListener('install', (event) => {
           )
         )
       )
-      .then(() => self.skipWaiting())
   );
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('activate', (event) => {
@@ -80,6 +90,15 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function fetchWithTimeout(request, init, timeoutMs = NETWORK_TIMEOUT_MS) {
+  if (typeof AbortController === 'undefined') {
+    return fetch(request, init);
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(request, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
@@ -88,8 +107,8 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return;
 
   const networkReq = request.mode === 'navigate'
-    ? fetch(request.url, { cache: 'no-cache' })
-    : fetch(request);
+    ? fetchWithTimeout(request.url, { cache: 'no-cache' })
+    : fetchWithTimeout(request, { cache: 'no-cache' });
 
   event.respondWith(
     networkReq

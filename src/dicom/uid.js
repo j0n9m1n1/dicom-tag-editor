@@ -24,3 +24,7 @@ export function generateDicomUid() {
 export function getSopInstanceUid(doc) {
   return doc.datasetNodes.find((node) => node.tag === '00080018' && node.status !== 'deleted')?.value.trim() || '';
 }
+
+export function isWellKnownDicomUid(uid) {
+  return String(uid ?? '').trim().startsWith('1.2.840.10008.');
+}
