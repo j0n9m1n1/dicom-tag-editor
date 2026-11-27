@@ -12,6 +12,7 @@ import {
 } from '../dicom/pixelRenderer.js';
 import { icons, escapeHtml } from './icons.js';
 import { t, getLang } from '../i18n.js';
+import { downloadBlobBytes } from '../utils/uiHelpers.js';
 
 const CT_PRESETS = [
   { key: 'pixelPresetBrain', wc: 40, ww: 80 },
@@ -24,13 +25,17 @@ export class PixelPanel {
   /**
    * @param {HTMLElement} container
    * @param {import('../state/store.js').AppStore} store
+   * @param {(message: string) => void} [onExportError]
    */
-  constructor(container, store) {
+  constructor(container, store, onExportError) {
     this.container = container;
     this.store = store;
+    this.onExportError = onExportError;
     this._lastPixelVersion = -1;
     this._lastLang = null;
     this._lastFullMode = false;
+    this._previewDoc = null;
+    this._renderedFrame = null;
     this._meta = null;
     this._decoded = null;
     this._frameIndex = 0;
@@ -82,6 +87,7 @@ export class PixelPanel {
       }
     }
     this._decoded = null;
+    this._renderedFrame = null;
   }
 
   _headerHtml(meta, isCollapsed) {
@@ -144,7 +150,6 @@ export class PixelPanel {
       if (collapsed) {
         this._lastFullMode = false;
         const meta = this.store.doc ? extractPixelMeta(this.store.doc) : null;
-        this._meta = meta;
         this.container.innerHTML = this._headerHtml(meta, true);
         return;
       }
@@ -154,6 +159,7 @@ export class PixelPanel {
       this._lastPixelVersion = -1;
       this._lastLang = null;
       this._lastFullMode = isFull;
+      this._previewDoc = null;
       this._releaseDecoded();
       this.container.innerHTML = `
         ${this._headerHtml(null, false)}
@@ -185,6 +191,7 @@ export class PixelPanel {
     this._lastFullMode = isFull;
 
     const meta = extractPixelMeta(this.store.doc);
+    this._previewDoc = this.store.doc;
     this._meta = meta;
     this._frameIndex = Math.min(this._frameIndex, Math.max(0, (meta?.numberOfFrames || 1) - 1));
     this._zoom = 1;
@@ -197,6 +204,9 @@ export class PixelPanel {
   async _loadAndDrawFrame(resetWindowFromMeta = false) {
     const token = ++this._renderToken;
     const meta = this._meta;
+    const doc = this._previewDoc;
+    const pixelVersion = this._lastPixelVersion;
+    const frameIndex = this._frameIndex;
 
     if (!meta) {
       this._releaseDecoded();
@@ -207,8 +217,8 @@ export class PixelPanel {
       return;
     }
 
-    const decoded = await decodePixelFrame(meta, this._frameIndex);
-    if (token !== this._renderToken) {
+    const decoded = await decodePixelFrame(meta, frameIndex);
+    if (token !== this._renderToken || doc !== this.store.doc || pixelVersion !== this.store.pixelVersion) {
       if (decoded?.kind === 'bitmap') {
         try { decoded.bitmap.close?.(); } catch {}
       }
@@ -235,6 +245,7 @@ export class PixelPanel {
 
     this._renderUi(meta, decoded);
     this._redrawCanvas();
+    this._renderedFrame = { doc, pixelVersion, frameIndex };
     this.fitCanvas();
     this._applyCanvasTransform();
   }
@@ -525,29 +536,52 @@ export class PixelPanel {
     if (hud) hud.textContent = `WC: ${Math.round(this._wc)} / WW: ${Math.round(this._ww)}`;
   }
 
-  exportPng() {
-    const canvas = this.container.querySelector('#pixel-canvas');
-    if (!canvas || !this._decoded || this._decoded.kind === 'unsupported' || !this.store.doc) {
+  async exportPng() {
+    const { doc, pixelVersion } = this.store;
+    const meta = extractPixelMeta(doc);
+    if (!meta) return false;
+
+    const selectedFrame = this._previewDoc === doc ? this._frameIndex : 0;
+    const frameIndex = Math.min(selectedFrame, meta.numberOfFrames - 1);
+    const rendered = this._renderedFrame;
+    const samePixels = rendered?.doc === doc && rendered.pixelVersion === pixelVersion;
+    const settings = {
+      wc: samePixels ? this._wc : meta.windowCenter,
+      ww: samePixels ? this._ww : meta.windowWidth,
+      invert: this._invert,
+      showOverlays: this._showOverlays,
+    };
+    const base = doc.fileName.split('/').at(-1).replace(/\.(dcm|dicom)(\.gz)?$/i, '');
+    const frameSuffix = meta.numberOfFrames > 1 ? `_f${frameIndex + 1}` : '';
+    let canvas = samePixels && rendered.frameIndex === frameIndex
+      ? this.container.querySelector('#pixel-canvas') : null;
+
+    try {
+      if (!canvas) {
+        const decoded = await decodePixelFrame(meta, frameIndex);
+        if (decoded.kind === 'unsupported') throw new Error(decoded.reason);
+
+        // A hidden preview or a pending frame can still show an older canvas.
+        canvas = document.createElement('canvas');
+        try {
+          renderFrameToCanvas(canvas, decoded, meta, {
+            ...settings,
+            wc: settings.wc ?? decoded.autoWC,
+            ww: settings.ww > 0 ? settings.ww : decoded.autoWW,
+          });
+        } finally {
+          if (decoded.kind === 'bitmap') decoded.bitmap.close();
+        }
+      }
+
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) throw new Error(t('pixelErrPng'));
+      downloadBlobBytes(blob, 'image/png', `${base}${frameSuffix}.png`);
+      return true;
+    } catch (err) {
+      this.onExportError?.(err.message);
       return false;
     }
-    const base = this.store.doc.fileName.split('/').at(-1).replace(/\.(dcm|dicom)$/i, '');
-    const frameSuffix = this._meta?.numberOfFrames > 1 ? `_f${this._frameIndex + 1}` : '';
-    const fileName = `${base}${frameSuffix}.png`;
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      try {
-        a.click();
-      } finally {
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-      }
-    }, 'image/png');
-    return true;
   }
 
   _redrawCanvas() {

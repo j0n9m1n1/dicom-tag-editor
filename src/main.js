@@ -266,7 +266,7 @@ const inspector = new InspectorPanel(inspectorContainer, store, {
   onToast: showToast,
 });
 
-const pixelPanel = new PixelPanel(pixelContainer, store);
+const pixelPanel = new PixelPanel(pixelContainer, store, (msg) => showToast(t('toastSaveErr', { msg }), 'error'));
 const srView = new SrView(srPane, store, { onJumpToNode: jumpToNode, onToast: showToast });
 const rawView = new RawView(rawPane, store, { onToast: showToast });
 const compareView = new CompareView(comparePane, store);
@@ -851,11 +851,7 @@ function buildCommandPaletteItems() {
             icon: icons.download(14),
             label: t('saveMenuExportPng'),
             keywords: 'pixel png image export screenshot',
-            action: () => {
-              if (!pixelPanel.exportPng()) {
-                store.setViewMode('pixel');
-              }
-            },
+            action: () => pixelPanel.exportPng(),
           }]
         : []),
       ...(isSr

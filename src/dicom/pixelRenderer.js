@@ -73,6 +73,7 @@ function extractOverlayDefinitions(nodes, defaultRows, defaultCols, bitsAllocate
     const originParts = originRaw ? String(originRaw).split('\\').map((s) => Number(s.trim())) : [];
     const originRow = Number.isFinite(originParts[0]) ? Math.trunc(originParts[0]) - 1 : 0;
     const originCol = Number.isFinite(originParts[1]) ? Math.trunc(originParts[1]) - 1 : 0;
+    const appliesToAllFrames = !tags.has(0x0015) && !tags.has(0x0051);
     const numberOfFrames = Math.max(1, Math.floor(parseFirstNumber(getVal(0x0015), 1)));
     const imageFrameOrigin = Math.max(1, Math.floor(parseFirstNumber(getVal(0x0051), 1)));
     const ovBitsAlloc = parseFirstNumber(getVal(0x0100), dataNode ? 1 : bitsAllocated);
@@ -92,6 +93,7 @@ function extractOverlayDefinitions(nodes, defaultRows, defaultCols, bitsAllocate
       cols,
       originRow,
       originCol,
+      appliesToAllFrames,
       numberOfFrames,
       imageFrameOrigin,
       bitsAllocated: ovBitsAlloc,
@@ -117,7 +119,7 @@ function extractOverlayPlanesForFrame(meta, frameIndex, rawFrameBytes, rawLittle
   const activePlanes = [];
   for (const ov of defs) {
     // Check multi-frame overlay visibility window (1-based ImageFrameOrigin)
-    const ovFrameIdx = (frameIndex + 1) - ov.imageFrameOrigin;
+    const ovFrameIdx = ov.appliesToAllFrames ? 0 : (frameIndex + 1) - ov.imageFrameOrigin;
     if (ovFrameIdx < 0 || ovFrameIdx >= ov.numberOfFrames) continue;
 
     const pixelCount = ov.rows * ov.cols;
@@ -356,18 +358,78 @@ function concatFragments(frags) {
   return out;
 }
 
+const jpegFragmentRanges = new WeakMap();
+
+/** Locate complete JPEG frames without copying the encapsulated pixel data. */
+function findJpegFragmentRanges(fragments) {
+  const ranges = [];
+  let fragmentIndex = 0;
+  let offset = 0;
+
+  const nextByte = () => {
+    while (fragmentIndex < fragments.length) {
+      const fragment = fragments[fragmentIndex];
+      if (offset < fragment.length) return fragment[offset++];
+      fragmentIndex++;
+      offset = 0;
+    }
+    return -1;
+  };
+
+  while (fragmentIndex < fragments.length) {
+    const first = fragmentIndex;
+    if (nextByte() !== 0xff || nextByte() !== 0xd8) return [];
+    while (true) {
+      while (fragmentIndex < fragments.length) {
+        const prefix = fragments[fragmentIndex].indexOf(0xff, offset);
+        if (prefix >= 0) {
+          offset = prefix + 1;
+          break;
+        }
+        fragmentIndex++;
+        offset = 0;
+      }
+      if (fragmentIndex === fragments.length) return [];
+
+      let marker;
+      do { marker = nextByte(); } while (marker === 0xff);
+      if (marker < 0 || marker === 0xd8) return [];
+      // Stuffed entropy byte, restart marker, or standalone TEM marker.
+      if (marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) continue;
+      if (marker === 0xd9) {
+        const fragment = fragments[fragmentIndex];
+        const remaining = fragment.length - offset;
+        if (remaining !== 0 && !(remaining === 1 && fragment[offset] === 0)) return [];
+        ranges.push([first, ++fragmentIndex]);
+        offset = 0;
+        break;
+      }
+
+      // Skip length-bearing segments so marker-like bytes in APP/COM data do not split frames.
+      const high = nextByte();
+      const low = nextByte();
+      const length = high * 256 + low;
+      if (low < 0 || length < 2) return [];
+      for (let i = 2; i < length; i++) {
+        if (nextByte() < 0) return [];
+      }
+    }
+  }
+  return ranges;
+}
+
 /**
  * Extract the encapsulated byte stream for a given frame index, handling
- * single-frame multi-fragment streams, 1:1 multi-frame streams, and Basic Offset Tables.
+ * single-frame streams, Basic Offset Tables and JPEG frame markers.
  */
-function extractEncapsulatedFrameBytes(pixelNode, numberOfFrames, frameIndex) {
+function extractEncapsulatedFrameBytes(pixelNode, numberOfFrames, frameIndex, codec) {
   const frags = pixelNode.fragments || [];
-  if (frags.length === 0) return null;
+  if (frags.length === 0 || frameIndex < 0 || frameIndex >= numberOfFrames) return null;
   if (numberOfFrames <= 1) {
     return concatFragments(frags);
   }
   if (frags.length === numberOfFrames) {
-    return frags[Math.min(frameIndex, frags.length - 1)];
+    return frags[frameIndex];
   }
   const bot = pixelNode.basicOffsetTable;
   if (bot && bot.length >= numberOfFrames * 4) {
@@ -384,7 +446,16 @@ function extractEncapsulatedFrameBytes(pixelNode, numberOfFrames, frameIndex) {
     }
     if (selected.length > 0) return concatFragments(selected);
   }
-  return frags[Math.min(frameIndex, frags.length - 1)];
+  if (bot?.length || (codec !== 'jpeg-lossless' && codec !== 'jpeg-baseline')) return null;
+
+  let ranges = jpegFragmentRanges.get(frags);
+  if (!ranges) {
+    ranges = findJpegFragmentRanges(frags);
+    jpegFragmentRanges.set(frags, ranges);
+  }
+  if (ranges.length !== numberOfFrames) return null;
+  const [first, end] = ranges[frameIndex];
+  return concatFragments(frags.slice(first, end));
 }
 
 /**
@@ -404,7 +475,7 @@ export async function decodePixelFrame(meta, frameIndex = 0) {
 
   // 1) Compressed formats
   if (meta.compressed) {
-    const frag = extractEncapsulatedFrameBytes(meta.pixelNode, meta.numberOfFrames || 1, frameIndex);
+    const frag = extractEncapsulatedFrameBytes(meta.pixelNode, meta.numberOfFrames || 1, frameIndex, meta.codec);
     if (!frag || frag.length === 0) {
       return { kind: 'unsupported', reason: t('pixelErrNoFrag'), codec: meta.codec };
     }

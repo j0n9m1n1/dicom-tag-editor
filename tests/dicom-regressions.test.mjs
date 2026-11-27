@@ -15,6 +15,7 @@ import { DICOM_DICTIONARY, lookupTag, lookupUidName, searchDictionary } from '..
 import { buildCompareRows } from '../src/ui/compareView.js';
 import { formatHexSlice, formatHexRuler, findSerializedLandmarks } from '../src/ui/rawView.js';
 import { formatTabLabel } from '../src/ui/fileTabs.js';
+import { PixelPanel } from '../src/ui/pixelPanel.js';
 import { buildUniqueRelativePath } from '../src/io/fileIo.js';
 import { buildZipArchive } from '../src/utils/zipWriter.js';
 import { ANONYMIZE_PRESET_TAGS, AppStore, canEditNodeValue, countDocChanges, hasPixelData } from '../src/state/store.js';
@@ -1528,6 +1529,36 @@ test('JPEG Lossless (.57 / .70) pure-JS decoder round-trips 16-bit signed CT (in
     Array.from(decodedRgb.rgba),
     [255, 0, 10, 255, 128, 64, 32, 255, 0, 255, 128, 255, 10, 20, 30, 255]
   );
+
+  // Two JPEG frames span multiple fragments. The first APP segment contains
+  // fake EOI and SOI bytes at a fragment boundary, and the real EOI is split.
+  const firstJpeg = encodeJpegLossless([100, 110], 2, 1, 8);
+  const firstFrame = Uint8Array.from(Buffer.concat([
+    firstJpeg.subarray(0, 2),
+    hex('FF E1 00 07 FF D9 FF D8 00'),
+    firstJpeg.subarray(2),
+  ]));
+  const secondJpeg = encodeJpegLossless([166, 177], 2, 1, 8);
+  const firstFragments = [firstFrame.slice(0, 8), firstFrame.slice(8, -1), Uint8Array.of(0xd9, 0)];
+  const secondTail = secondJpeg.slice(24);
+  const paddedTail = secondTail.length % 2 === 0 ? secondTail : Uint8Array.from([...secondTail, 0]);
+  const fragments = [...firstFragments, secondJpeg.slice(0, 24), paddedTail];
+  assert.ok(fragments.every((fragment) => fragment.length % 2 === 0));
+  const filledTable = new Uint8Array(8);
+  new DataView(filledTable.buffer).setUint32(4, firstFragments.reduce((n, f) => n + 8 + f.length, 0), true);
+  for (const basicOffsetTable of [new Uint8Array(0), filledTable]) {
+    const meta = {
+      rows: 1, cols: 2, samplesPerPixel: 1, photometric: 'MONOCHROME2', numberOfFrames: 2,
+      bitsAllocated: 8, bitsStored: 8, highBit: 7, pixelRepresentation: 0, rescaleSlope: 1,
+      rescaleIntercept: 0, compressed: true, codec: 'jpeg-lossless',
+      pixelNode: { fragments, basicOffsetTable },
+    };
+    for (const [index, expected] of [[1, [166, 177]], [0, [100, 110]]]) {
+      const frame = await decodePixelFrame(meta, index);
+      assert.equal(frame.kind, 'scalar');
+      assert.deepEqual(Array.from(frame.values), expected);
+    }
+  }
 });
 
 test('DICOM Overlay planes (60xx,3000 separate & embedded PixelData bit-planes) decode with origin/multi-frame and composite onto canvas', async () => {
@@ -1617,4 +1648,113 @@ test('DICOM Overlay planes (60xx,3000 separate & embedded PixelData bit-planes) 
   // With showOverlays=false, both pixels revert to grayscale (R === G === B)
   assert.equal(lastImgData.data[6 * 4], lastImgData.data[6 * 4 + 1]);
   assert.equal(lastImgData.data[1 * 4], lastImgData.data[1 * 4 + 1]);
+
+  const twoFrames = Uint8Array.from([...rawPixels, ...rawPixels]);
+  const multiDoc = {
+    ...doc,
+    datasetNodes: [
+      ...doc.datasetNodes.filter((node) => node.tag !== '7FE00010'),
+      mk(0x0028, 0x0008, 'IS', '2'),
+      mk(0x7fe0, 0x0010, 'OW', '[Binary]', { isBinary: true, rawBytes: twoFrames }),
+    ],
+  };
+  const shared = await decodePixelFrame(extractPixelMeta(multiDoc), 1);
+  assert.deepEqual(shared.overlays.map((overlay) => overlay.groupHex), ['6000', '6002']);
+  assert.deepEqual(Array.from(shared.overlays[0].mask), [1, 0]);
+
+  multiDoc.datasetNodes.push(mk(0x6000, 0x0015, 'IS', '1'), mk(0x6000, 0x0051, 'US', '2'));
+  const targetedMeta = extractPixelMeta(multiDoc);
+  const frame1 = await decodePixelFrame(targetedMeta, 0);
+  const frame2 = await decodePixelFrame(targetedMeta, 1);
+  assert.deepEqual(frame1.overlays.map((overlay) => overlay.groupHex), ['6002']);
+  assert.deepEqual(frame2.overlays.map((overlay) => overlay.groupHex), ['6000', '6002']);
+});
+
+test('PNG export uses the active document even when its preview is hidden or still decoding', async (t) => {
+  const makeDoc = (fileName, sample) => ({
+    fileName,
+    transferSyntaxInfo: { compressed: true, codec: 'jpeg-baseline' },
+    datasetNodes: [
+      { tag: '00280010', value: '1' }, { tag: '00280011', value: '1' },
+      { tag: '7FE00010', encapsulated: true, fragments: [Uint8Array.of(sample)] },
+    ],
+  });
+  const canvas = () => {
+    let sample;
+    return {
+      style: {},
+      getContext: () => ({
+        save() {}, restore() {}, drawImage(bitmap) { sample = bitmap.sample; },
+      }),
+      toBlob: (callback) => callback(new Blob([Uint8Array.of(sample)])),
+    };
+  };
+  const preview = canvas();
+  const downloaded = [];
+  let downloadBlob;
+  let signalPreviewStarted;
+  let releasePreview;
+  const previewStarted = new Promise((resolve) => { signalPreviewStarted = resolve; });
+  const previewPending = new Promise((resolve) => { releasePreview = resolve; });
+  let delayed = false;
+  const globals = {
+    window: { innerWidth: 1000 },
+    document: {
+      body: { appendChild() {} },
+      createElement(tag) {
+        if (tag === 'canvas') return canvas();
+        return { click() { downloaded.push([this.download, downloadBlob]); }, remove() {} };
+      },
+    },
+    async createImageBitmap(blob) {
+      const [sample] = new Uint8Array(await blob.arrayBuffer());
+      if (sample === 20 && !delayed) {
+        delayed = true;
+        signalPreviewStarted();
+        await previewPending;
+      }
+      return { sample, width: 1, height: 1, close() {} };
+    },
+  };
+  for (const [name, value] of Object.entries(globals)) {
+    const original = Object.getOwnPropertyDescriptor(globalThis, name);
+    Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+    t.after(() => {
+      if (original) Object.defineProperty(globalThis, name, original);
+      else delete globalThis[name];
+    });
+  }
+  t.mock.method(URL, 'createObjectURL', (blob) => { downloadBlob = blob; return 'blob:png-test'; });
+  t.mock.method(URL, 'revokeObjectURL', () => {});
+
+  const store = { viewMode: 'pixel', doc: makeDoc('first.dcm', 10), pixelVersion: 1 };
+  const panel = new PixelPanel({
+    addEventListener() {},
+    classList: { add() {}, remove() {}, toggle() {} },
+    querySelector: (selector) => selector === '#pixel-canvas' ? preview : null,
+    querySelectorAll: () => [],
+  }, store);
+  await panel.sync();
+  assert.equal(await panel.exportPng(), true);
+
+  store.doc = makeDoc('second.dcm', 20);
+  store.pixelVersion++;
+  const loading = panel.sync();
+  try {
+    await previewStarted;
+    assert.equal(await panel.exportPng(), true);
+  } finally {
+    releasePreview();
+    await loading;
+  }
+
+  // Raw view does not synchronize the preview after a file switch.
+  store.viewMode = 'raw';
+  store.doc = makeDoc('third.dcm', 30);
+  store.pixelVersion++;
+  assert.equal(await panel.exportPng(), true);
+
+  assert.deepEqual(await Promise.all(downloaded.map(async ([name, blob]) => (
+    [name, new Uint8Array(await blob.arrayBuffer())[0]]
+  ))), [['first.png', 10], ['second.png', 20], ['third.png', 30]]);
 });
