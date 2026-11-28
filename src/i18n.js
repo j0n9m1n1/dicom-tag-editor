@@ -277,7 +277,7 @@ const MESSAGES = {
     toastSampleErr: '샘플 생성 오류: {msg}',
     toastDupTag: '이미 존재하는 태그 {tag}로 이동했습니다.',
     toastAddedTag: '태그 {tag} ({vr}) 추가됨',
-    toastAnonDone: '{count}개 태그가 익명화되었습니다. (Ctrl+Z로 복구 가능)',
+    toastAnonDone: '익명화 변경 {count}건을 적용했습니다. (Ctrl+Z로 복구 가능)',
     toastAnonNone: '변경할 대상 태그가 없습니다.',
     confirmInvalidSave: 'VR 규칙 위반 오류가 {count}건 있습니다.\n그래도 DICOM 파일로 저장하시겠습니까?',
     confirmInvalidBatchSave: '{files}개 파일에 VR 규칙 위반 오류가 총 {count}건 있습니다.\n그래도 일괄 저장하시겠습니까?',
@@ -383,7 +383,7 @@ const MESSAGES = {
     toastFolderNoDicom: '폴더에 저장할 수 있는 DICOM 파일이 없습니다.',
     toastAnonSkipped: 'DICOM으로 읽을 수 없는 파일 {count}개에는 익명화를 적용하지 못했습니다.',
     toastAnonDateSkipped: '날짜 값 {count}개는 형식이 부분적이거나 범위를 벗어나 이동하지 못하고 원본을 유지했습니다. 직접 확인하세요.',
-    toastAnonErr: '일괄 익명화 실패: {msg}',
+    toastAnonErr: '익명화 실패: {msg}',
     toastNoDcmInDrop: '드롭된 항목에서 읽을 수 있는 파일을 찾지 못했습니다.',
 
     // Mobile Tabs
@@ -790,7 +790,7 @@ const MESSAGES = {
     toastSampleErr: 'Sample generation error: {msg}',
     toastDupTag: 'Tag {tag} already exists — jumped to existing tag.',
     toastAddedTag: 'Added tag {tag} ({vr})',
-    toastAnonDone: 'Anonymized {count} tag(s). (Undoable via Ctrl+Z)',
+    toastAnonDone: 'Applied {count} anonymization change(s). (Undoable via Ctrl+Z)',
     toastAnonNone: 'No matching tags to anonymize.',
     confirmInvalidSave: 'There are {count} VR validation error(s).\nSave the DICOM file anyway?',
     confirmInvalidBatchSave: 'There are {count} VR validation error(s) across {files} file(s).\nExport/save anyway?',
@@ -896,7 +896,7 @@ const MESSAGES = {
     toastFolderNoDicom: 'There are no readable DICOM files to save to the folder.',
     toastAnonSkipped: 'Anonymization skipped {count} file(s) that could not be read as DICOM.',
     toastAnonDateSkipped: '{count} date value(s) were partial or out of range and kept unshifted. Review them manually.',
-    toastAnonErr: 'Batch anonymization failed: {msg}',
+    toastAnonErr: 'Anonymization failed: {msg}',
     toastNoDcmInDrop: 'No readable files found in the dropped selection.',
 
     // Mobile Tabs
@@ -1100,13 +1100,10 @@ export function setLang(lang) {
 
 export function t(key, params = null) {
   const dict = MESSAGES[currentLang] || MESSAGES.ko;
-  let str = dict[key] ?? MESSAGES.ko[key] ?? key;
-  if (params) {
-    for (const [k, v] of Object.entries(params)) {
-      str = str.replaceAll(`{${k}}`, String(v));
-    }
-  }
-  return str;
+  const str = Object.hasOwn(dict, key) ? dict[key] : (Object.hasOwn(MESSAGES.ko, key) ? MESSAGES.ko[key] : key);
+  return params ? str.replace(/\{([^{}]+)\}/g, (slot, name) => (
+    Object.hasOwn(params, name) ? String(params[name]) : slot
+  )) : str;
 }
 
 export function getLocalizedVrText(spec) {

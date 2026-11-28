@@ -33,54 +33,51 @@ function countDocInvalid(doc) {
   return invalid;
 }
 
-async function fileExistsInDir(dirHandle, fileName) {
+async function getTargetType(dirHandle, fileName) {
   try {
     await dirHandle.getFileHandle(fileName);
-    return true;
+    return 'file';
   } catch (err) {
-    if (err?.name === 'NotFoundError') return false;
+    if (err?.name === 'NotFoundError') return null;
+    if (err?.name === 'TypeMismatchError') return 'directory';
     throw err;
   }
 }
 
 async function resolveTargetFileName(targetDir, relPath, fileName, usedPaths, overwriteState) {
-  let candidateName = fileName;
-  let exists = await fileExistsInDir(targetDir, candidateName);
-  if (!exists) return candidateName;
-
-  if (overwriteState.decision === null) {
-    overwriteState.decision = window.confirm(t('confirmFolderOverwrite', { name: relPath }));
-  }
-  if (overwriteState.decision) {
-    return candidateName;
-  }
-
-  const slashIdx = relPath.lastIndexOf('/');
-  const dirPrefix = slashIdx >= 0 ? relPath.slice(0, slashIdx + 1) : '';
+  const dirPrefix = relPath.slice(0, -fileName.length);
   const dot = fileName.lastIndexOf('.');
   const hasExt = dot > 0;
   const base = hasExt ? fileName.slice(0, dot) : fileName;
   const ext = hasExt ? fileName.slice(dot) : '';
 
-  let idx = 2;
-  while (true) {
-    const nextName = `${base}_${idx}${ext}`;
-    const nextRel = `${dirPrefix}${nextName}`;
-    if (!usedPaths.has(nextRel.toLowerCase()) && !(await fileExistsInDir(targetDir, nextName))) {
-      usedPaths.add(nextRel.toLowerCase());
-      return nextName;
+  for (let idx = 1; ; idx++) {
+    const candidate = idx === 1 ? fileName : `${base}_${idx}${ext}`;
+    const path = `${dirPrefix}${candidate}`;
+    const key = path.toLowerCase();
+    if (usedPaths.has(key)) continue;
+    const type = await getTargetType(targetDir, candidate);
+    if (type === 'file' && overwriteState.decision === null) {
+      overwriteState.decision = window.confirm(t('confirmFolderOverwrite', { name: path }));
     }
-    idx++;
+    if (!type || (type === 'file' && overwriteState.decision)) {
+      usedPaths.add(key);
+      return candidate;
+    }
   }
 }
 
-export function buildUniqueRelativePath(rawName, usedPaths) {
+function sanitizeRelativePath(rawName) {
   const segments = String(rawName || 'file.dcm')
     .replace(/\\/g, '/')
     .split('/')
     .map((seg) => seg.replace(/[<>:"|?*\x00-\x1f]/g, '_').trim())
     .filter((seg) => seg && seg !== '.' && seg !== '..');
-  const clean = segments.length > 0 ? segments.join('/') : 'file.dcm';
+  return segments.length > 0 ? segments.join('/') : 'file.dcm';
+}
+
+export function buildUniqueRelativePath(rawName, usedPaths) {
+  const clean = sanitizeRelativePath(rawName);
   if (!usedPaths.has(clean.toLowerCase())) {
     usedPaths.add(clean.toLowerCase());
     return clean;
@@ -205,8 +202,8 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
   async function runSave(task) {
     if (saveInProgress || store.isBusy) return;
     saveInProgress = true;
-    onBusyChange?.();
     try {
+      onBusyChange?.();
       await task();
     } catch (err) {
       if (err.name !== 'AbortError') {
@@ -215,13 +212,12 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
       }
     } finally {
       saveInProgress = false;
-      store.emit('edit');
+      store.emit('save');
     }
   }
 
   async function serializeEntryForBatch(entry) {
     let dataBytes = null;
-    let savedDoc = null;
     let outName = entry.name;
     if (!entry.doc) {
       try {
@@ -240,20 +236,10 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
     // If the file was opened while validation ran, export its live document.
     if (entry.doc) {
       const { doc } = entry;
-      const revision = store.getDocumentRevision(doc);
       dataBytes = await writeDicomDocument(doc);
       if (doc.wasGzipped) outName = entry.name.replace(/\.gz$/i, '');
-      savedDoc = { doc, revision };
     }
-    return { dataBytes, savedDoc, outName };
-  }
-
-  function markBatchDocsSaved(savedDocs) {
-    let isCurrent = true;
-    for (const { doc, revision } of savedDocs) {
-      if (!store.markSaved(doc, revision)) isCurrent = false;
-    }
-    return isCurrent;
+    return { dataBytes, outName };
   }
 
   async function loadSelectedFileItems(items, { append = true } = {}) {
@@ -382,31 +368,32 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
       }
     }
     const { doc, name, fileHandle } = entry;
-    if (!doc || !confirmInvalidBeforeSave(doc)) return;
+    if (!doc || !store.files.includes(entry) || saveInProgress || store.isBusy || !confirmInvalidBeforeSave(doc)) return;
     const baseName = stripDicomBaseName(name);
     const suggestedName = `${baseName}_edited.dcm`;
 
     return runSave(async () => {
       // Serialize before opening save picker so serialization failures never create/truncate a file on disk.
+      store.endUndoCoalescing(doc);
       const revision = store.getDocumentRevision(doc);
       const bytes = await writeDicomDocument(doc);
       const directHandle = direct ? fileHandle : null;
       let handle = directHandle || await pickSaveFileHandle(suggestedName);
-      let directWriteFailed = false;
+      let writeFailed = false;
 
       if (handle) {
         try {
           await writeToFileHandle(handle, bytes);
         } catch (err) {
           showToast(t('toastDirectFail', { msg: err.message }), 'warn');
-          directWriteFailed = Boolean(directHandle);
+          writeFailed = true;
           handle = null;
         }
       }
 
       const savedName = handle?.name || (handle && directHandle ? name : suggestedName);
       if (!handle) downloadBlobBytes(bytes, 'application/dicom', savedName);
-      if (handle || !directWriteFailed) {
+      if (!writeFailed) {
         const file = handle ? { handle, name: savedName, size: bytes.length } : null;
         const isCurrent = store.markSaved(doc, revision, file);
         const message = handle ? (directHandle ? 'toastSavedDirect' : 'toastSavedAs') : 'toastDownloadStart';
@@ -435,7 +422,6 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
     return runSave(async () => {
       const dirHandle = await window.showDirectoryPicker({ mode: 'readwrite' });
       const usedPaths = new Set();
-      const savedDocs = [];
       const overwriteState = { decision: null };
       let writtenCount = 0;
       let skipped = 0;
@@ -447,7 +433,7 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
           continue;
         }
 
-        const relPath = buildUniqueRelativePath(result.outName, usedPaths);
+        const relPath = sanitizeRelativePath(result.outName);
         const parts = relPath.split('/');
         const baseFileName = parts.pop();
         let targetDir = dirHandle;
@@ -457,10 +443,6 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
         const finalFileName = await resolveTargetFileName(targetDir, relPath, baseFileName, usedPaths, overwriteState);
         const fh = await targetDir.getFileHandle(finalFileName, { create: true });
         await writeToFileHandle(fh, result.dataBytes);
-        // Only mark saved when the entry has no separate original fileHandle pointing elsewhere.
-        if (result.savedDoc && !entry.fileHandle) {
-          savedDocs.push(result.savedDoc);
-        }
         writtenCount++;
       }
 
@@ -469,10 +451,8 @@ export function createFileIoController({ store, modals, fileInput, dragOverlay, 
         return;
       }
 
-      const isCurrent = savedDocs.length > 0 ? markBatchDocsSaved(savedDocs) : true;
       showToast(t('toastFolderSaveDone', { count: writtenCount, dir: dirHandle.name || 'folder' }), 'ok');
       if (skipped) showToast(t('toastFolderSkipped', { count: skipped }), 'warn');
-      if (!isCurrent) showToast(t('toastSavePending'), 'warn');
     });
   }
 

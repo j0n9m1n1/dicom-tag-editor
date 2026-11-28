@@ -183,7 +183,7 @@ export class InspectorPanel {
     const activeEl = document.activeElement;
     const isEffectivelyDeleted = node.status === 'deleted' || Boolean(info.ancestorDeleted);
     const isTypingInside =
-      reason === 'edit' &&
+      (reason === 'edit' || reason === 'save') &&
       !isEffectivelyDeleted &&
       this._renderedNodeId === node.id &&
       activeEl &&

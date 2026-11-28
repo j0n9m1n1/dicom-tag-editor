@@ -20,7 +20,8 @@ export function isPopupMenuOpenFor(triggerEl) {
 
 export function closePopupMenu() {
   if (!activeMenu) return;
-  const { el, triggerEl, scrollEl, timer, onDismiss, onKeyDown } = activeMenu;
+  const { el, triggerEl, focusBack, scrollEl, timer, onDismiss, onKeyDown } = activeMenu;
+  const hadFocus = el.contains(document.activeElement);
   activeMenu = null;
   if (timer !== null) clearTimeout(timer);
   window.removeEventListener('keydown', onKeyDown, true);
@@ -33,6 +34,7 @@ export function closePopupMenu() {
     triggerEl.classList.remove('menu-open');
   }
   el.remove();
+  if (hadFocus && focusBack?.isConnected) focusBack.focus({ preventScroll: true });
 }
 
 /**
@@ -71,6 +73,7 @@ export function openPopupMenu({
     return;
   }
   closePopupMenu();
+  const focusBack = triggerEl || document.activeElement;
 
   const menu = document.createElement('div');
   menu.className = className ? `ctx-menu ${className}` : 'ctx-menu';
@@ -131,13 +134,12 @@ export function openPopupMenu({
 
   const onDismiss = () => closePopupMenu();
   const onKeyDown = (e) => {
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
-      const focusBack = triggerEl;
       closePopupMenu();
-      focusBack?.focus?.();
       return;
     }
     if (e.key === 'Tab') {
@@ -164,7 +166,7 @@ export function openPopupMenu({
     }
   };
 
-  const state = { el: menu, triggerEl, scrollEl, timer: null, onDismiss, onKeyDown };
+  const state = { el: menu, triggerEl, focusBack, scrollEl, timer: null, onDismiss, onKeyDown };
   activeMenu = state;
 
   menu.querySelector('.ctx-item:not(:disabled)')?.focus?.({ preventScroll: true });

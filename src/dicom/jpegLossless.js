@@ -163,9 +163,7 @@ class JpegBitReader {
   requireScanBoundary() {
     if (!this.marker) this.fillBits();
     if (!this.marker || this.bitCount > 7) throw new Error('Missing JPEG marker at the end of entropy data.');
-    if (this.bitCount && (this.bitBuf & ((1 << this.bitCount) - 1)) !== (1 << this.bitCount) - 1) {
-      throw new Error('Invalid JPEG entropy padding.');
-    }
+    // T.81 F.1.2.3 asks for 1-bit padding, but some encoders pad with zeros; libjpeg ignores it too.
   }
 
   /**

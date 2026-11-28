@@ -22,8 +22,7 @@ function flattenDoc(doc) {
       if (n.status === 'deleted') continue;
       const occ = tagOcc.get(n.tag) || 0;
       tagOcc.set(n.tag, occ + 1);
-      const dupSuffix = occ > 0 ? `#${String(occ).padStart(6, '0')}` : '';
-      const key = `${sortPrefix}/${n.tag}${dupSuffix}`;
+      const key = `${sortPrefix}/${n.tag}#${String(occ).padStart(6, '0')}`;
       const displayPath = displayPrefix ? `${displayPrefix} › ${n.formattedTag}` : n.formattedTag;
       if (n.isSequence) {
         map.set(key, {
@@ -216,11 +215,14 @@ export class CompareView {
 
   reset() {
     this._renderToken++;
+    clearTimeout(this._searchTimer);
     this.diffOnly = true;
     this.searchQuery = '';
     this.rows = [];
     this.diffIndices = [];
     this.activeRowIdx = -1;
+    this._hoveredIdx = -1;
+    this._hoveredEls = [];
     if (this._shellBuilt) {
       const searchInp = this.container.querySelector('#cmp-search-input');
       const clearBtn = this.container.querySelector('#btn-cmp-search-clear');
@@ -401,9 +403,11 @@ export class CompareView {
         resizer.classList.remove('active');
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
+        window.removeEventListener('blur', onUp);
       };
       window.addEventListener('mousemove', onMove);
       window.addEventListener('mouseup', onUp);
+      window.addEventListener('blur', onUp);
     });
 
     resizer.addEventListener('dblclick', () => {
@@ -637,10 +641,11 @@ export class CompareView {
     selA.title = entryA ? `${entryA.name} — ${t('compareDropHint')}` : '';
     selB.title = entryB ? `${entryB.name} — ${t('compareDropHint')}` : '';
 
-    await this._renderComparison({ preserveScroll: reason === 'lang' || reason === 'edit' });
+    await this._renderComparison({ preserveScroll: reason === 'lang' || reason === 'edit' || reason === 'save' });
   }
 
   async _renderComparison({ preserveScroll = false } = {}) {
+    if (!this.store.compareMode || this.store.files.length < 2) return;
     const token = ++this._renderToken;
     const files = this.store.files;
     const entryA = files.find((f) => f.id === this.store.compareFileAId);
@@ -725,6 +730,8 @@ export class CompareView {
     this.activeRowIdx = -1;
 
     if (rows.length === 0) {
+      this._hoveredIdx = -1;
+      this._hoveredEls = [];
       const emptyMsg = totalDiffs === 0 && this.diffOnly && !q ? t('modalCompareSame') : t('treeEmptyMsg');
       const emptyHtml = `<div class="compare-empty">${escapeHtml(emptyMsg)}</div>`;
       bodyA.innerHTML = emptyHtml;

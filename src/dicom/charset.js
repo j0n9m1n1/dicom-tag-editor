@@ -160,9 +160,54 @@ export function isValidDicomUri(value) {
   return /^(?:[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=-]|%[0-9a-fA-F]{2})*$/.test(value.replace(/ +$/, ''));
 }
 
+function stripEscapeSequences(bytes) {
+  const out = [];
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === 0x1b) {
+      let j = i + 1;
+      while (j < bytes.length && bytes[j] >= 0x20 && bytes[j] <= 0x2f) j++;
+      if (j > i + 1 && j < bytes.length && bytes[j] >= 0x30 && bytes[j] <= 0x7e) {
+        i = j;
+        continue;
+      }
+    }
+    out.push(bytes[i]);
+  }
+  return Uint8Array.from(out);
+}
+
+/**
+ * Best-effort decoding for text that violates its declared repertoire (e.g. a single-valued
+ * "ISO 2022 IR 149", or Korean/Japanese text that is not re-designated after "^"/"="). Honour the
+ * declared character set like earlier releases did instead of reinterpreting the bytes as UTF-8.
+ */
+function lenientDecode(slice, encoding, terms) {
+  const ids = terms.map(legacyId);
+  let label = null;
+  let input = slice;
+  if (ids.includes('87') || ids.includes('159')) {
+    label = 'iso-2022-jp';
+  } else {
+    if (ids.includes('149')) label = 'euc-kr';
+    else if (ids.includes('58')) label = 'gbk';
+    else if (ids.includes('13')) label = 'shift_jis';
+    else if (encoding && encoding !== ASCII && encoding !== 'iso-2022') label = encoding;
+    else label = ids.map((id) => LEGACY_BY_ID.get(id)).find(Boolean) || 'utf-8';
+    input = stripEscapeSequences(slice);
+  }
+  try {
+    return new TextDecoder(label, { ignoreBOM: true }).decode(input);
+  } catch {
+    return new TextDecoder('utf-8', { ignoreBOM: true }).decode(slice);
+  }
+}
+
 export function decodeDicomText(bytes, vr, specificCharacterSet, tag = '') {
   if (!bytes?.length) return { value: '', charsetError: false };
-  const slice = vr === 'UI' && bytes.at(-1) === 0 ? bytes.subarray(0, -1) : bytes;
+  // Trailing NULs are UI padding per PS3.5, but many writers also NUL-pad other string VRs.
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] === 0) end--;
+  const slice = bytes.subarray(0, end);
   const terms = usesSpecificCharacterSet(vr, tag) ? charsetTerms(specificCharacterSet) : [''];
   const encoding = resolveDecoderEncoding(terms.join('\\'));
   let value;
@@ -180,9 +225,10 @@ export function decodeDicomText(bytes, vr, specificCharacterSet, tag = '') {
       value = decode(slice, encoding);
     }
     charsetError = hasInvalidControls(value, vr);
+    if (charsetError && slice.includes(0x1b)) value = lenientDecode(slice, encoding, terms);
   } catch {
     charsetError = true;
-    value = new TextDecoder('utf-8', { ignoreBOM: true }).decode(slice);
+    value = lenientDecode(slice, encoding, terms);
   }
   if (!FREE_TEXT_VRS.has(vr)) value = value.replace(/ +$/, '');
   return { value, charsetError };

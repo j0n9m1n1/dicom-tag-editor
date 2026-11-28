@@ -9,8 +9,8 @@
 import { validateVrValue, BINARY_VRS } from '../dicom/vrSpec.js';
 import { formatTag, tagHex, lookupTag } from '../dicom/dictionary.js';
 import { genNodeId, parseDicomBuffer } from '../dicom/parser.js';
-import { generateDicomUid, getSopInstanceUid } from '../dicom/uid.js';
-import { ANONYMIZE_PRESET_TAGS, isPhiNode, shiftDicomDateValue } from '../dicom/phiSpec.js';
+import { generateDicomUid, getSopInstanceUid, isWellKnownDicomUid } from '../dicom/uid.js';
+import { ANONYMIZE_PRESET_TAGS, getPhiTagInfo, isPhiNode, shiftDicomDateValue } from '../dicom/phiSpec.js';
 import { isSrDocument } from '../dicom/srParser.js';
 import { getLang, setLang as setI18nLang } from '../i18n.js';
 
@@ -56,10 +56,6 @@ async function isSameFile(entry, item) {
 const MAX_AUTO_EXPAND_ITEMS = 40;
 const MAX_AUTO_EXPAND_PER_SEQ = 20;
 const UNDO_COALESCE_MS = 800;
-
-function isWellKnownDicomUid(uid) {
-  return String(uid || '').startsWith('1.2.840.10008.');
-}
 
 function truncateAtWordBoundary(str, maxLen = 64) {
   const clean = String(str || '').trim();
@@ -108,7 +104,7 @@ export function countDocChanges(doc) {
   };
   walk(doc.metaNodes);
   walk(doc.datasetNodes);
-  return count || Number(Boolean(doc.needsResave));
+  return count || Number(Boolean(doc.needsResave || doc.deidentificationChanged));
 }
 
 function safeStorageGet(key) {
@@ -189,6 +185,7 @@ export class AppStore {
     this._activeOpToken = 0;
     this._revisions = new WeakMap();
     this._sequenceBaselines = new WeakMap();
+    this._savedDeidentified = new WeakMap();
     this._pendingParses = new WeakMap();
     this.anonymizing = false;
     this.lastAnonymizeDateSkips = 0;
@@ -540,7 +537,7 @@ export class AppStore {
         undoStack: [],
         redoStack: [],
         selectedId: null,
-        expandedIds: new Set(['__meta__', '__main__']),
+        expandedIds: new Set(),
       });
     }
 
@@ -1022,7 +1019,8 @@ export class AppStore {
   }
 
   _isPixelDisplayTag(hex) {
-    return hex.startsWith('0028') || hex === '7FE00010' || hex === '00020010' || /^60[01][02468ACE]/i.test(hex);
+    return hex.startsWith('0028') || hex === '7FE00010' || hex === '00020010' ||
+      hex === '52009229' || hex === '52009230' || /^60[01][02468ACE]/i.test(hex);
   }
 
   getDocumentRevision(doc) {
@@ -1031,7 +1029,8 @@ export class AppStore {
 
   _noteEdit(doc) {
     if (doc.hasPart10Header) {
-      const uid = getSopInstanceUid(doc);
+      const sop = doc.datasetNodes.find((n) => n.tag === '00080018' && n.status !== 'deleted');
+      const uid = sop && sop.status !== 'unchanged' ? sop.value.trim() : '';
       if (uid) {
         this._syncMediaStorageSopInstanceUid(doc, uid);
       } else {
@@ -1042,8 +1041,31 @@ export class AppStore {
           metaNode.validation = validateVrValue('UI', metaNode.originalValue);
         }
       }
+      this._syncMediaStorageSopClassUid(doc);
     }
     this._revisions.set(doc, this.getDocumentRevision(doc) + 1);
+  }
+
+  // Mirror an edited SOP Class UID (0008,0016) into (0002,0002) like the writer does on save, so the
+  // editor and QA don't show a stale mismatch. A direct edit of (0002,0002) is left alone.
+  _syncMediaStorageSopClassUid(doc) {
+    const metaNode = doc.metaNodes.find((n) => n.tag === '00020002');
+    if (!metaNode) return;
+    const cls = doc.datasetNodes.find((n) => n.tag === '00080016' && n.status !== 'deleted');
+    const uid = cls && cls.status !== 'unchanged' ? String(cls.value || '').trim() : '';
+    const isDicomDir = metaNode.originalValue?.trim() === '1.2.840.10008.1.3.10';
+    if (uid && !isDicomDir) {
+      if (metaNode.value === uid) return;
+      metaNode.value = uid;
+      metaNode.status = uid === metaNode.originalValue ? 'unchanged' : 'modified';
+      metaNode.validation = validateVrValue('UI', uid);
+      metaNode._syncedFromMain = true;
+    } else if (metaNode._syncedFromMain) {
+      metaNode.value = metaNode.originalValue;
+      metaNode.status = 'unchanged';
+      metaNode.validation = validateVrValue('UI', metaNode.originalValue);
+      metaNode._syncedFromMain = false;
+    }
   }
 
   _syncMediaStorageSopInstanceUid(doc, uid) {
@@ -1074,10 +1096,20 @@ export class AppStore {
     return this.redoStack.length > 0;
   }
 
+  endUndoCoalescing(doc = this.doc) {
+    const stack = doc === this.doc
+      ? this.undoStack
+      : this.files.find((entry) => entry.doc === doc)?.undoStack;
+    const top = stack?.at(-1);
+    if (top) top.coalesceKey = null;
+  }
+
   undo() {
     if (this.isBusy) return;
+    this.endUndoCoalescing();
     const cmd = this.undoStack.pop();
     if (!cmd) return;
+    this.endUndoCoalescing();
     cmd.undo();
     this._noteEdit(this.doc);
     this.redoStack.push(cmd);
@@ -1091,6 +1123,7 @@ export class AppStore {
     if (this.isBusy) return;
     const cmd = this.redoStack.pop();
     if (!cmd) return;
+    this.endUndoCoalescing();
     cmd.redo();
     this._noteEdit(this.doc);
     this.undoStack.push(cmd);
@@ -1162,13 +1195,11 @@ export class AppStore {
         label: `Remove added ${node.formattedTag}`,
         affectsPixel: this._isPixelDisplayTag(node.tag),
         redo: () => {
-          const idx = parentList.indexOf(node);
-          if (idx >= 0) parentList.splice(idx, 1);
+          this._deleteNode(node, parentList);
           if (this.selectedId === node.id) this.selectedId = null;
         },
         undo: () => {
-          node.status = 'added';
-          insertSorted(parentList, node);
+          this._restoreNode(node, parentList);
           this.selectedId = node.id;
         },
       });
@@ -1178,37 +1209,47 @@ export class AppStore {
     const prevValue = node.value;
     const prevStatus = node.status;
     const prevItems = node.items;
+    const originalValue = node.originalValue;
     const originalItems = this._sequenceBaselines.get(node);
-    if (prevValue === node.originalValue && prevStatus === 'unchanged') return;
+    if (prevValue === originalValue && prevStatus === 'unchanged') return;
+
+    const { parentList } = info;
+    const apply = (value, items) => {
+      node.value = value;
+      if (originalItems) node.items = items;
+      this._restoreNode(node, parentList);
+      node.validation = node.isBinary || node.isSequence
+        ? { valid: true, severity: 'ok', messages: [] }
+        : validateVrValue(node.vr, value, node.tag);
+    };
 
     this._executeCommand({
       label: `Revert ${node.formattedTag}`,
       affectsPixel: this._isPixelDisplayTag(node.tag),
-      redo: () => {
-        node.value = node.originalValue;
-        if (originalItems) node.items = originalItems;
-        node.status = 'unchanged';
-        node.validation = node.isBinary || node.isSequence
-          ? { valid: true, severity: 'ok', messages: [] }
-          : validateVrValue(node.vr, node.originalValue, node.tag);
-      },
+      redo: () => apply(originalValue, originalItems),
       undo: () => {
-        node.value = prevValue;
-        if (originalItems) {
-          if (!this._sequenceBaselines.has(node)) this._sequenceBaselines.set(node, node.items);
-          node.items = prevItems;
-        }
-        node.status =
-          prevStatus === 'deleted'
-            ? 'deleted'
-            : node.value === node.originalValue && this._sequenceStatus(node) === 'unchanged'
-              ? 'unchanged'
-              : 'modified';
-        node.validation = node.isBinary || node.isSequence
-          ? { valid: true, severity: 'ok', messages: [] }
-          : validateVrValue(node.vr, prevValue, node.tag);
+        apply(prevValue, prevItems);
+        if (prevStatus === 'deleted') this._deleteNode(node, parentList);
       },
     });
+  }
+
+  _restoreNode(node, list) {
+    if (!list.includes(node)) {
+      node.status = 'added';
+      insertSorted(list, node);
+    } else if (node.status !== 'added') {
+      node.status = node.value === node.originalValue ? this._sequenceStatus(node) : 'modified';
+    }
+  }
+
+  _deleteNode(node, list) {
+    if (node.status === 'added') {
+      const idx = list.indexOf(node);
+      if (idx >= 0) list.splice(idx, 1);
+    } else {
+      node.status = 'deleted';
+    }
   }
 
   toggleDeleteNode(nodeId) {
@@ -1232,25 +1273,8 @@ export class AppStore {
       return;
     }
     const deleting = prevStatus !== 'deleted';
-    const restoreNode = () => {
-      if (!parentList.includes(node)) {
-        node.status = 'added';
-        insertSorted(parentList, node);
-      } else {
-        node.status =
-          node.value === node.originalValue && this._sequenceStatus(node) === 'unchanged'
-            ? 'unchanged'
-            : 'modified';
-      }
-    };
-    const deleteNode = () => {
-      if (node.status === 'added') {
-        const idx = parentList.indexOf(node);
-        if (idx >= 0) parentList.splice(idx, 1);
-      } else {
-        node.status = 'deleted';
-      }
-    };
+    const restoreNode = () => this._restoreNode(node, parentList);
+    const deleteNode = () => this._deleteNode(node, parentList);
 
     this._executeCommand({
       label: `${deleting ? 'Delete' : 'Restore'} ${node.formattedTag}`,
@@ -1402,7 +1426,7 @@ export class AppStore {
 
     this._executeCommand({
       label: `Add Item to ${seqNode.formattedTag}`,
-      affectsPixel: false,
+      affectsPixel: this._isPixelDisplayTag(seqNode.tag),
       redo: () => {
         if (!this._sequenceBaselines.has(seqNode)) this._sequenceBaselines.set(seqNode, seqNode.items || []);
         seqNode.items = [...prevItems, newItem];
@@ -1432,7 +1456,7 @@ export class AppStore {
 
     this._executeCommand({
       label: `Remove Item #${itemIndex} from ${parentSeq.formattedTag}`,
-      affectsPixel: false,
+      affectsPixel: this._isPixelDisplayTag(parentSeq.tag),
       redo: () => {
         if (!this._sequenceBaselines.has(parentSeq)) this._sequenceBaselines.set(parentSeq, parentSeq.items || []);
         parentSeq.items = nextItems;
@@ -1492,7 +1516,7 @@ export class AppStore {
   /**
    * Internal helper: build an undoable anonymization command for any given doc.
    * Supports recursive PHI presets (replace/empty/remove), Private tag stripping,
-   * consistent UID regeneration across all non-well-known UI tags, and deidentified flag.
+   * consistent UID regeneration while preserving class and encoding identifiers, and deidentified flag.
    */
   _buildAnonymizeCommandForDoc(doc, rules, opts = {}) {
     const {
@@ -1518,10 +1542,12 @@ export class AppStore {
     const snapshots = [];
     const removedNodes = [];
     const restoredDeletes = [];
+    const scrubFileMeta = doc.hasPart10Header && (
+      ruleMap.size > 0 || markDeidentified || stripPrivate || regenerateUids || (shiftDates && dateShiftDays)
+    );
     let dateShiftCount = 0;
     let uidChangeCount = 0;
     let privateDeleteCount = 0;
-    let ruleDeleteCount = 0;
 
     const mapSingleUid = (raw) => {
       const trimmed = String(raw || '').trim();
@@ -1537,15 +1563,19 @@ export class AppStore {
         if (n.status === 'deleted') continue;
 
         if (stripPrivate && n.isPrivate) {
-          removedNodes.push({ node: n, parentList: nodes, prevStatus: n.status });
+          removedNodes.push({ node: n, parentList: nodes });
           privateDeleteCount++;
+          continue;
+        }
+
+        if (scrubFileMeta && nodes === doc.metaNodes && getPhiTagInfo(n.tag)?.action === 'X') {
+          removedNodes.push({ node: n, parentList: nodes });
           continue;
         }
 
         const rule = ruleMap.get(n.tag);
         if (rule && rule.action === 'remove' && !getReadOnlyTagMessage(n.tag)) {
-          removedNodes.push({ node: n, parentList: nodes, prevStatus: n.status });
-          ruleDeleteCount++;
+          removedNodes.push({ node: n, parentList: nodes });
           continue;
         }
 
@@ -1563,7 +1593,8 @@ export class AppStore {
         let isDateShift = false;
         let isUidChange = false;
 
-        if (regenerateUids && n.vr === 'UI' && n.value) {
+        const isClassUid = n.keyword?.includes('SOPClass') || n.tag === '00020012';
+        if (regenerateUids && !rule && !isClassUid && n.vr === 'UI' && n.value) {
           const remapped = String(n.value)
             .split('\\')
             .map(mapSingleUid)
@@ -1594,7 +1625,6 @@ export class AppStore {
           snapshots.push({
             node: n,
             prevValue: n.value,
-            prevStatus: n.status,
             nextValue: nextVal,
           });
         }
@@ -1611,7 +1641,6 @@ export class AppStore {
           snapshots.push({
             node: existing,
             prevValue: existing.value,
-            prevStatus: existing.status,
             nextValue: targetVal,
           });
         }
@@ -1664,15 +1693,20 @@ export class AppStore {
       }
     }
 
-    const changeCount = snapshots.length + removedNodes.length + restoredDeletes.length + addedNodes.length;
-    if (changeCount === 0) return null;
-
+    const tagChanges = snapshots.length + removedNodes.length + restoredDeletes.length + addedNodes.length;
     const prevDeidentified = Boolean(doc.deidentified);
+    const changeCount = tagChanges || Number(markDeidentified && doc.hasPart10Header && !prevDeidentified);
+    if (changeCount === 0) return null;
+    const setDeidentified = (value) => {
+      if (!this._savedDeidentified.has(doc)) this._savedDeidentified.set(doc, prevDeidentified);
+      doc.deidentified = value;
+      doc.deidentificationChanged = doc.hasPart10Header && value !== this._savedDeidentified.get(doc);
+    };
 
     return {
       changeCount,
       breakdown: {
-        tagChanges: snapshots.length - dateShiftCount - uidChangeCount + ruleDeleteCount + restoredDeletes.length + addedNodes.length,
+        tagChanges: tagChanges - dateShiftCount - uidChangeCount - privateDeleteCount,
         dateShifts: dateShiftCount,
         privateDeletes: privateDeleteCount,
         uidChanges: uidChangeCount,
@@ -1680,7 +1714,8 @@ export class AppStore {
       },
       cmd: {
         label: 'Batch Anonymize',
-        affectsPixel: false,
+        affectsPixel: snapshots.some(({ node }) => this._isPixelDisplayTag(node.tag)) ||
+          removedNodes.some(({ node }) => this._isPixelDisplayTag(node.tag)),
         redo: () => {
           for (const s of snapshots) {
             s.node.value = s.nextValue;
@@ -1702,12 +1737,7 @@ export class AppStore {
             r.node.validation = validateVrValue(r.node.vr, r.nextValue, r.node.tag);
           }
           for (const d of removedNodes) {
-            if (d.node.status === 'added') {
-              const idx = d.parentList.indexOf(d.node);
-              if (idx >= 0) d.parentList.splice(idx, 1);
-            } else {
-              d.node.status = 'deleted';
-            }
+            this._deleteNode(d.node, d.parentList);
           }
           for (const added of addedNodes) {
             if (!doc.datasetNodes.includes(added)) {
@@ -1717,7 +1747,7 @@ export class AppStore {
               added.status = added.value === added.originalValue ? 'unchanged' : 'modified';
             }
           }
-          doc.deidentified = true;
+          setDeidentified(true);
         },
         undo: () => {
           for (const s of snapshots) {
@@ -1740,17 +1770,7 @@ export class AppStore {
             r.node.validation = validateVrValue(r.node.vr, r.prevValue, r.node.tag);
           }
           for (const d of removedNodes) {
-            if (!d.parentList.includes(d.node)) {
-              d.node.status = 'added';
-              insertSorted(d.parentList, d.node);
-            } else {
-              d.node.status =
-                d.prevStatus === 'added'
-                  ? 'added'
-                  : d.node.value === d.node.originalValue && this._sequenceStatus(d.node) === 'unchanged'
-                    ? 'unchanged'
-                    : 'modified';
-            }
+            this._restoreNode(d.node, d.parentList);
           }
           for (const added of addedNodes) {
             if (added.status === 'added') {
@@ -1760,7 +1780,7 @@ export class AppStore {
               added.status = 'deleted';
             }
           }
-          doc.deidentified = prevDeidentified;
+          setDeidentified(prevDeidentified);
         },
       },
     };
@@ -1792,8 +1812,8 @@ export class AppStore {
     if (this.isBusy) return { affectedFiles: 0, totalChanges: 0, skippedFiles: 0, dateSkips: 0 };
     this._saveActiveSnapshot();
     this.anonymizing = true;
-    this.emit('files');
     try {
+      this.emit('files');
       const entries = [];
       let skippedFiles = 0;
       for (const entry of this.files.slice()) {
@@ -1822,6 +1842,10 @@ export class AppStore {
         entry.undoStack.push(built.cmd);
         if (entry.undoStack.length > 200) entry.undoStack.shift();
         entry.redoStack = [];
+        if (entry.id === this.activeFileId) {
+          this.redoStack = entry.redoStack;
+          if (built.cmd.affectsPixel) this.pixelVersion++;
+        }
         affectedFiles++;
         totalChanges += built.changeCount;
       }
@@ -1845,14 +1869,14 @@ export class AppStore {
     if (getReadOnlyTagMessage(hex)) return { affectedFiles: 0, locked: true };
     if (this.isBusy) return { affectedFiles: 0 };
     this._saveActiveSnapshot();
-    this._batchEditing = true;
-    this.emit('files');
     const dict = lookupTag(group, element);
     const isMeta = group === 0x0002;
     let affectedFiles = 0;
     let activePixelChanged = false;
 
+    this._batchEditing = true;
     try {
+      this.emit('files');
       for (const entry of this.files.slice()) {
         try {
           const doc = await this.ensureEntryParsed(entry);
@@ -1867,44 +1891,12 @@ export class AppStore {
 
           if (mode === 'delete') {
             if (existing) {
-              if (existing.status === 'added') {
-                cmd = {
-                  label: `Batch remove ${existing.formattedTag}`,
-                  affectsPixel: this._isPixelDisplayTag(hex),
-                  redo: () => {
-                    const idx = list.indexOf(existing);
-                    if (idx >= 0) list.splice(idx, 1);
-                  },
-                  undo: () => {
-                    existing.status = 'added';
-                    insertSorted(list, existing);
-                  },
-                };
-              } else {
-                cmd = {
-                  label: `Batch delete ${existing.formattedTag}`,
-                  affectsPixel: this._isPixelDisplayTag(hex),
-                  redo: () => {
-                    if (existing.status === 'added') {
-                      const idx = list.indexOf(existing);
-                      if (idx >= 0) list.splice(idx, 1);
-                    } else {
-                      existing.status = 'deleted';
-                    }
-                  },
-                  undo: () => {
-                    if (!list.includes(existing)) {
-                      existing.status = 'added';
-                      insertSorted(list, existing);
-                    } else {
-                      existing.status =
-                        existing.value === existing.originalValue && this._sequenceStatus(existing) === 'unchanged'
-                          ? 'unchanged'
-                          : 'modified';
-                    }
-                  },
-                };
-              }
+              cmd = {
+                label: `Batch delete ${existing.formattedTag}`,
+                affectsPixel: this._isPixelDisplayTag(hex),
+                redo: () => this._deleteNode(existing, list),
+                undo: () => this._restoreNode(existing, list),
+              };
             }
           } else if ((existing && !existing.isSequence && !existing.isBinary) || deletedExisting) {
             const target = existing || deletedExisting;
@@ -2003,6 +1995,7 @@ export class AppStore {
             entry.undoStack.push(cmd);
             if (entry.undoStack.length > 200) entry.undoStack.shift();
             entry.redoStack = [];
+            if (entry.id === this.activeFileId) this.redoStack = entry.redoStack;
             affectedFiles++;
             if (entry.id === this.activeFileId && cmd.affectsPixel) {
               activePixelChanged = true;
@@ -2077,6 +2070,7 @@ export class AppStore {
   markSaved(doc, revision, file = null) {
     const entry = this.files.find((item) => item.doc === doc);
     if (!entry) return true;
+    this.endUndoCoalescing(doc);
     if (file) {
       entry.fileHandle = file.handle;
       entry.sourceFile = null;
@@ -2091,8 +2085,15 @@ export class AppStore {
       return false;
     }
     doc.needsResave = false;
+    doc.deidentificationChanged = false;
+    this._savedDeidentified.set(doc, Boolean(doc.deidentified));
     const uid = getSopInstanceUid(doc);
     if (doc.hasPart10Header && uid) this._syncMediaStorageSopInstanceUid(doc, uid);
+    if (doc.hasPart10Header) {
+      this._syncMediaStorageSopClassUid(doc);
+      const classMeta = doc.metaNodes.find((n) => n.tag === '00020002');
+      if (classMeta) classMeta._syncedFromMain = false;
+    }
     const clean = (list, inheritedCharset = '') => {
       const csNode = list.find((item) => item.tag === '00080005' && item.status !== 'deleted');
       const charset = csNode ? csNode.value : inheritedCharset;
@@ -2111,7 +2112,7 @@ export class AppStore {
         n.originalValue = n.value;
         n.status = 'unchanged';
         if (n.isSequence && n.items) {
-          this._sequenceBaselines.delete(n);
+          if (this._sequenceBaselines.has(n)) this._sequenceBaselines.set(n, n.items);
           for (const item of n.items) clean(item.children, charset);
         }
       }

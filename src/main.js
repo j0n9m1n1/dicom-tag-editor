@@ -390,7 +390,8 @@ function updateToolbarAndHeader() {
 
   const doc = store.doc;
   const stats = store.getStatsAndDiff();
-  const totalChanges = (stats.modified + stats.added + stats.deleted) || Number(Boolean(doc.needsResave));
+  const savePending = doc.needsResave || doc.deidentificationChanged;
+  const totalChanges = (stats.modified + stats.added + stats.deleted) || Number(Boolean(savePending));
 
   // Build file meta + key DICOM attributes in the summary strip below the topbar
   const tsText = doc.transferSyntaxInfo?.name || doc.transferSyntaxUid || '';
@@ -398,7 +399,7 @@ function updateToolbarAndHeader() {
   if (stats.modified) changeParts.push(t('changeMod', { n: stats.modified }));
   if (stats.added) changeParts.push(t('changeAdd', { n: stats.added }));
   if (stats.deleted) changeParts.push(t('changeDel', { n: stats.deleted }));
-  if (doc.needsResave) changeParts.push(t('changeSavePending'));
+  if (savePending) changeParts.push(t('changeSavePending'));
 
   const fileLeadHtml = `
     <div class="sum-file-group">
@@ -463,8 +464,10 @@ function updateToolbarAndHeader() {
 }
 
 let lastWorkspaceVersion = store.workspaceVersion;
+let treeSearchTimer = null;
 
 store.subscribe((reason) => {
+  if (reason === 'filter' || reason === 'document') clearTimeout(treeSearchTimer);
   if (reason === 'theme') {
     applyTheme();
     return;
@@ -517,6 +520,9 @@ store.subscribe((reason) => {
   if (reason === 'document' || reason === 'files') {
     pixelPanel.pruneStaleDoc();
   }
+  if (store.viewMode !== 'tree' && store.viewMode !== 'pixel') {
+    pixelPanel.suspend();
+  }
   if (store.viewMode === 'compare' && store.files.length >= 2) {
     compareView.render(reason);
     return;
@@ -542,6 +548,7 @@ store.subscribe((reason) => {
 });
 
 window.addEventListener('resize', () => {
+  if (store.viewMode !== 'tree' && store.viewMode !== 'pixel') return;
   pixelPanel.sync(false);
   pixelPanel.fitCanvas();
 });
@@ -734,12 +741,11 @@ mobileNav.addEventListener('click', (e) => {
   store.setMobileTab(nextTab);
 });
 
-let treeSearchTimer = null;
 searchInput.addEventListener('input', () => {
-  const val = searchInput.value;
-  btnSearchClear.classList.toggle('hidden', !val);
+  store.searchQuery = searchInput.value;
+  btnSearchClear.classList.toggle('hidden', !store.searchQuery);
   clearTimeout(treeSearchTimer);
-  treeSearchTimer = setTimeout(() => store.setSearchQuery(val), 100);
+  treeSearchTimer = setTimeout(() => store.emit('filter'), 100);
 });
 btnSearchClear.addEventListener('click', () => {
   clearTimeout(treeSearchTimer);
@@ -949,7 +955,7 @@ function buildCommandPaletteItems() {
 
 // Global keyboard shortcuts
 window.addEventListener('keydown', (e) => {
-  if (e.defaultPrevented) return;
+  if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || e.getModifierState?.('AltGraph')) return;
   const mod = e.ctrlKey || e.metaKey;
   if (mod && !e.altKey && !e.shiftKey && (e.code === 'KeyK' || e.key.toLowerCase() === 'k')) {
     if (e.repeat) return;
@@ -1016,6 +1022,8 @@ window.addEventListener('keydown', (e) => {
   } else if ((code === 'KeyS' || key === 's') && store.doc) {
     e.preventDefault();
     if (store.compareMode || store.isBusy || fileIo.isBusy()) return;
+    const active = document.activeElement;
+    if (active?.matches('.inline-edit-input') && treeBody.contains(active)) active.blur();
     if (e.shiftKey || !store.fileHandle) fileIo.saveDocumentAs();
     else fileIo.saveDocumentDirect();
   } else if ((code === 'KeyF' || key === 'f') && store.doc) {
@@ -1063,9 +1071,11 @@ resizer.addEventListener('mousedown', (e) => {
     resizer.classList.remove('active');
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
+    window.removeEventListener('blur', onUp);
   };
   window.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp);
+  window.addEventListener('blur', onUp);
 });
 
 // Resizable Tree Table Columns (Drag to resize, Double-click to reset)
@@ -1125,9 +1135,11 @@ treeTableHeader.addEventListener('mousedown', (e) => {
     saveColWidths();
     window.removeEventListener('mousemove', onMove);
     window.removeEventListener('mouseup', onUp);
+    window.removeEventListener('blur', onUp);
   };
   window.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp);
+  window.addEventListener('blur', onUp);
 });
 
 treeTableHeader.addEventListener('dblclick', (e) => {
@@ -1156,32 +1168,47 @@ pixelPanel.sync(true);
 // PWA: Service Worker Registration
 // ============================================================================
 if ('serviceWorker' in navigator && window.isSecureContext) {
-  const hadController = Boolean(navigator.serviceWorker.controller);
+  let controller = navigator.serviceWorker.controller;
   let refreshing = false;
-  let notifiedUpdate = false;
+  let reloadPending = false;
+  let waitingWorker = null;
 
-  const handleWaitingWorker = (worker) => {
-    if (!worker) return;
-    if (store.files.length === 0) {
-      worker.postMessage({ type: 'SKIP_WAITING' });
-    } else if (!notifiedUpdate) {
-      notifiedUpdate = true;
-      showToast(t('toastUpdateAvailable'), 'info');
-    }
+  const activateWhenIdle = () => {
+    if (!waitingWorker || store.files.length > 0) return;
+    if (waitingWorker.state === 'installed') waitingWorker.postMessage({ type: 'SKIP_WAITING' });
+    waitingWorker = null;
   };
 
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (!hadController || refreshing || store.files.length > 0) return;
+  const reloadWhenIdle = () => {
+    if (!reloadPending || refreshing || store.files.length > 0) return;
     refreshing = true;
     window.location.reload();
+  };
+
+  const handleWaitingWorker = (worker) => {
+    if (!worker || worker === waitingWorker) return;
+    waitingWorker = worker;
+    if (store.files.length > 0) showToast(t('toastUpdateAvailable'), 'info');
+    activateWhenIdle();
+  };
+
+  store.subscribe(() => {
+    activateWhenIdle();
+    reloadWhenIdle();
+  });
+
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    const next = navigator.serviceWorker.controller;
+    if (controller && next && next !== controller) reloadPending = true;
+    controller = next;
+    reloadWhenIdle();
   });
 
   window.addEventListener('load', () => {
     navigator.serviceWorker
       .register('./sw.js', { scope: './', updateViaCache: 'none' })
       .then((reg) => {
-        if (reg.waiting) handleWaitingWorker(reg.waiting);
-        reg.addEventListener('updatefound', () => {
+        const watchInstalling = () => {
           const installing = reg.installing;
           if (!installing) return;
           installing.addEventListener('statechange', () => {
@@ -1189,7 +1216,10 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
               handleWaitingWorker(reg.waiting || installing);
             }
           });
-        });
+        };
+        reg.addEventListener('updatefound', watchInstalling);
+        watchInstalling();
+        handleWaitingWorker(reg.waiting);
         return reg.update().catch(() => {});
       })
       .catch((err) => {

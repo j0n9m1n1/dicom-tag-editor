@@ -41,7 +41,7 @@ export class ModalManager {
     });
 
     window.addEventListener('keydown', (e) => {
-      if (this.root.classList.contains('hidden')) return;
+      if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || this.root.classList.contains('hidden')) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
@@ -57,7 +57,7 @@ export class ModalManager {
         const first = focusables[0];
         const last = focusables[focusables.length - 1];
         const active = document.activeElement;
-        if (!this.root.contains(active)) {
+        if (!focusables.includes(active)) {
           e.preventDefault();
           (e.shiftKey ? last : first).focus();
         } else if (e.shiftKey && active === first) {
@@ -69,14 +69,24 @@ export class ModalManager {
         }
       }
     });
+
+    document.addEventListener('focusin', (e) => {
+      if (this.root.classList.contains('hidden') || this.root.contains(e.target)) return;
+      this._focusDialog();
+    });
   }
 
   _getFocusableElements() {
     const sel =
       'a[href], button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
     return Array.from(this.root.querySelectorAll(sel)).filter(
-      (el) => !el.closest('.hidden') && (el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0)
+      (el) => el.tabIndex >= 0 && !el.matches(':disabled') && !el.closest('.hidden') && el.getClientRects().length > 0
     );
+  }
+
+  _focusDialog(preferredFocusEl = null) {
+    const target = preferredFocusEl || this._getFocusableElements()[0] || this.root.querySelector('.modal-card');
+    target?.focus?.({ preventScroll: true });
   }
 
   _showModal(preferredFocusEl = null) {
@@ -88,8 +98,7 @@ export class ModalManager {
     if (card && !card.hasAttribute('tabindex')) {
       card.setAttribute('tabindex', '-1');
     }
-    const target = preferredFocusEl || this._getFocusableElements()[0] || card;
-    target?.focus?.({ preventScroll: true });
+    this._focusDialog(preferredFocusEl);
   }
 
   close() {
@@ -590,8 +599,8 @@ export class ModalManager {
       const applyAll = Boolean(allFilesCb && allFilesCb.checked && this.store.files.length > 1);
       this.close();
 
-      if (applyAll) {
-        try {
+      try {
+        if (applyAll) {
           const res = await this.store.applyAnonymizationAllFiles(rules, opts);
           this.callbacks.onToast?.(
             res.affectedFiles > 0 ? t('toastBatchDone', { files: res.affectedFiles }) : t('toastAnonNone'),
@@ -599,17 +608,17 @@ export class ModalManager {
           );
           if (res.skippedFiles) this.callbacks.onToast?.(t('toastAnonSkipped', { count: res.skippedFiles }), 'warn');
           if (res.dateSkips) this.callbacks.onToast?.(t('toastAnonDateSkipped', { count: res.dateSkips }), 'warn');
-        } catch (err) {
-          this.callbacks.onToast?.(t('toastAnonErr', { msg: err.message }), 'error');
+        } else {
+          const count = this.store.applyAnonymization(rules, opts);
+          this.callbacks.onToast?.(
+            count > 0 ? t('toastAnonDone', { count }) : t('toastAnonNone'),
+            count > 0 ? 'ok' : 'info'
+          );
+          const dateSkips = this.store.lastAnonymizeDateSkips || 0;
+          if (dateSkips) this.callbacks.onToast?.(t('toastAnonDateSkipped', { count: dateSkips }), 'warn');
         }
-      } else {
-        const count = this.store.applyAnonymization(rules, opts);
-        this.callbacks.onToast?.(
-          count > 0 ? t('toastAnonDone', { count }) : t('toastAnonNone'),
-          count > 0 ? 'ok' : 'info'
-        );
-        const dateSkips = this.store.lastAnonymizeDateSkips || 0;
-        if (dateSkips) this.callbacks.onToast?.(t('toastAnonDateSkipped', { count: dateSkips }), 'warn');
+      } catch (err) {
+        this.callbacks.onToast?.(t('toastAnonErr', { msg: err.message }), 'error');
       }
     });
   }
@@ -809,6 +818,7 @@ export class ModalManager {
       renderList();
     });
     input.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         if (currentRows.length > 0) {

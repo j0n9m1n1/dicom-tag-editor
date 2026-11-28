@@ -264,6 +264,8 @@ export class RawView {
   }
 
   reset() {
+    clearTimeout(this._searchTimer);
+    this._searchTimer = null;
     this._renderToken++;
     this.searchQuery = '';
     this.matchCount = 0;
@@ -403,16 +405,28 @@ export class RawView {
       this.searchQuery = searchInp.value;
       clearBtn.classList.toggle('hidden', !this.searchQuery);
       clearTimeout(this._searchTimer);
-      this._searchTimer = setTimeout(() => this._renderTextContent(), 120);
+      this._searchTimer = setTimeout(() => {
+        this._searchTimer = null;
+        this._renderTextContent();
+      }, 120);
     });
     searchInp.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && this.matchCount > 0) {
+      if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
+        if (this._searchTimer !== null) {
+          clearTimeout(this._searchTimer);
+          this._searchTimer = null;
+          this._renderTextContent();
+          e.preventDefault();
+          return;
+        }
+        if (this.matchCount === 0) return;
         e.preventDefault();
         this._stepMatch(e.shiftKey ? -1 : 1);
       }
     });
     clearBtn.addEventListener('click', () => {
       clearTimeout(this._searchTimer);
+      this._searchTimer = null;
       this.searchQuery = '';
       searchInp.value = '';
       clearBtn.classList.add('hidden');
@@ -539,10 +553,12 @@ export class RawView {
       this.hexHighlightOffset = -1;
     }
 
-    await this._renderContent({ preserveScroll: !docChanged && reason === 'edit' });
+    await this._renderContent({ preserveScroll: !docChanged && (reason === 'edit' || reason === 'save') });
   }
 
   async _renderContent({ preserveScroll = false } = {}) {
+    clearTimeout(this._searchTimer);
+    this._searchTimer = null;
     const isHex = this.mode === 'hex';
     this.container.querySelectorAll('[data-raw-fmt]').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.rawFmt === this.mode);
@@ -567,6 +583,7 @@ export class RawView {
   }
 
   _renderTextContent({ preserveScroll = false } = {}) {
+    if (this.mode === 'hex') return;
     const preEl = this.container.querySelector('#raw-inline-pre');
     const bodyEl = this.container.querySelector('#raw-inline-body');
     if (!preEl || !this.store.doc) return;

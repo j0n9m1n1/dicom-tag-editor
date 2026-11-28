@@ -192,8 +192,16 @@ async function inflateRawBytes(compressed, offset, limit) {
   }
 }
 
-function formatFloat(value) {
-  return Object.is(value, -0) ? '-0' : String(value);
+function formatFloat(value, single = false) {
+  if (Object.is(value, -0)) return '-0';
+  if (single && Number.isFinite(value)) {
+    // Shortest decimal that maps back to the same float32 (e.g. "0.1", not "0.10000000149011612").
+    for (let digits = 1; digits <= 9; digits++) {
+      const candidate = Number(value.toPrecision(digits));
+      if (Math.fround(candidate) === value) return String(candidate);
+    }
+  }
+  return String(value);
 }
 
 /**
@@ -226,7 +234,7 @@ export function decodeBinaryNumeric(bytes, vr, littleEndian, tag = '') {
       break;
     case 'FL':
       for (let i = 0; i + 4 <= bytes.length; i += 4) {
-        vals.push(formatFloat(view.getFloat32(i, littleEndian)));
+        vals.push(formatFloat(view.getFloat32(i, littleEndian), true));
       }
       break;
     case 'FD':
@@ -356,17 +364,13 @@ function parseEncapsulatedPixelData(bytes, view, startOffset, endOffset, littleE
     const len = view.getUint32(pos + 4, littleEndian);
     pos += 8;
 
+    // Odd-length or empty fragments and malformed Basic Offset Tables occur in real files. The stream is
+    // preserved verbatim, so only the Item structure is enforced here; frame lookup validates the BOT.
     if (g === 0xfffe && e === 0xe0dd && len === 0 && tableEnd !== null) {
-      if (!fragmentRanges.length) {
-        throw new DicomParseError('INVALID_ENCAP_PIXEL', 'Encapsulated Pixel Data has no fragments.', { offset: itemStart });
-      }
       const rawBytes = bytes.slice(startOffset, pos);
       const basicOffsetTable = rawBytes.subarray(8, tableEnd);
       const fragments = fragmentRanges.map(([start, end]) => rawBytes.subarray(start, end));
       return { nextOffset: pos, rawBytes, fragments, basicOffsetTable };
-    }
-    if (tableEnd === null ? len % 4 !== 0 : (len < 2 || len % 2 !== 0)) {
-      throw new DicomParseError('INVALID_ENCAP_PIXEL', 'Invalid Basic Offset Table or fragment Item length.', { offset: itemStart });
     }
     if (g !== 0xfffe || e !== 0xe000) {
       throw new DicomParseError(
@@ -425,6 +429,7 @@ function resolveImplicitPixelVrs(nodes, littleEndian, inherited = {}) {
     const targetVr = signed ? 'SS' : 'US';
     if (
       node.vrSource === 'dict' &&
+      (node.vr === 'US' || node.vr === 'SS') &&
       PIXEL_REP_SIGNED_TAGS.has(node.tag) &&
       node.rawBytes instanceof Uint8Array &&
       node.vr !== targetVr
@@ -449,8 +454,10 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     stopAfterGroup0002 = false,
     inheritedCharset = '',
     expectItemDelimiter = false,
+    ignoreGroupLength = false,
     depth = 0,
   } = opts;
+  const rangeLimit = endOffset;
   if (depth > MAX_SEQUENCE_DEPTH) {
     throw new DicomParseError('RESOURCE_LIMIT', `DICOM sequence nesting exceeds ${MAX_SEQUENCE_DEPTH} levels.`, { offset: startOffset });
   }
@@ -472,9 +479,6 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       }
       return { nodes, nextOffset: tagStart };
     }
-    if (!isMetaSection && group === 0x0002) {
-      throw new DicomParseError('INVALID_META_LENGTH', 'File Meta element found outside the File Meta Information section.', { offset: tagStart });
-    }
 
     if (group === 0xfffe) {
       if (expectItemDelimiter && element === 0xe00d && view.getUint32(pos + 4, littleEndian) === 0) {
@@ -494,7 +498,18 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     let length = 0;
 
     if (explicit) {
-      ({ vr, encodedVr, length, next: pos } = readExplicitHeader(bytes, view, pos, endOffset, littleEndian, formatTag(group, element)));
+      try {
+        ({ vr, encodedVr, length, next: pos } = readExplicitHeader(bytes, view, pos, endOffset, littleEndian, formatTag(group, element)));
+      } catch (error) {
+        if (error?.code !== 'INVALID_VR') throw error;
+        // Some writers switch a single element (or File Meta) to Implicit VR inside an Explicit VR
+        // stream; read it with the dictionary VR as earlier versions did instead of rejecting the file.
+        const info = lookupTag(group, element, privateCreators);
+        vr = info.vr;
+        vrSource = 'dict';
+        length = view.getUint32(pos, littleEndian);
+        pos += 4;
+      }
     } else {
       const info = lookupTag(group, element, privateCreators);
       vr = info.vr;
@@ -652,10 +667,14 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       );
     }
     const valEnd = checkedValueEnd(pos, length, endOffset, label);
-    if (length % 2 || length % binaryValueUnitSize(vr)) {
-      throw new DicomParseError('INVALID_VALUE_LENGTH', `Invalid Value Length ${length} for ${vr} at ${label}.`, {
-        tag: label, offset: pos, length,
-      });
+    // Odd lengths and fixed-width mismatches violate PS3.5 7.1 but are common in the wild. Keep the
+    // original bytes (the writer preserves them verbatim or refuses to invent padding) instead of
+    // rejecting the whole file. A dictionary-derived Implicit VR that cannot hold the value is
+    // demoted to UN so it stays opaque rather than being shown truncated.
+    let lengthIssue = length % 2 !== 0 || length % binaryValueUnitSize(vr) !== 0;
+    if (lengthIssue && vrSource !== 'explicit' && length % binaryValueUnitSize(vr) !== 0) {
+      vr = 'UN';
+      lengthIssue = length % 2 !== 0;
     }
     const rawBytes = bytes.slice(pos, valEnd);
     pos = valEnd;
@@ -680,7 +699,9 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
 
     // Track Private Creator IDs
     if (isPrivate && element >= 0x0010 && element <= 0x00ff) {
-      const creatorName = vr === 'LO' ? decodedValue.trim() : '';
+      // Private Creators re-encoded as UN by intermediaries still identify their block (PS3.5 7.8.1).
+      const creatorName = vr === 'LO' ? decodedValue.trim()
+        : vr === 'UN' ? decodeDicomText(rawBytes, 'LO', '', hex).value.replace(/\0+$/, '').trim() : '';
       const creatorKey = `${group.toString(16).toUpperCase().padStart(4, '0')}:${element.toString(16).toUpperCase().padStart(2, '0')}`;
       if (creatorName) {
         privateCreators.set(creatorKey, creatorName);
@@ -690,6 +711,11 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
     const validation = isBinary
       ? { valid: true, severity: 'ok', messages: [] }
       : validateVrValue(vr, decodedValue, hex);
+    if (lengthIssue) {
+      validation.messages = [...validation.messages,
+        `Value Length ${length} is invalid for VR ${vr}; the original bytes are kept unchanged.`];
+      if (validation.severity === 'ok') validation.severity = 'warning';
+    }
 
     nodes.push({
       id: genNodeId(),
@@ -720,10 +746,17 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       validation,
     });
 
-    if (stopAfterGroup0002 && hex === '00020000' && length === 4 && nodes.length === 1) {
-      declaredMetaEnd = checkedValueEnd(pos, view.getUint32(valEnd - 4, true), endOffset, label);
+    if (stopAfterGroup0002 && !ignoreGroupLength && hex === '00020000' && length === 4 && nodes.length === 1) {
+      const declaredEnd = pos + view.getUint32(valEnd - 4, true);
+      if (declaredEnd > endOffset) {
+        throw new DicomParseError('INVALID_META_LENGTH', 'File Meta Information Group Length extends past the end of the file.', { offset: tagStart });
+      }
+      declaredMetaEnd = declaredEnd;
       endOffset = declaredMetaEnd;
     }
+  }
+  if (declaredMetaEnd !== null && pos === declaredMetaEnd && pos + 2 <= rangeLimit && view.getUint16(pos, true) === 0x0002) {
+    throw new DicomParseError('INVALID_META_LENGTH', 'File Meta Information Group Length ends before the last group 0002 element.', { offset: pos });
   }
 
   if (expectItemDelimiter) {
@@ -740,14 +773,18 @@ function parseDatasetRange(bytes, view, startOffset, endOffset, opts) {
       { offset: pos, availableBytes: endOffset - pos }
     );
   }
+  // A malformed Basic Offset Table only affects frame lookup (the renderer falls back to fragment
+  // heuristics); it must not make the tags of an otherwise readable file uneditable.
   const frameCount = Number(nodes.find((node) => node.tag === '00280008')?.value || '1');
   for (const node of nodes) {
     if (!node.encapsulated) continue;
+    let problem = node.fragments.length ? null : 'Encapsulated Pixel Data has no fragments.';
     try {
       basicOffsetFrameStarts(node.basicOffsetTable, node.fragments, frameCount);
     } catch (error) {
-      throw new DicomParseError('INVALID_ENCAP_PIXEL', error.message, { tag: node.formattedTag, offset: node.offset });
+      problem = error.message;
     }
+    if (problem) node.validation = { valid: true, severity: 'warning', messages: [problem] };
   }
   return { nodes, nextOffset: pos };
 }
@@ -835,17 +872,33 @@ export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm', o
     let preamble = hasPart10Header ? bytes.slice(0, 128) : new Uint8Array(128);
     let mainOffset = 0;
 
-    if (hasPart10Header) {
+    // Some writers omit the 128-byte preamble and "DICM" but still emit File Meta (0002,xxxx).
+    const metaStart = hasPart10Header ? 132 : 0;
+    const metaWithoutPreamble = !hasPart10Header && bytes.length >= 8 && view.getUint16(0, true) === 0x0002;
+    if (hasPart10Header || metaWithoutPreamble) {
       // Parse File Meta Information (0002,xxxx) — always Explicit VR Little Endian
-      const metaResult = parseDatasetRange(bytes, view, 132, bytes.length, {
+      const parseMeta = (ignoreGroupLength) => parseDatasetRange(bytes, view, metaStart, bytes.length, {
         explicit: true,
         littleEndian: true,
         isMetaSection: true,
         stopAfterGroup0002: true,
         inheritedCharset: '',
+        ignoreGroupLength,
       });
+      let metaResult;
+      try {
+        metaResult = parseMeta(false);
+      } catch (error) {
+        // A wrong (0002,0000) is common; fall back to the group number boundary like DCMTK/pydicom.
+        try {
+          metaResult = parseMeta(true);
+        } catch {
+          throw error;
+        }
+      }
       metaNodes = metaResult.nodes;
       mainOffset = metaResult.nextOffset;
+      if (metaWithoutPreamble) hasPart10Header = true; // Saved back as a conformant Part 10 file.
     }
 
     // Determine Transfer Syntax
@@ -895,6 +948,7 @@ export async function parseDicomBuffer(arrayBuffer, fileName = 'untitled.dcm', o
       fileSize: bytes.length,
       wasGzipped,
       hasPart10Header,
+      missingPreamble: metaWithoutPreamble,
       preamble,
       transferSyntaxUid,
       transferSyntaxInfo: tsInfo,

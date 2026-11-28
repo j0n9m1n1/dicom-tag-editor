@@ -205,16 +205,52 @@ test('writer synchronizes SOP Class and rejects broken required File Meta', asyn
   }
 });
 
-test('Part 10 group length must match its boundary and a dataset must follow', async () => {
+test('a wrong File Meta group length falls back to the group 0002 boundary and a dataset must follow', async () => {
   const good = part10(element('00100010', 'PN', 'TEST^ONE'));
   const declared = good.readUInt32LE(140);
-  const short = Buffer.from(good);
-  short.writeUInt32LE(declared - element('00020012', 'UI', '2.25.2').length, 140);
-  await assert.rejects(parse(short), { code: 'INVALID_META_LENGTH' });
-  const long = Buffer.from(good);
-  long.writeUInt32LE(declared + 8, 140);
-  await assert.rejects(parse(long), { code: 'INVALID_META_LENGTH' });
+  const metaTags = ['00020000', '00020001', '00020002', '00020003', '00020010', '00020012'];
+  for (const wrong of [declared - element('00020012', 'UI', '2.25.2').length, declared + 8, declared + 4096]) {
+    const bytes = Buffer.from(good);
+    bytes.writeUInt32LE(wrong, 140);
+    const doc = await parse(bytes);
+    assert.deepEqual(doc.metaNodes.map((node) => node.tag), metaTags);
+    assert.deepEqual(doc.datasetNodes.map((node) => [node.tag, node.value]), [['00100010', 'TEST^ONE']]);
+    assert.deepEqual(Buffer.from(await writeDicomDocument(doc)), good);
+  }
   await assert.rejects(parse(good.subarray(0, 144 + declared)), { code: 'NO_TAGS' });
+});
+
+test('File Meta without preamble is read with its Transfer Syntax and saved as Part 10', async () => {
+  const implicitPart10 = part10(join(
+    element('00100010', 'PN', 'TEST^ONE', { implicit: true }), element('00280010', 'US', numberBytes(2), { implicit: true })
+  ), { syntax: IMPLICIT_LE });
+  const doc = await parse(implicitPart10.subarray(132));
+  assert.equal(doc.missingPreamble, true);
+  assert.equal(doc.hasPart10Header, true);
+  assert.equal(doc.transferSyntaxUid, IMPLICIT_LE);
+  assert.deepEqual(doc.datasetNodes.map((node) => node.value), ['TEST^ONE', '2']);
+  assert.deepEqual(Buffer.from(await writeDicomDocument(doc)), implicitPart10);
+});
+
+test('Explicit VR streams tolerate an element switched to Implicit VR', async () => {
+  const doc = await parse(part10(join(
+    element('00100010', 'PN', 'NAME'), element('00100020', 'LO', 'ID01', { implicit: true }), element('00100030', 'DA', '20240101')
+  )));
+  assert.deepEqual(doc.datasetNodes.map((node) => [node.vr, node.value]), [['PN', 'NAME'], ['LO', 'ID01'], ['DA', '20240101']]);
+  const reopened = await parse(await writeDicomDocument(doc));
+  assert.deepEqual(reopened.datasetNodes.map((node) => [node.vr, node.vrSource, node.value]),
+    [['PN', 'explicit', 'NAME'], ['LO', 'explicit', 'ID01'], ['DA', 'explicit', '20240101']]);
+});
+
+test('writer supplies File Meta Version and Implementation Class UID only when the file never had them', async () => {
+  const meta = join(element('00020002', 'UI', CT), element('00020003', 'UI', '2.25.1'), element('00020010', 'UI', EXPLICIT_LE));
+  const bytes = join(Buffer.alloc(128), Buffer.from('DICM'), element('00020000', 'UL', ul(meta.length)), meta,
+    element('00080016', 'UI', CT), element('00080018', 'UI', '2.25.1'));
+  const doc = await parse(bytes);
+  const reopened = await parse(await writeDicomDocument(doc));
+  assert.deepEqual(Buffer.from(find(reopened.metaNodes, '00020001').rawBytes), hex('00 01'));
+  assert.equal(find(reopened.metaNodes, '00020012').value, '1.2.826.0.1.3680043.8.498.1');
+  assert.equal(runDicomQaCheck(reopened).errors.filter((error) => error.code === 'qaMissingTag').length, 0);
 });
 
 test('raw syntax probing handles short and Big Endian datasets with an explicit override', async () => {
@@ -255,10 +291,29 @@ test('unrecognized explicit VRs use long headers and round-trip their original V
   assert.deepEqual(Buffer.from(await writeDicomDocument(doc)), part10(unknownSequence));
 });
 
-test('invalid VR lengths are rejected instead of manufacturing padded numeric values', async () => {
-  for (const [vr, size] of [['US', 3], ['PN', 3], ['OW', 3], ['OL', 6], ['OF', 6], ['OD', 10], ['OV', 10], ['UV', 6]]) {
-    await assert.rejects(parse(part10(element('00191001', vr, Buffer.alloc(size)))), { code: 'INVALID_VALUE_LENGTH' });
+test('non-conformant value lengths stay readable without manufacturing padded numeric values', async () => {
+  const next = element('00191002', 'LO', 'NEXT');
+  const cases = [
+    ['PN', 3, join(element('00191001', 'PN', hex('41 41 41 20')), next)],
+    ['OB', 3, join(element('00191001', 'OB', hex('41 41 41 00')), next)],
+    ['UN', 5, join(element('00191001', 'UN', hex('41 41 41 41 41 00')), next)],
+    ['FD', 4, 'same'], ['OF', 6, 'same'], ['OD', 10, 'same'], ['UV', 6, 'same'], ['OL', 6, 'same'],
+    ['US', 3, /Invalid Value Length for US/], ['OW', 3, /Invalid Value Length for OW/], ['SL', 5, /Invalid Value Length for SL/],
+  ];
+  for (const [vr, size, expected] of cases) {
+    const bytes = part10(join(element('00191001', vr, Buffer.alloc(size, 0x41)), next));
+    const doc = await parse(bytes);
+    const [node, after] = doc.datasetNodes;
+    assert.equal(node.rawBytes.length, size, vr);
+    assert.equal(node.validation.severity === 'ok', false, vr);
+    assert.equal(after.value, 'NEXT', vr);
+    if (expected instanceof RegExp) await assert.rejects(writeDicomDocument(doc), expected);
+    else assert.deepEqual(Buffer.from(await writeDicomDocument(doc)), expected === 'same' ? bytes : part10(expected), vr);
   }
+  // A dictionary VR that cannot hold an Implicit VR value is kept as opaque UN.
+  const implicit = await parse(element('00189087', 'FD', hex('00 00 80 3f'), { implicit: true }), { transferSyntaxUid: IMPLICIT_LE });
+  assert.deepEqual([implicit.datasetNodes[0].vr, implicit.datasetNodes[0].isBinary], ['UN', true]);
+  assert.deepEqual(Buffer.from(await writeDicomDocument(implicit)), element('00189087', 'FD', hex('00 00 80 3f'), { implicit: true }));
   const doc = await parse(element('00280010', 'US', numberBytes(1)));
   doc.datasetNodes[0].rawBytes = Uint8Array.of(1, 0, 255);
   await assert.rejects(writeDicomDocument(doc), /Invalid Value Length for US/);
@@ -298,6 +353,38 @@ test('ISO 2022 switches G0/G1 repertoires and respects multibyte delimiter bytes
   const lossy = await parse(join(element('00080005', 'CS', 'ISO_IR 6'), element('00100010', 'PN', hex('c3 a9'))));
   Object.assign(lossy.datasetNodes[0], { value: 'ISO_IR 192', status: 'modified' });
   await assert.rejects(writeDicomDocument(lossy), /could not be decoded/);
+});
+
+test('NUL-padded strings and non-conformant Korean ISO 2022 text decode like earlier releases', async () => {
+  const nulPadded = part10(join(element('00080060', 'CS', hex('43 54 00 00')), element('00100020', 'LO', hex('49 44 30 31 20 00'))));
+  const doc = await parse(nulPadded);
+  assert.deepEqual(doc.datasetNodes.map((node) => [node.value, node.charsetError, node.validation.valid]),
+    [['CT', false, true], ['ID01', false, true]]);
+  assert.deepEqual(Buffer.from(await writeDicomDocument(doc)), nulPadded);
+
+  const hongGildong = hex('c8 ab 5e b1 e6 b5 bf'); // 홍^길동 in KS X 1001 (EUC-KR)
+  const designate = hex('1b 24 29 43');
+  for (const [charset, value] of [
+    ['ISO 2022 IR 149', join(designate, hongGildong)], // single-valued, no G1 re-designation after "^"
+    ['\\ISO 2022 IR 149', join(designate, hongGildong)],
+    ['ISO_IR 149', join(designate, hongGildong)], // escape sequence with a non-ISO 2022 term
+  ]) {
+    const korean = await parse(part10(join(element('00080005', 'CS', charset), element('00100010', 'PN', value))));
+    assert.equal(find(korean.datasetNodes, '00100010').value, '홍^길동', charset);
+  }
+  const conformant = await parse(part10(join(element('00080005', 'CS', '\\ISO 2022 IR 149'),
+    element('00100010', 'PN', join(designate, hex('c8 ab 5e'), designate, hex('b1 e6 b5 bf'))))));
+  assert.deepEqual([find(conformant.datasetNodes, '00100010').value, find(conformant.datasetNodes, '00100010').charsetError],
+    ['홍^길동', false]);
+});
+
+test('Private Creators encoded as UN still name their private block', async () => {
+  const doc = await parse(part10(join(element('00290010', 'UN', 'SIEMENS CSA HEADER'), element('00291010', 'OB', hex('01 02')))));
+  assert.equal(find(doc.datasetNodes, '00291010').keyword, 'Private_SIEMENSCSAHEADER');
+});
+
+test('JPEG Lossless accepts zero-bit entropy padding before EOI', () => {
+  assert.deepEqual([...decodeJpegLossless(jpegLossless({ entropy: hex('00') })).data], [128]);
 });
 
 test('QA accepts valid Latin-1 and repertoire checks reject invalid UR and Private Creator text', async () => {
@@ -405,14 +492,18 @@ function rle(...segments) {
   return join(header, segments);
 }
 
-test('RLE rejects missing segments, nonincreasing offsets, truncated runs, and row overruns', async () => {
+test('RLE rejects missing segments, nonincreasing offsets, and truncated runs but tolerates encoder quirks', async () => {
   const decode = (data, overrides) => decodePixelFrame(frameMeta({ compressed: true, codec: 'rle',
     pixelNode: { fragments: [data] }, ...overrides }));
   assert.deepEqual([...(await decode(rle(hex('ff 19')))).values], [25, 25]);
   assert.deepEqual([...(await decode(rle(hex('ff 01'), hex('ff 02')), { bitsAllocated: 16, bitsStored: 16, highBit: 15 })).values], [258, 258]);
   assert.equal((await decode(rle(hex('ff 19')), { bitsAllocated: 16 })).kind, 'unsupported');
   assert.equal((await decode(rle(hex('80 ff')))).kind, 'unsupported');
-  assert.equal((await decode(rle(hex('fe 19')))).kind, 'unsupported');
+  // Runs crossing rows or the frame end, odd segment lengths, and trailing bytes are decoded like DCMTK/GDCM.
+  assert.deepEqual([...(await decode(rle(hex('fe 19')))).values], [25, 25]);
+  assert.deepEqual([...(await decode(rle(hex('ff 07 00')), { rows: 2, cols: 1 })).values], [7, 7]);
+  assert.deepEqual([...(await decode(rle(hex('01 03 04 00 09'), hex('ff 05')), { bitsAllocated: 16, bitsStored: 16, highBit: 15 })).values],
+    [0x0305, 0x0405]);
   const duplicateOffset = rle(hex('ff 01'), hex('ff 02'));
   duplicateOffset.writeUInt32LE(64, 8);
   assert.equal((await decode(duplicateOffset, { bitsAllocated: 16 })).kind, 'unsupported');
@@ -441,22 +532,32 @@ test('JPEG Lossless validates scan coverage, entropy, restart order, and point t
   assert.throws(() => decodeJpegLossless(jpegLossless({ ...restart, entropy: hex('3f') })), /RST0/);
 });
 
-test('encapsulation requires fragments and BOT entries at strictly increasing Item starts', async () => {
+test('malformed BOTs and odd or missing fragments keep the file editable and fall back for frame lookup', async () => {
   const syntax = '1.2.840.10008.1.2.4.57';
   const enc = (table, ...fragments) => part10(join(
     element('00280008', 'IS', '2'),
     element('7FE00010', 'OB', join(item(table), fragments.map((fragment) => item(fragment)), sequenceEnd), { length: 0xffffffff })
   ), { syntax });
   const fragments = [hex('00 01'), hex('02 03'), hex('04 05')];
-  await parse(enc(join(ul(0), ul(20)), ...fragments));
-  for (const table of [join(ul(0), ul(11)), join(ul(0), ul(0)), join(ul(0)), hex('00 00')]) {
-    await assert.rejects(parse(enc(table, ...fragments)), { code: 'INVALID_ENCAP_PIXEL' });
+  const pixel = (doc) => find(doc.datasetNodes, '7FE00010');
+  assert.equal(pixel(await parse(enc(join(ul(0), ul(20)), ...fragments))).validation.severity, 'ok');
+  for (const [table, frags] of [
+    [join(ul(0), ul(11)), fragments], [join(ul(0), ul(0)), fragments], [join(ul(0)), fragments], [hex('00 00'), fragments],
+    [Buffer.alloc(0), []], [join(ul(0), ul(10)), [hex('01'), hex('02 03')]],
+  ]) {
+    const bytes = enc(table, ...frags);
+    const doc = await parse(bytes);
+    assert.equal(pixel(doc).fragments.length, frags.length);
+    assert.equal(pixel(doc).validation.severity, 'warning');
+    assert.deepEqual(Buffer.from(await writeDicomDocument(doc)), bytes);
   }
-  await assert.rejects(parse(enc(Buffer.alloc(0))), { code: 'INVALID_ENCAP_PIXEL', message: /no fragments/ });
-  await assert.rejects(parse(enc(Buffer.alloc(0), hex('01'))), { code: 'INVALID_ENCAP_PIXEL' });
+  const odd = await parse(enc(Buffer.alloc(0), hex('01')));
+  assert.deepEqual(pixel(odd).fragments.map((fragment) => [...fragment]), [[1]]);
   const meta = frameMeta({ numberOfFrames: 2, compressed: true, codec: 'jpeg-lossless',
     pixelNode: { basicOffsetTable: join(ul(0), ul(11)), fragments: [jpegLossless(), jpegLossless()] } });
-  assert.equal((await decodePixelFrame(meta, 1)).kind, 'unsupported');
+  assert.equal((await decodePixelFrame(meta, 1)).kind, 'scalar');
+  const unsplittable = { ...meta, pixelNode: { ...meta.pixelNode, fragments: [jpegLossless(), hex('00 01'), hex('02 03')] } };
+  assert.equal((await decodePixelFrame(unsplittable, 1)).kind, 'unsupported');
 });
 
 test('DICOM JSON emits ordered PS3.18 attributes, PN groups, nested values and InlineBinary', async () => {
@@ -529,7 +630,8 @@ test('editing one FL component preserves exact other components, NaN payload, an
   const raw = hex('01 00 80 3f 23 01 c0 7f 00 00 00 80 00 00 00 40');
   const doc = await parse(element('00700022', 'FL', raw));
   const node = doc.datasetNodes[0];
-  assert.equal(node.value, '1.0000001192092896\\NaN\\-0\\2');
+  assert.equal(node.value, '1.0000001\\NaN\\-0\\2');
+  assert.equal((await parse(element('00700022', 'FL', hex('cd cc cc 3d')))).datasetNodes[0].value, '0.1');
   assert.equal(node.validation.valid, true);
   Object.assign(node, { value: node.value.replace(/2$/, '3'), status: 'modified' });
   const firstSave = await writeDicomDocument(doc);

@@ -329,7 +329,7 @@ function decodeRleFrame(fragment, rows, cols, samplesPerPixel, bitsAllocated) {
   const offsets = [];
   for (let i = 0; i < numSegments; i++) {
     const off = view.getUint32(4 + i * 4, true);
-    if ((i === 0 ? off !== 64 : off <= offsets[i - 1]) || off >= fragment.length || off % 2) {
+    if ((i === 0 ? off !== 64 : off <= offsets[i - 1]) || off >= fragment.length) {
       throw new Error('Invalid RLE segment offset.');
     }
     offsets.push(off);
@@ -340,18 +340,19 @@ function decodeRleFrame(fragment, rows, cols, samplesPerPixel, bitsAllocated) {
   for (let s = 0; s < numSegments; s++) {
     const start = offsets[s];
     const end = offsets[s + 1] ?? fragment.length;
-    if ((end - start) % 2) throw new Error('RLE segment must have even length.');
     const segOut = new Uint8Array(pixelCount);
     let inPos = start;
     let outPos = 0;
 
+    // Like DCMTK/GDCM/pydicom, accept runs that cross row boundaries, odd segment lengths, and
+    // trailing segment padding; only missing data is an error.
     while (outPos < pixelCount) {
       if (inPos >= end) throw new Error('Truncated RLE segment.');
       const command = view.getInt8(inPos++);
       if (command === -128) continue;
-      const count = Math.abs(command) + 1;
-      const encodedBytes = command < 0 ? 1 : count;
-      if (inPos + encodedBytes > end || count > cols - outPos % cols) {
+      const count = Math.min(Math.abs(command) + 1, pixelCount - outPos);
+      const encodedBytes = command < 0 ? 1 : Math.abs(command) + 1;
+      if (inPos + (command < 0 ? 1 : count) > end) {
         throw new Error('Invalid RLE run length.');
       }
       if (command < 0) segOut.fill(fragment[inPos], outPos, outPos + count);
@@ -359,8 +360,6 @@ function decodeRleFrame(fragment, rows, cols, samplesPerPixel, bitsAllocated) {
       inPos += encodedBytes;
       outPos += count;
     }
-    while (inPos < end && fragment[inPos] === 0x80) inPos++;
-    if (inPos !== end && !(inPos === end - 1 && fragment[inPos] === 0)) throw new Error('Unexpected RLE segment data.');
     decodedSegments.push(segOut);
   }
 
@@ -468,11 +467,12 @@ function extractEncapsulatedFrameBytes(pixelNode, numberOfFrames, frameIndex, co
   const frags = pixelNode.fragments || [];
   if (frags.length === 0 || frameIndex < 0 || frameIndex >= numberOfFrames) return null;
   const bot = pixelNode.basicOffsetTable;
-  let starts;
+  let starts = null;
   try {
     starts = basicOffsetFrameStarts(bot, frags, numberOfFrames);
   } catch {
-    return null;
+    // Malformed BOTs exist in the wild; ignore it like an empty table and use the fallbacks below.
+    starts = null;
   }
   if (codec === 'rle' && (frags.length !== numberOfFrames || (starts && starts[frameIndex] !== frameIndex))) return null;
   if (starts) return concatFragments(frags.slice(starts[frameIndex], starts[frameIndex + 1]));
@@ -763,9 +763,11 @@ function decodeUncompressedBytes(rawBytes, meta, frameIndex) {
     if (modalityValue > max) max = modalityValue;
   }
 
-  const range = Math.max(1, max - min);
-  const autoWC = Math.round(min + range / 2);
-  const autoWW = Math.max(1, Math.round(range));
+  // Keep fractional auto W/L for small (e.g. rescaled float-like) ranges instead of collapsing to 1/1.
+  const span = max - min;
+  const range = span > 0 ? span : 1;
+  const autoWC = range >= 20 ? Math.round(min + range / 2) : min + range / 2;
+  const autoWW = range >= 20 ? Math.max(1, Math.round(range)) : range;
 
   return {
     kind: 'scalar',

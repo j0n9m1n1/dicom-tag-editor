@@ -542,6 +542,7 @@ export class TreeView {
         inp.select();
         inp.addEventListener('blur', () => this._commitInlineEdit(inp));
         inp.addEventListener('keydown', (e) => {
+          if (e.isComposing || e.keyCode === 229) return;
           if (e.key === 'Enter') {
             e.preventDefault();
             e.stopPropagation();
@@ -588,7 +589,7 @@ export class TreeView {
   }
 
   _commitInlineEdit(inputEl) {
-    if (!this.inlineEditId) return;
+    if (!this.inlineEditId || inputEl.dataset.inlineId !== this.inlineEditId || !this.container.contains(inputEl)) return;
     const id = this.inlineEditId;
     const val = inputEl.value;
     this.inlineEditId = null;

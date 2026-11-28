@@ -20,6 +20,8 @@ import { encodeDicomString } from './charset.js';
 import { getSopInstanceUid } from './uid.js';
 
 const DICOMDIR_SOP_CLASS = '1.2.840.10008.1.3.10';
+// Same Implementation Class UID the sample generator writes.
+const IMPLEMENTATION_CLASS_UID = '1.2.826.0.1.3680043.8.498.1';
 const DEIDENTIFIED_META_REMOVALS = new Set([
   '00020016', '00020017', '00020018', '00020026', '00020027', '00020028', '00020100', '00020102',
 ]);
@@ -240,8 +242,13 @@ function serializeNode(node, explicit, littleEndian, charset, directory) {
   // 3) Unchanged node with rawBytes — preserve verbatim!
   if (node.status === 'unchanged' && node.rawBytes instanceof Uint8Array &&
       (node.rawCharset === undefined || node.rawCharset === charset)) {
-    const body = node.rawBytes;
-    if (body.length % binaryValueUnitSize(node.vr)) throw new Error(`Invalid Value Length for ${node.vr} at ${node.formattedTag}.`);
+    let body = node.rawBytes;
+    if (body.length % 2) {
+      // Odd-length values from non-conformant files get the standard pad byte, as before; padding a
+      // fixed-width numeric/word value would invent a component, so that is refused instead.
+      if (binaryValueUnitSize(node.vr) !== 1) throw new Error(`Invalid Value Length for ${node.vr} at ${node.formattedTag}.`);
+      body = padEven(body, NULL_PAD_VRS.has(node.vr) ? 0x00 : 0x20);
+    }
     const hdr = buildElementHeader(node.group, node.element, node.vr, body.length, explicit, littleEndian, node.encodedVr);
     return concatUint8Arrays([hdr, body]);
   }
@@ -249,8 +256,9 @@ function serializeNode(node, explicit, littleEndian, charset, directory) {
   // 4) Binary node (OB/OW/UN/etc.)
   if (node.isBinary) {
     const raw = node.rawBytes instanceof Uint8Array ? node.rawBytes : new Uint8Array(0);
-    if (raw.length % binaryValueUnitSize(node.vr)) throw new Error(`Invalid Value Length for ${node.vr} at ${node.formattedTag}.`);
-    const body = node.vr === 'OB' ? padEven(raw, 0x00) : raw;
+    const unit = binaryValueUnitSize(node.vr);
+    if (raw.length % unit) throw new Error(`Invalid Value Length for ${node.vr} at ${node.formattedTag}.`);
+    const body = unit === 1 ? padEven(raw, 0x00) : raw;
     const hdr = buildElementHeader(node.group, node.element, node.vr, body.length, explicit, littleEndian, node.encodedVr);
     return concatUint8Arrays([hdr, body]);
   }
@@ -435,6 +443,16 @@ export async function writeDicomDocument(doc) {
     }
     if (!syntaxNode) {
       upsertMediaUid(activeMeta, '00020010', uid);
+    }
+    // Many real files never had these Type 1 elements; supply them instead of refusing to save.
+    // An element the user explicitly deleted is still reported by checkRequiredMeta.
+    const originalMeta = doc.metaNodes || [];
+    if (!originalMeta.some((node) => node.tag === '00020001')) {
+      activeMeta.push({ tag: '00020001', group: 0x0002, element: 0x0001, vr: 'OB', isBinary: true,
+        rawBytes: Uint8Array.of(0x00, 0x01), value: '', status: 'unchanged' });
+    }
+    if (!originalMeta.some((node) => node.tag === '00020012')) {
+      upsertMediaUid(activeMeta, '00020012', IMPLEMENTATION_CLASS_UID);
     }
     checkRequiredMeta(activeMeta);
     activeMeta.sort((a, b) => (a.group !== b.group ? a.group - b.group : a.element - b.element));

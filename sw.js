@@ -71,7 +71,7 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') {
-    self.skipWaiting();
+    event.waitUntil(self.skipWaiting());
   }
 });
 
@@ -110,25 +110,23 @@ self.addEventListener('fetch', (event) => {
     ? fetchWithTimeout(request.url, { cache: 'no-cache' })
     : fetchWithTimeout(request, { cache: 'no-cache' });
 
+  event.waitUntil(networkReq.then((response) => {
+    if (!response.ok || response.type !== 'basic') return;
+    const copy = response.clone();
+    return caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
+  }).catch(() => {}));
+
   event.respondWith(
-    networkReq
-      .then((response) => {
-        if (response && response.ok && response.type === 'basic') {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(request, copy)).catch(() => {});
-        }
-        return response;
-      })
-      .catch(async () => {
-        const exact = await caches.match(request);
-        if (exact) return exact;
-        const loose = await caches.match(request, { ignoreSearch: true });
-        if (loose) return loose;
-        if (request.mode === 'navigate') {
-          const shell = (await caches.match('./index.html')) || (await caches.match('./'));
-          if (shell) return shell;
-        }
-        return new Response('Offline', { status: 503, statusText: 'Offline' });
-      })
+    networkReq.catch(async () => {
+      const exact = await caches.match(request);
+      if (exact) return exact;
+      const loose = await caches.match(request, { ignoreSearch: true });
+      if (loose) return loose;
+      if (request.mode === 'navigate') {
+        const shell = (await caches.match('./index.html')) || (await caches.match('./'));
+        if (shell) return shell;
+      }
+      return new Response('Offline', { status: 503, statusText: 'Offline' });
+    })
   );
 });
